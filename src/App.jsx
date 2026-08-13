@@ -8,7 +8,7 @@ import {
   Camera, ClipboardList, AlertTriangle, Calendar, MapPin, ChevronRight,
   ChevronLeft, Download, Search, ArrowLeft, Image as ImageIcon, IndianRupee,
   TrendingUp, Clock, CheckCircle2, XCircle, Filter, FileSpreadsheet, Eye, EyeOff, Pencil,
-  PenTool, ListChecks, Paperclip, FileText, AlertCircle, Trash2
+  PenTool, ListChecks, Paperclip, FileText, AlertCircle, Trash2, Store, Landmark, Upload
 } from "lucide-react";
 
 import { supabase } from "./lib/supabaseClient";
@@ -26,7 +26,8 @@ import {
 import {
   fetchAllData, dbUpdateProfile, dbRemoveUser, dbAddProject, dbUpdateProject, dbUpdateTask,
   dbUpdateDesignPhase, dbUpdateDrawing, dbAddDrawing, dbRemoveDrawing,
-  dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbAddIssue,
+  dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbMarkExpensePaid, dbAddIssue,
+  dbAddVendor, dbUpdateVendor, dbDeleteVendor,
   uploadProofFile, uploadSitePhoto,
 } from "./lib/dataStore";
 
@@ -235,12 +236,14 @@ function Sidebar({ user, view, setView, onLogout, pendingCount }) {
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { key: "projects", label: "Projects", icon: Building2 },
     { key: "expenses", label: "Expenses", icon: Receipt, badge: pendingCount },
+    { key: "vendors", label: "Vendors", icon: Store },
     { key: "users", label: "Team", icon: Users },
   ];
   const accountsNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { key: "projects", label: "Projects", icon: Building2 },
     { key: "expenses", label: "Expenses", icon: Receipt, badge: pendingCount },
+    { key: "vendors", label: "Vendors", icon: Store },
   ];
   const supNav = [
     { key: "sup-home", label: "My Sites", icon: LayoutDashboard },
@@ -963,7 +966,7 @@ function SiteReportForm({ onSave }) {
   );
 }
 
-function ExpensesTab({ project, expenses, users, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete }) {
+function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete, onMarkPaid }) {
   const [showModal, setShowModal] = useState(false);
   const list = expenses.filter(e => e.projectId === project.id).sort((a, b) => new Date(b.date) - new Date(a.date));
   const userName = (id) => users.find(u => u.id === id)?.name || id;
@@ -995,24 +998,25 @@ function ExpensesTab({ project, expenses, users, currentUser, canApprove, canAdd
           </thead>
           <tbody>
             {list.map(e => (
-              <ExpenseRow key={e.id} e={e} userName={userName} canApprove={canApprove} currentUserId={currentUser.id} onApprove={onApprove} onReject={onReject} onDelete={onDelete} />
+              <ExpenseRow key={e.id} e={e} userName={userName} canApprove={canApprove} currentUserId={currentUser.id} onApprove={onApprove} onReject={onReject} onDelete={onDelete} onMarkPaid={onMarkPaid} />
             ))}
           </tbody>
         </table>
         {list.length === 0 && <p className="text-sm text-stone-400 py-6 text-center">No expenses recorded for this project yet.</p>}
       </div>
       {showModal && <Modal title="Add Expense" onClose={() => setShowModal(false)}>
-        <ExpenseForm onSave={(exp) => { onAdd(exp); setShowModal(false); }} />
+        <ExpenseForm vendors={vendors} onSave={(exp) => { onAdd(exp); setShowModal(false); }} />
       </Modal>}
     </div>
   );
 }
 
-function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onReject, onDelete }) {
+function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onReject, onDelete, onMarkPaid }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const isOwn = e.submittedBy === currentUserId;
+  const pending = e.totalInvoiceValue != null ? e.totalInvoiceValue - e.advancePaid : null;
   return (
     <tr className="border-b border-stone-50 hover:bg-stone-50/60 align-top">
       <td className="py-2.5 pr-3 whitespace-nowrap text-stone-600">
@@ -1024,10 +1028,25 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
         {e.description}
         {e.status === "Rejected" && e.rejectionReason && <div className="text-xs text-rose-600 mt-0.5">Reason: {e.rejectionReason}</div>}
       </td>
-      <td className="py-2.5 pr-3 text-stone-500">{e.vendor}</td>
+      <td className="py-2.5 pr-3 text-stone-500">
+        {e.vendor}
+        {(e.totalInvoiceValue != null || e.proofUrl) && (
+          <div className="text-[10px] text-stone-400 mt-0.5 space-y-0.5">
+            {e.totalInvoiceValue != null && <div>Invoice {fmtINR(e.totalInvoiceValue)} · Paid {fmtINR(e.advancePaid)} · Due <b className="text-stone-600">{fmtINR(pending)}</b></div>}
+            {e.proofUrl && <a href={e.proofUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 dia-text-bronze hover:underline"><Paperclip size={10} /> Attachment</a>}
+          </div>
+        )}
+      </td>
       <td className="py-2.5 pr-3 text-stone-500">{userName(e.submittedBy)}</td>
       <td className="py-2.5 pr-3 text-right font-mono font-semibold text-stone-800 whitespace-nowrap">{fmtINR(e.amount)}</td>
-      <td className="py-2.5 pr-3"><StatusPill status={e.status} /></td>
+      <td className="py-2.5 pr-3">
+        <StatusPill status={e.status} />
+        {e.status === "Approved" && (
+          e.paid
+            ? <div className="text-[10px] text-emerald-600 font-semibold mt-1">Paid{e.paidAt ? ` ${fmtDate(e.paidAt)}` : ""}</div>
+            : <div className="text-[10px] text-amber-600 font-semibold mt-1">Payment due</div>
+        )}
+      </td>
       {canApprove && (
         <td className="py-2.5 pr-3">
           {confirmingDelete ? (
@@ -1037,7 +1056,7 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
               <button onClick={() => setConfirmingDelete(false)} className="text-xs font-semibold text-stone-500 shrink-0">Cancel</button>
             </div>
           ) : (
-            <div className="flex gap-1.5 items-center">
+            <div className="flex gap-1.5 items-center flex-wrap">
               {e.status === "Pending" && isOwn && (
                 <span className="text-[11px] text-stone-400 italic mr-1">Submitted by you — needs another approver</span>
               )}
@@ -1053,6 +1072,12 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
                   <button onClick={() => { onReject(e.id, reason || "Not specified"); setRejecting(false); }} className="text-xs font-semibold text-rose-700 shrink-0">Confirm</button>
                 </div>
               )}
+              {e.status === "Approved" && onMarkPaid && (
+                <button onClick={() => onMarkPaid(e.id, !e.paid)}
+                  className={`text-[11px] font-semibold px-2 py-1 rounded-md ${e.paid ? "text-stone-500 border border-stone-200 hover:bg-stone-50" : "text-white bg-amber-600 hover:bg-amber-700"}`}>
+                  {e.paid ? "Mark unpaid" : "Mark paid"}
+                </button>
+              )}
               {onDelete && (
                 <button onClick={() => setConfirmingDelete(true)} title="Delete expense" className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50"><Trash2 size={14} /></button>
               )}
@@ -1064,13 +1089,30 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
   );
 }
 
-function ExpenseForm({ onSave, defaultProjectId, projects }) {
+function ExpenseForm({ onSave, defaultProjectId, projects, vendors }) {
   const [form, setForm] = useState({
     projectId: defaultProjectId || (projects && projects[0]?.id) || "",
     date: TODAY.toISOString().slice(0, 10), category: EXPENSE_CATEGORIES[0], description: "",
-    amount: "", paymentMethod: PAYMENT_METHODS[0], vendor: "", invoiceNo: "", notes: ""
+    amount: "", paymentMethod: PAYMENT_METHODS[0], vendorId: "", invoiceNo: "", notes: "",
+    totalInvoiceValue: "", advancePaid: "", proof: null,
   });
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+  const pending = (Number(form.totalInvoiceValue) || 0) - (Number(form.advancePaid) || 0);
+  const selectedVendor = (vendors || []).find(v => v.id === form.vendorId);
+  const canSubmit = form.description && form.amount && form.projectId && form.vendorId && form.proof;
+
+  const handleSave = () => {
+    const vendor = vendors.find(v => v.id === form.vendorId);
+    onSave({
+      ...form,
+      amount: Number(form.amount),
+      vendor: vendor?.name || "",
+      totalInvoiceValue: form.totalInvoiceValue === "" ? null : Number(form.totalInvoiceValue),
+      advancePaid: form.advancePaid === "" ? 0 : Number(form.advancePaid),
+      proofUrl: form.proof?.dataUrl || null,
+    });
+  };
+
   return (
     <div>
       {projects && (
@@ -1088,7 +1130,7 @@ function ExpenseForm({ onSave, defaultProjectId, projects }) {
           </select>
         </Field>
       </div>
-      <Field label="Description"><input className={inputCls} value={form.description} onChange={set("description")} placeholder="e.g. Marble slabs — flooring" /></Field>
+      <Field label="Reason for expense"><input className={inputCls} value={form.description} onChange={set("description")} placeholder="e.g. Marble slabs — flooring" /></Field>
       <div className="grid sm:grid-cols-2 gap-x-4">
         <Field label="Amount (₹)"><input type="number" className={inputCls} value={form.amount} onChange={set("amount")} /></Field>
         <Field label="Payment method">
@@ -1097,18 +1139,32 @@ function ExpenseForm({ onSave, defaultProjectId, projects }) {
           </select>
         </Field>
       </div>
-      <div className="grid sm:grid-cols-2 gap-x-4">
-        <Field label="Vendor / paid to"><input className={inputCls} value={form.vendor} onChange={set("vendor")} /></Field>
-        <Field label="Bill / invoice number"><input className={inputCls} value={form.invoiceNo} onChange={set("invoiceNo")} /></Field>
-      </div>
-      <Field label="Notes (optional)"><textarea className={inputCls} rows={2} value={form.notes} onChange={set("notes")} /></Field>
-      <Field label="Receipt upload">
-        <div className="border-2 border-dashed border-stone-300 rounded-lg py-4 text-center text-xs text-stone-400">
-          File upload requires backend storage — available in the production build.
-        </div>
+      <Field label="Vendor">
+        {(vendors || []).length > 0 ? (
+          <select className={inputCls} value={form.vendorId} onChange={set("vendorId")}>
+            <option value="">Select a vendor…</option>
+            {vendors.map(v => <option key={v.id} value={v.id}>{v.name}{v.material ? ` — ${v.material}` : ""}</option>)}
+          </select>
+        ) : (
+          <p className="text-xs text-stone-400 border border-dashed border-stone-300 rounded-lg py-2.5 px-3">No vendors added yet — ask an Admin or Accounts to add one under Vendors first.</p>
+        )}
+        {selectedVendor && !selectedVendor.bankAccountNumber && (
+          <p className="text-[11px] text-amber-600 mt-1">This vendor has no bank details on file yet — Accounts won't be able to pay them until that's added.</p>
+        )}
       </Field>
-      <button onClick={() => onSave({ ...form, amount: Number(form.amount) })} disabled={!form.description || !form.amount || !form.projectId}
+      <Field label="Bill / invoice number"><input className={inputCls} value={form.invoiceNo} onChange={set("invoiceNo")} /></Field>
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Total invoice value (₹)"><input type="number" className={inputCls} value={form.totalInvoiceValue} onChange={set("totalInvoiceValue")} placeholder="Full vendor bill amount" /></Field>
+        <Field label="Advance already paid (₹)"><input type="number" className={inputCls} value={form.advancePaid} onChange={set("advancePaid")} /></Field>
+      </div>
+      {form.totalInvoiceValue !== "" && (
+        <p className="text-xs text-stone-500 -mt-2 mb-3">Pending balance to vendor: <b className="text-stone-700 font-mono">{fmtINR(pending)}</b></p>
+      )}
+      <Field label="Notes (optional)"><textarea className={inputCls} rows={2} value={form.notes} onChange={set("notes")} /></Field>
+      <ProofAttachment proof={form.proof} onChange={(p) => setForm(f => ({ ...f, proof: p }))} required pathPrefix="expenses" />
+      <button onClick={handleSave} disabled={!canSubmit}
         className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">Submit expense</button>
+      {!canSubmit && <p className="text-[11px] text-stone-400 mt-2 text-center">Vendor and a receipt/invoice attachment are required to submit.</p>}
     </div>
   );
 }
@@ -1456,13 +1512,14 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
         onAddDrawing={(phaseId, name) => actions.addDrawingItem(phaseId, name)}
         onRemoveDrawing={(phaseId, drawingId) => actions.removeDrawingItem(phaseId, drawingId)} />}
       {tab === "timeline" && <TimelineTab project={project} tasks={data.tasks} onUpdateTask={actions.updateTask} canEdit={canEditTimeline} />}
-      {tab === "reports" && <ReportsTab project={project} reports={projectReports} users={data.users} canAdd={isAssignedSupervisor} onAdd={(rep) => actions.addSiteReport(project.id, currentUser.id, rep)} />}
-      {tab === "expenses" && <ExpensesTab project={project} expenses={data.expenses} users={data.users} currentUser={currentUser}
-        canApprove={isFinance} canAdd={isFinance || isAssignedSupervisor}
+      {tab === "reports" && <ReportsTab project={project} reports={projectReports} users={data.users} canAdd={isAssignedSupervisor || isAssignedArchitect} onAdd={(rep) => actions.addSiteReport(project.id, currentUser.id, rep)} />}
+      {tab === "expenses" && <ExpensesTab project={project} expenses={data.expenses} users={data.users} vendors={data.vendors} currentUser={currentUser}
+        canApprove={isFinance} canAdd={isFinance || isAssignedSupervisor || isAssignedArchitect}
         onAdd={(exp) => actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id })}
         onApprove={(id) => actions.approveExpense(id, currentUser.id)} onReject={(id, reason) => actions.rejectExpense(id, currentUser.id, reason)}
-        onDelete={(id) => actions.deleteExpense(id)} />}
-      {tab === "photos" && <PhotosTab project={project} reports={projectReports} canAdd={isAssignedSupervisor} onAddPhoto={(photo) => actions.addPhoto(project.id, photo)} />}
+        onDelete={(id) => actions.deleteExpense(id)}
+        onMarkPaid={(id, paid) => actions.markExpensePaid(id, currentUser.id, paid)} />}
+      {tab === "photos" && <PhotosTab project={project} reports={projectReports} canAdd={isAssignedSupervisor || isAssignedArchitect} onAddPhoto={(photo) => actions.addPhoto(project.id, photo)} />}
     </div>
   );
 }
@@ -1472,13 +1529,15 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
 /* ---------------------------------------------------------------------- */
 
 function ExpensesGlobal({ data, currentUser, actions }) {
-  const { expenses, projects, users } = data;
+  const { expenses, projects, users, vendors } = data;
   const [projectFilter, setProjectFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
   const [categoryFilter, setCategoryFilter] = useState("All");
+  const [showPaymentsDue, setShowPaymentsDue] = useState(true);
 
   const projectName = (id) => projects.find(p => p.id === id)?.name || id;
   const userName = (id) => users.find(u => u.id === id)?.name || id;
+  const vendorById = (id) => vendors.find(v => v.id === id);
 
   const filtered = expenses.filter(e => {
     if (projectFilter !== "All" && e.projectId !== projectFilter) return false;
@@ -1488,9 +1547,58 @@ function ExpensesGlobal({ data, currentUser, actions }) {
   }).sort((a, b) => new Date(b.date) - new Date(a.date));
 
   const total = filtered.reduce((s, e) => s + e.amount, 0);
+  const paymentsDue = expenses.filter(e => e.status === "Approved" && !e.paid)
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  const totalDue = paymentsDue.reduce((s, e) => s + (e.totalInvoiceValue != null ? e.totalInvoiceValue - e.advancePaid : e.amount), 0);
 
   return (
     <div className="p-6 sm:p-8 space-y-5">
+      {paymentsDue.length > 0 && (
+        <Card className="border-amber-200 bg-amber-50/50 overflow-hidden">
+          <button onClick={() => setShowPaymentsDue(s => !s)} className="w-full flex items-center justify-between p-4">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center shrink-0"><Landmark size={16} /></div>
+              <div className="text-left">
+                <div className="text-sm font-semibold text-stone-800">{paymentsDue.length} vendor payment{paymentsDue.length !== 1 ? "s" : ""} due</div>
+                <div className="text-xs text-stone-500">Approved expenses waiting to be paid out</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="font-mono font-semibold text-amber-700">{fmtINR(totalDue)}</span>
+              <ChevronRight size={16} className={`text-stone-400 transition-transform ${showPaymentsDue ? "rotate-90" : ""}`} />
+            </div>
+          </button>
+          {showPaymentsDue && (
+            <div className="border-t border-amber-200 divide-y divide-amber-100">
+              {paymentsDue.map(e => {
+                const v = vendorById(e.vendorId);
+                const due = e.totalInvoiceValue != null ? e.totalInvoiceValue - e.advancePaid : e.amount;
+                return (
+                  <div key={e.id} className="p-4 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-stone-800">{e.vendor || "No vendor on record"} <span className="text-xs font-normal text-stone-400">· {projectName(e.projectId)}</span></div>
+                      <div className="text-xs text-stone-500 mt-0.5">{e.description}</div>
+                      {v ? (
+                        <div className="text-[11px] text-stone-500 mt-1 font-mono">
+                          {v.bankAccountNumber ? <>A/C {v.bankAccountNumber} · IFSC {v.bankIfsc || "—"} · {v.bankName || ""}</> : <span className="text-rose-500">No bank details on file — add under Vendors</span>}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-rose-500 mt-1">No vendor linked to this expense</div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="font-mono font-semibold text-stone-800">{fmtINR(due)}</span>
+                      <button onClick={() => actions.markExpensePaid(e.id, currentUser.id, true)}
+                        className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-lg shrink-0">Mark paid</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      )}
+
       <div className="flex flex-wrap gap-3 items-center">
         <select className={inputCls + " w-auto"} value={projectFilter} onChange={e => setProjectFilter(e.target.value)}>
           <option value="All">All projects</option>
@@ -1503,7 +1611,7 @@ function ExpensesGlobal({ data, currentUser, actions }) {
           <option value="All">All categories</option>
           {EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
         </select>
-        <button onClick={() => exportToExcel(filtered.map(e => ({ Date: e.date, TimeFiled: fmtTime(e.submittedAt), Project: projectName(e.projectId), Category: e.category, Description: e.description, Amount: e.amount, Vendor: e.vendor, Invoice: e.invoiceNo, Status: e.status, SubmittedBy: userName(e.submittedBy) })), "expense_report.xlsx", "Expenses")}
+        <button onClick={() => exportToExcel(filtered.map(e => ({ Date: e.date, TimeFiled: fmtTime(e.submittedAt), Project: projectName(e.projectId), Category: e.category, Description: e.description, Amount: e.amount, Vendor: e.vendor, Invoice: e.invoiceNo, TotalInvoiceValue: e.totalInvoiceValue, AdvancePaid: e.advancePaid, Status: e.status, Paid: e.paid ? "Yes" : "No", SubmittedBy: userName(e.submittedBy) })), "expense_report.xlsx", "Expenses")}
           className="flex items-center gap-2 border border-stone-300 hover:border-stone-400 text-stone-700 font-semibold text-sm px-4 py-2 rounded-lg ml-auto">
           <FileSpreadsheet size={15} /> Export Excel
         </button>
@@ -1522,6 +1630,7 @@ function ExpensesGlobal({ data, currentUser, actions }) {
               <th className="py-2.5 px-4 font-semibold">Project</th>
               <th className="py-2.5 px-4 font-semibold">Category</th>
               <th className="py-2.5 px-4 font-semibold">Description</th>
+              <th className="py-2.5 px-4 font-semibold">Vendor</th>
               <th className="py-2.5 px-4 font-semibold">Submitted by</th>
               <th className="py-2.5 px-4 font-semibold text-right">Amount</th>
               <th className="py-2.5 px-4 font-semibold">Status</th>
@@ -1533,7 +1642,8 @@ function ExpensesGlobal({ data, currentUser, actions }) {
               <GlobalExpenseRow key={e.id} e={e} projectName={projectName} userName={userName} currentUserId={currentUser.id}
                 onApprove={() => actions.approveExpense(e.id, currentUser.id)}
                 onReject={(reason) => actions.rejectExpense(e.id, currentUser.id, reason)}
-                onDelete={() => actions.deleteExpense(e.id)} />
+                onDelete={() => actions.deleteExpense(e.id)}
+                onMarkPaid={(paid) => actions.markExpensePaid(e.id, currentUser.id, paid)} />
             ))}
           </tbody>
         </table>
@@ -1543,7 +1653,7 @@ function ExpensesGlobal({ data, currentUser, actions }) {
   );
 }
 
-function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, onReject, onDelete }) {
+function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, onReject, onDelete, onMarkPaid }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -1560,9 +1670,25 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
         {e.description}
         {e.status === "Rejected" && e.rejectionReason && <div className="text-xs text-rose-600 mt-0.5">Reason: {e.rejectionReason}</div>}
       </td>
+      <td className="py-2.5 px-4 text-stone-500 max-w-[180px]">
+        {e.vendor}
+        {(e.totalInvoiceValue != null || e.proofUrl) && (
+          <div className="text-[10px] text-stone-400 mt-0.5 space-y-0.5">
+            {e.totalInvoiceValue != null && <div>Invoice {fmtINR(e.totalInvoiceValue)} · Due <b className="text-stone-600">{fmtINR(e.totalInvoiceValue - e.advancePaid)}</b></div>}
+            {e.proofUrl && <a href={e.proofUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 dia-text-bronze hover:underline"><Paperclip size={10} /> Attachment</a>}
+          </div>
+        )}
+      </td>
       <td className="py-2.5 px-4 text-stone-500">{userName(e.submittedBy)}</td>
       <td className="py-2.5 px-4 text-right font-mono font-semibold text-stone-800 whitespace-nowrap">{fmtINR(e.amount)}</td>
-      <td className="py-2.5 px-4"><StatusPill status={e.status} /></td>
+      <td className="py-2.5 px-4">
+        <StatusPill status={e.status} />
+        {e.status === "Approved" && (
+          e.paid
+            ? <div className="text-[10px] text-emerald-600 font-semibold mt-1">Paid{e.paidAt ? ` ${fmtDate(e.paidAt)}` : ""}</div>
+            : <div className="text-[10px] text-amber-600 font-semibold mt-1">Payment due</div>
+        )}
+      </td>
       <td className="py-2.5 px-4">
         {confirmingDelete ? (
           <div className="flex gap-1.5 items-center min-w-[170px]">
@@ -1571,7 +1697,7 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
             <button onClick={() => setConfirmingDelete(false)} className="text-xs font-semibold text-stone-500 shrink-0">Cancel</button>
           </div>
         ) : (
-          <div className="flex gap-1.5 items-center">
+          <div className="flex gap-1.5 items-center flex-wrap">
             {e.status === "Pending" && isOwn && (
               <span className="text-[11px] text-stone-400 italic mr-1">Submitted by you — needs another approver</span>
             )}
@@ -1590,6 +1716,12 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
                 <button onClick={() => { setRejecting(false); setReason(""); }} className="text-xs font-semibold text-stone-400 shrink-0">Cancel</button>
               </div>
             )}
+            {e.status === "Approved" && onMarkPaid && (
+              <button onClick={() => onMarkPaid(!e.paid)}
+                className={`text-[11px] font-semibold px-2 py-1 rounded-md ${e.paid ? "text-stone-500 border border-stone-200 hover:bg-stone-50" : "text-white bg-amber-600 hover:bg-amber-700"}`}>
+                {e.paid ? "Mark unpaid" : "Mark paid"}
+              </button>
+            )}
             {onDelete && (
               <button onClick={() => setConfirmingDelete(true)} title="Delete expense" className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50"><Trash2 size={14} /></button>
             )}
@@ -1603,6 +1735,121 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
 /* ---------------------------------------------------------------------- */
 /* Team (Admin only)                                                        */
 /* ---------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------- */
+/* Vendors (Admin/Accounts only)                                           */
+/* ---------------------------------------------------------------------- */
+
+function VendorsView({ data, actions }) {
+  const [showForm, setShowForm] = useState(false);
+  const [editingVendor, setEditingVendor] = useState(null);
+  const vendors = [...data.vendors].sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <div className="p-6 sm:p-8 space-y-5">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-stone-500">{vendors.length} vendor{vendors.length !== 1 ? "s" : ""} on file</p>
+        <button onClick={() => setShowForm(true)} className="flex items-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg">
+          <Plus size={16} /> Add Vendor
+        </button>
+      </div>
+
+      {vendors.length === 0 && (
+        <Card className="p-10 text-center">
+          <Store size={26} className="mx-auto text-stone-300 mb-2" />
+          <p className="text-sm text-stone-400">No vendors added yet. Add one so expenses can be linked to their bank details for payment.</p>
+        </Card>
+      )}
+
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {vendors.map(v => (
+          <Card key={v.id} className="p-4">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="font-display text-base font-semibold text-stone-900 truncate">{v.name}</h3>
+                {v.material && <p className="text-xs dia-text-bronze font-medium mt-0.5">{v.material}</p>}
+              </div>
+              <button onClick={() => setEditingVendor(v)} className="text-stone-400 hover:dia-text-bronze shrink-0"><Pencil size={14} /></button>
+            </div>
+            <div className="mt-3 pt-3 border-t border-stone-100 space-y-1.5 text-xs text-stone-500">
+              {v.gstNumber && <div><span className="text-stone-400">GST:</span> {v.gstNumber}</div>}
+              {v.address && <div className="flex items-start gap-1"><MapPin size={11} className="mt-0.5 shrink-0" /> {v.address}</div>}
+              {v.bankAccountNumber ? (
+                <div className="font-mono text-[11px] text-stone-500 pt-1">
+                  {v.bankAccountName && <div>{v.bankAccountName}</div>}
+                  <div>A/C {v.bankAccountNumber}</div>
+                  <div>{v.bankIfsc || "—"} · {v.bankName || ""}</div>
+                </div>
+              ) : (
+                <div className="text-amber-600 pt-1">No bank details on file</div>
+              )}
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      {showForm && (
+        <Modal title="Add Vendor" onClose={() => setShowForm(false)}>
+          <VendorForm onSave={(v) => { actions.addVendor(v); setShowForm(false); }} />
+        </Modal>
+      )}
+      {editingVendor && (
+        <Modal title="Edit Vendor" onClose={() => setEditingVendor(null)}>
+          <VendorForm vendor={editingVendor}
+            onSave={(v) => { actions.updateVendor(editingVendor.id, v); setEditingVendor(null); }}
+            onDelete={() => { actions.deleteVendor(editingVendor.id); setEditingVendor(null); }} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function VendorForm({ vendor, onSave, onDelete }) {
+  const [form, setForm] = useState({
+    name: vendor?.name || "", material: vendor?.material || "", gstNumber: vendor?.gstNumber || "",
+    address: vendor?.address || "", bankAccountName: vendor?.bankAccountName || "",
+    bankAccountNumber: vendor?.bankAccountNumber || "", bankIfsc: vendor?.bankIfsc || "", bankName: vendor?.bankName || "",
+  });
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  return (
+    <div>
+      <Field label="Vendor / supplier name"><input className={inputCls} value={form.name} onChange={set("name")} /></Field>
+      <Field label="Material / service supplied"><input className={inputCls} value={form.material} onChange={set("material")} placeholder="e.g. Marble & stone" /></Field>
+      <Field label="GST number"><input className={inputCls} value={form.gstNumber} onChange={set("gstNumber")} /></Field>
+      <Field label="Address"><textarea className={inputCls} rows={2} value={form.address} onChange={set("address")} /></Field>
+      <div className="pt-1 pb-2 text-xs font-semibold text-stone-500 uppercase tracking-wide">Bank details</div>
+      <Field label="Account holder name"><input className={inputCls} value={form.bankAccountName} onChange={set("bankAccountName")} /></Field>
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Account number"><input className={inputCls} value={form.bankAccountNumber} onChange={set("bankAccountNumber")} /></Field>
+        <Field label="IFSC code"><input className={inputCls} value={form.bankIfsc} onChange={set("bankIfsc")} /></Field>
+      </div>
+      <Field label="Bank name"><input className={inputCls} value={form.bankName} onChange={set("bankName")} /></Field>
+      <button onClick={() => onSave(form)} disabled={!form.name.trim()}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">Save vendor</button>
+
+      {onDelete && (
+        <div className="mt-4 pt-4 border-t border-stone-100">
+          {!confirmingDelete ? (
+            <button onClick={() => setConfirmingDelete(true)}
+              className="w-full text-xs font-semibold text-rose-600 hover:text-rose-700 py-2 rounded-lg border border-rose-200 hover:bg-rose-50 transition-colors">
+              Delete vendor
+            </button>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-stone-600">This removes <b>{form.name}</b> from the vendor list. Expenses already linked to them keep their record but won't show live bank details anymore.</p>
+              <div className="flex gap-2">
+                <button onClick={onDelete} className="flex-1 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 py-2 rounded-lg">Yes, delete</button>
+                <button onClick={() => setConfirmingDelete(false)} className="flex-1 text-xs font-semibold text-stone-600 border border-stone-200 py-2 rounded-lg">Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TeamView({ data, currentUser, actions }) {
   const { users, projects } = data;
@@ -1868,7 +2115,7 @@ function SupervisorHome({ data, currentUser, actions }) {
         <SiteReportForm onSave={(rep) => { actions.addSiteReport(project.id, currentUser.id, rep); setModal(null); }} />
       </Modal>}
       {modal === "expense" && <Modal title="Add Expense" onClose={() => setModal(null)}>
-        <ExpenseForm defaultProjectId={project.id} onSave={(exp) => { actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id }); setModal(null); }} />
+        <ExpenseForm defaultProjectId={project.id} vendors={data.vendors} onSave={(exp) => { actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id }); setModal(null); }} />
       </Modal>}
       {modal === "photo" && <Modal title="Upload Site Photo" onClose={() => setModal(null)}>
         <PhotoForm onSave={(p) => { actions.addPhoto(project.id, p); setModal(null); }} />
@@ -2081,6 +2328,10 @@ export default function App() {
     approveExpense: (id, approverId) => dbApproveExpense(id, approverId).then(reload),
     rejectExpense: (id, approverId, reason) => dbRejectExpense(id, approverId, reason).then(reload),
     deleteExpense: (id) => dbDeleteExpense(id).then(reload),
+    markExpensePaid: (id, userId, paid) => dbMarkExpensePaid(id, userId, paid).then(reload),
+    addVendor: (v) => dbAddVendor(v).then(reload),
+    updateVendor: (id, v) => dbUpdateVendor(id, v).then(reload),
+    deleteVendor: (id) => dbDeleteVendor(id).then(reload),
     addPhoto: (projectId, photo) => dbAddPhoto(projectId, photo).then(reload),
     addIssue: (projectId, supervisorId, issue) => dbAddIssue(projectId, supervisorId, issue).then(reload),
   }), [reload, data, profile]);
@@ -2125,6 +2376,7 @@ export default function App() {
     dashboard: ["Company Dashboard", "Real-time visibility across every project"],
     projects: ["Projects", "All active and completed projects"],
     expenses: ["Expenses", "Review, filter and approve project expenses"],
+    vendors: ["Vendors", "Vendor directory, materials and bank details for payment"],
     users: ["Team", "Admins, accounts, architects and site supervisors"],
     "sup-home": [data.projects.find(p => p.id === view.projectId)?.name || "My Sites", "Site reporting"],
     "arch-home": [data.projects.find(p => p.id === view.projectId)?.name || "My Design Work", "Design phase reporting"],
@@ -2149,6 +2401,7 @@ export default function App() {
         {view.tab === "projects" && (isStaffOnly ? <ProjectsList data={data} setView={setView} actions={actions} currentUser={currentUser} /> : <AccessDenied />)}
         {view.tab === "project" && <ProjectDetail data={data} projectId={view.projectId} sub={view.sub} setView={setView} currentUser={currentUser} actions={actions} />}
         {view.tab === "expenses" && (isStaffOnly ? <ExpensesGlobal data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
+        {view.tab === "vendors" && (isStaffOnly ? <VendorsView data={data} actions={actions} /> : <AccessDenied />)}
         {view.tab === "users" && (isAdmin ? <TeamView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "sup-home" && <SupervisorHome data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "arch-home" && <ArchitectHome data={data} currentUser={currentUser} setView={setView} />}
