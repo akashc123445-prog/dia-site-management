@@ -8,7 +8,7 @@ import {
   Camera, ClipboardList, AlertTriangle, Calendar, MapPin, ChevronRight,
   ChevronLeft, Download, Search, ArrowLeft, Image as ImageIcon, IndianRupee,
   TrendingUp, Clock, CheckCircle2, XCircle, Filter, FileSpreadsheet, Eye, EyeOff, Pencil,
-  PenTool, ListChecks, Paperclip, FileText, AlertCircle
+  PenTool, ListChecks, Paperclip, FileText, AlertCircle, Trash2
 } from "lucide-react";
 
 import { supabase } from "./lib/supabaseClient";
@@ -26,7 +26,7 @@ import {
 import {
   fetchAllData, dbUpdateProfile, dbRemoveUser, dbAddProject, dbUpdateProject, dbUpdateTask,
   dbUpdateDesignPhase, dbUpdateDrawing, dbAddDrawing, dbRemoveDrawing,
-  dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbAddIssue,
+  dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbAddIssue,
   uploadProofFile, uploadSitePhoto,
 } from "./lib/dataStore";
 
@@ -963,7 +963,7 @@ function SiteReportForm({ onSave }) {
   );
 }
 
-function ExpensesTab({ project, expenses, users, currentUser, canApprove, canAdd, onAdd, onApprove, onReject }) {
+function ExpensesTab({ project, expenses, users, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete }) {
   const [showModal, setShowModal] = useState(false);
   const list = expenses.filter(e => e.projectId === project.id).sort((a, b) => new Date(b.date) - new Date(a.date));
   const userName = (id) => users.find(u => u.id === id)?.name || id;
@@ -995,7 +995,7 @@ function ExpensesTab({ project, expenses, users, currentUser, canApprove, canAdd
           </thead>
           <tbody>
             {list.map(e => (
-              <ExpenseRow key={e.id} e={e} userName={userName} canApprove={canApprove} currentUserId={currentUser.id} onApprove={onApprove} onReject={onReject} />
+              <ExpenseRow key={e.id} e={e} userName={userName} canApprove={canApprove} currentUserId={currentUser.id} onApprove={onApprove} onReject={onReject} onDelete={onDelete} />
             ))}
           </tbody>
         </table>
@@ -1008,9 +1008,10 @@ function ExpensesTab({ project, expenses, users, currentUser, canApprove, canAdd
   );
 }
 
-function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onReject }) {
+function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onReject, onDelete }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const isOwn = e.submittedBy === currentUserId;
   return (
     <tr className="border-b border-stone-50 hover:bg-stone-50/60 align-top">
@@ -1029,19 +1030,32 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
       <td className="py-2.5 pr-3"><StatusPill status={e.status} /></td>
       {canApprove && (
         <td className="py-2.5 pr-3">
-          {e.status === "Pending" && isOwn && (
-            <span className="text-[11px] text-stone-400 italic">Submitted by you — needs another approver</span>
-          )}
-          {e.status === "Pending" && !isOwn && !rejecting && (
-            <div className="flex gap-1.5">
-              <button onClick={() => onApprove(e.id)} className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100"><Check size={14} /></button>
-              <button onClick={() => setRejecting(true)} className="p-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"><XCircle size={14} /></button>
+          {confirmingDelete ? (
+            <div className="flex gap-1.5 items-center min-w-[170px]">
+              <span className="text-[11px] text-stone-500">Delete this expense?</span>
+              <button onClick={() => onDelete(e.id)} className="text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 px-2 py-1 rounded-md shrink-0">Delete</button>
+              <button onClick={() => setConfirmingDelete(false)} className="text-xs font-semibold text-stone-500 shrink-0">Cancel</button>
             </div>
-          )}
-          {e.status === "Pending" && !isOwn && rejecting && (
-            <div className="flex gap-1.5 items-center min-w-[180px]">
-              <input value={reason} onChange={e2 => setReason(e2.target.value)} placeholder="Reason…" className="text-xs border border-stone-300 rounded-md px-2 py-1 w-full" />
-              <button onClick={() => { onReject(e.id, reason || "Not specified"); setRejecting(false); }} className="text-xs font-semibold text-rose-700 shrink-0">Confirm</button>
+          ) : (
+            <div className="flex gap-1.5 items-center">
+              {e.status === "Pending" && isOwn && (
+                <span className="text-[11px] text-stone-400 italic mr-1">Submitted by you — needs another approver</span>
+              )}
+              {e.status === "Pending" && !isOwn && !rejecting && (
+                <>
+                  <button onClick={() => onApprove(e.id)} className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100"><Check size={14} /></button>
+                  <button onClick={() => setRejecting(true)} className="p-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"><XCircle size={14} /></button>
+                </>
+              )}
+              {e.status === "Pending" && !isOwn && rejecting && (
+                <div className="flex gap-1.5 items-center min-w-[180px]">
+                  <input value={reason} onChange={e2 => setReason(e2.target.value)} placeholder="Reason…" className="text-xs border border-stone-300 rounded-md px-2 py-1 w-full" />
+                  <button onClick={() => { onReject(e.id, reason || "Not specified"); setRejecting(false); }} className="text-xs font-semibold text-rose-700 shrink-0">Confirm</button>
+                </div>
+              )}
+              {onDelete && (
+                <button onClick={() => setConfirmingDelete(true)} title="Delete expense" className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50"><Trash2 size={14} /></button>
+              )}
             </div>
           )}
         </td>
@@ -1446,7 +1460,8 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
       {tab === "expenses" && <ExpensesTab project={project} expenses={data.expenses} users={data.users} currentUser={currentUser}
         canApprove={isFinance} canAdd={isFinance || isAssignedSupervisor}
         onAdd={(exp) => actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id })}
-        onApprove={(id) => actions.approveExpense(id, currentUser.id)} onReject={(id, reason) => actions.rejectExpense(id, currentUser.id, reason)} />}
+        onApprove={(id) => actions.approveExpense(id, currentUser.id)} onReject={(id, reason) => actions.rejectExpense(id, currentUser.id, reason)}
+        onDelete={(id) => actions.deleteExpense(id)} />}
       {tab === "photos" && <PhotosTab project={project} reports={projectReports} canAdd={isAssignedSupervisor} onAddPhoto={(photo) => actions.addPhoto(project.id, photo)} />}
     </div>
   );
@@ -2051,6 +2066,7 @@ export default function App() {
     addExpense: (exp) => dbAddExpense(exp).then(reload),
     approveExpense: (id, approverId) => dbApproveExpense(id, approverId).then(reload),
     rejectExpense: (id, approverId, reason) => dbRejectExpense(id, approverId, reason).then(reload),
+    deleteExpense: (id) => dbDeleteExpense(id).then(reload),
     addPhoto: (projectId, photo) => dbAddPhoto(projectId, photo).then(reload),
     addIssue: (projectId, supervisorId, issue) => dbAddIssue(projectId, supervisorId, issue).then(reload),
   }), [reload, data, profile]);
