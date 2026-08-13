@@ -14,7 +14,7 @@ import {
 import { supabase } from "./lib/supabaseClient";
 import {
   PHASE_TEMPLATE, EXPENSE_CATEGORIES, PAYMENT_METHODS, PROJECT_STATUSES, PROJECT_TYPES,
-  ARCHITECT_RANKS, DESIGN_PHASES, DRAWING_STATUSES,
+  ARCHITECT_RANKS, DESIGN_PHASES, CONTRACT_TYPES, DRAWING_STATUSES,
   TODAY, DIA, FONT_STYLE, LOGO_MARK, LOGO_FULL,
 } from "./lib/constants";
 import {
@@ -505,7 +505,8 @@ function ProjectsList({ data, setView, actions, currentUser }) {
       <div className="grid md:grid-cols-2 gap-4">
         {filtered.map(p => {
           const health = computeHealth(p, tasks, expenses);
-          const progress = computeProjectProgress(tasks, p.id, siteReports);
+          const isDesigningCard = p.contractType === "Designing";
+          const progress = isDesigningCard ? computeDesignProgress(data.designPhases, p.id) : computeProjectProgress(tasks, p.id, siteReports);
           const spend = computeProjectSpend(expenses, p.id);
           return (
             <button key={p.id} onClick={() => setView({ tab: "project", projectId: p.id, sub: "overview" })}
@@ -513,7 +514,10 @@ function ProjectsList({ data, setView, actions, currentUser }) {
               <Card className="p-5 h-full hover:dia-border-gold-soft hover:shadow-md transition-all">
                 <div className="flex items-start justify-between gap-3 mb-2">
                   <div>
-                    <div className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">{p.type}</div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">{p.type}</span>
+                      <span className={`text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${isDesigningCard ? "bg-sky-50 text-sky-700" : "bg-stone-100 text-stone-600"}`}>{p.contractType}</span>
+                    </div>
                     <h3 className="font-display text-base font-semibold text-stone-900 mt-0.5">{p.name}</h3>
                   </div>
                   <HealthBadge health={health} />
@@ -522,7 +526,7 @@ function ProjectsList({ data, setView, actions, currentUser }) {
                   <div className="flex items-center gap-1.5"><MapPin size={11} /> {p.location}</div>
                   <div className="flex items-center gap-1.5"><Calendar size={11} /> {fmtDate(p.startDate)} → {fmtDate(p.plannedEnd)}</div>
                 </div>
-                <div className="flex items-center justify-between text-xs mb-1"><span className="text-stone-500">Progress</span><span className="font-semibold text-stone-700">{progress}%</span></div>
+                <div className="flex items-center justify-between text-xs mb-1"><span className="text-stone-500">{isDesigningCard ? "Design progress" : "Progress"}</span><span className="font-semibold text-stone-700">{progress}%</span></div>
                 <ProgressBar pct={progress} />
                 <div className="flex items-center justify-between mt-3 pt-3 border-t border-stone-100">
                   <StatusPill status={p.status} />
@@ -1215,7 +1219,7 @@ function ProjectForm({ onSave, users, currentUser }) {
   const architectOptions = users.filter(u => u.role === "Architect" && u.active !== false && !u.removed)
     .sort((a, b) => ARCHITECT_RANKS.indexOf(a.rank) - ARCHITECT_RANKS.indexOf(b.rank));
   const [form, setForm] = useState({
-    name: "", client: "", location: "", type: PROJECT_TYPES[0], area: "",
+    name: "", client: "", location: "", type: PROJECT_TYPES[0], contractType: CONTRACT_TYPES[0], area: "",
     startDate: TODAY.toISOString().slice(0, 10), plannedEnd: "",
     pm: currentUser?.name || "", supervisors: [], architects: [],
     contractValue: "", estimatedCost: "", status: "Not Started",
@@ -1236,12 +1240,25 @@ function ProjectForm({ onSave, users, currentUser }) {
       <Field label="Project name"><input className={inputCls} value={form.name} onChange={set("name")} placeholder="e.g. Oprea Diamonds — Hyderabad Flagship" /></Field>
       <div className="grid sm:grid-cols-2 gap-x-4">
         <Field label="Client"><input className={inputCls} value={form.client} onChange={set("client")} /></Field>
-        <Field label="Project type">
+        <Field label="Category">
           <select className={inputCls} value={form.type} onChange={set("type")}>
             {PROJECT_TYPES.map(t => <option key={t}>{t}</option>)}
           </select>
         </Field>
       </div>
+      <Field label="Contract type">
+        <div className="flex gap-2">
+          {CONTRACT_TYPES.map(ct => (
+            <button key={ct} type="button" onClick={() => setForm(f => ({ ...f, contractType: ct }))}
+              className={`flex-1 px-3 py-2.5 rounded-lg text-sm font-semibold border transition-colors ${form.contractType === ct ? "bg-stone-900 text-white border-stone-900" : "bg-white text-stone-600 border-stone-200 hover:border-stone-400"}`}>
+              {ct}
+            </button>
+          ))}
+        </div>
+        <p className="text-[11px] text-stone-400 mt-1">
+          {form.contractType === "Designing" ? "Design-only: no construction site work — the timeline runs through site discussion → schematic → renders → walkthrough → presentation → handover." : "Turnkey: full design + construction, including site reporting and a construction timeline."}
+        </p>
+      </Field>
       <Field label="Location"><input className={inputCls} value={form.location} onChange={set("location")} placeholder="e.g. Banjara Hills, Hyderabad, Telangana" /></Field>
       <div className="grid sm:grid-cols-2 gap-x-4">
         <Field label="Start date"><input type="date" className={inputCls} value={form.startDate} onChange={set("startDate")} /></Field>
@@ -1423,13 +1440,15 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
   const progress = computeProjectProgress(data.tasks, project.id, data.siteReports);
   const designProgress = computeDesignProgress(data.designPhases, project.id);
 
+  const isDesigning = project.contractType === "Designing";
+
   const tabs = [
     { key: "overview", label: "Overview" },
     { key: "design", label: "Design" },
-    { key: "timeline", label: "Timeline" },
-    { key: "reports", label: "Site Reports" },
+    ...(isDesigning ? [] : [{ key: "timeline", label: "Timeline" }]),
+    ...(isDesigning ? [] : [{ key: "reports", label: "Site Reports" }]),
     { key: "expenses", label: "Expenses" },
-    { key: "photos", label: "Photos" },
+    ...(isDesigning ? [] : [{ key: "photos", label: "Photos" }]),
   ];
 
   return (
@@ -1441,7 +1460,10 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
       <Card className="p-5 mb-5">
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
           <div>
-            <div className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">{project.type}</div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">{project.type}</span>
+              <span className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${isDesigning ? "bg-sky-50 text-sky-700" : "bg-stone-100 text-stone-600"}`}>{project.contractType}</span>
+            </div>
             <h2 className="font-display text-2xl font-semibold text-stone-900 mt-0.5">{project.name}</h2>
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-stone-500 mt-2">
               <span className="flex items-center gap-1.5"><MapPin size={13} /> {project.location}</span>
@@ -1455,15 +1477,17 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
             <HealthBadge health={health} />
           </div>
         </div>
-        <div className="grid sm:grid-cols-2 gap-x-6 gap-y-3 mt-4">
+        <div className={`grid ${isDesigning ? "" : "sm:grid-cols-2"} gap-x-6 gap-y-3 mt-4`}>
           <div>
             <div className="flex items-center justify-between text-xs mb-1"><span className="text-stone-500">Design progress</span><span className="font-semibold text-stone-700">{designProgress}%</span></div>
             <ProgressBar pct={designProgress} colorClass="bg-sky-500" />
           </div>
-          <div>
-            <div className="flex items-center justify-between text-xs mb-1"><span className="text-stone-500">Construction progress</span><span className="font-semibold text-stone-700">{progress}%</span></div>
-            <ProgressBar pct={progress} />
-          </div>
+          {!isDesigning && (
+            <div>
+              <div className="flex items-center justify-between text-xs mb-1"><span className="text-stone-500">Construction progress</span><span className="font-semibold text-stone-700">{progress}%</span></div>
+              <ProgressBar pct={progress} />
+            </div>
+          )}
         </div>
         <div className="mt-4 pt-4 border-t border-stone-100 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
           <div className="text-xs text-stone-500 space-y-1">
