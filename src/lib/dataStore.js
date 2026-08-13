@@ -155,6 +155,25 @@ export async function dbAddProject(proj, users) {
   return projectId;
 }
 
+export async function dbUpdateProject(projectId, updates) {
+  const payload = {};
+  if (updates.name !== undefined) payload.name = updates.name;
+  if (updates.client !== undefined) payload.client = updates.client;
+  if (updates.location !== undefined) payload.location = updates.location;
+  if (updates.type !== undefined) payload.type = updates.type;
+  if (updates.area !== undefined) payload.area = updates.area;
+  if (updates.startDate !== undefined) payload.start_date = updates.startDate;
+  if (updates.plannedEnd !== undefined) payload.planned_end = updates.plannedEnd;
+  if (updates.pm !== undefined) payload.pm = updates.pm;
+  if (updates.supervisors !== undefined) payload.supervisors = updates.supervisors;
+  if (updates.architects !== undefined) payload.architects = updates.architects;
+  if (updates.contractValue !== undefined) payload.contract_value = updates.contractValue;
+  if (updates.estimatedCost !== undefined) payload.estimated_cost = updates.estimatedCost;
+  if (updates.status !== undefined) payload.status = updates.status;
+  const { error } = await supabase.from("projects").update(payload).eq("id", projectId);
+  if (error) throw error;
+}
+
 /* ---- construction tasks --------------------------------------------- */
 
 export async function dbUpdateTask(taskId, updates) {
