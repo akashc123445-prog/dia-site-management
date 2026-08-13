@@ -24,7 +24,7 @@ import {
   computeHealth, HEALTH_META, exportToExcel,
 } from "./lib/helpers";
 import {
-  fetchAllData, dbUpdateProfile, dbAddProject, dbUpdateProject, dbUpdateTask,
+  fetchAllData, dbUpdateProfile, dbRemoveUser, dbAddProject, dbUpdateProject, dbUpdateTask,
   dbUpdateDesignPhase, dbUpdateDrawing, dbAddDrawing, dbRemoveDrawing,
   dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbAddIssue,
   uploadProofFile, uploadSitePhoto,
@@ -1100,9 +1100,9 @@ function ExpenseForm({ onSave, defaultProjectId, projects }) {
 }
 
 function EditProjectTeamForm({ project, users, onSave }) {
-  const architectOptions = users.filter(u => u.role === "Architect" && u.active !== false)
+  const architectOptions = users.filter(u => u.role === "Architect" && u.active !== false && !u.removed)
     .sort((a, b) => ARCHITECT_RANKS.indexOf(a.rank) - ARCHITECT_RANKS.indexOf(b.rank));
-  const supervisorOptions = users.filter(u => u.role === "Supervisor" && u.active !== false);
+  const supervisorOptions = users.filter(u => u.role === "Supervisor" && u.active !== false && !u.removed);
   const [architects, setArchitects] = useState(project.architects || []);
   const [supervisors, setSupervisors] = useState(project.supervisors || []);
 
@@ -1141,8 +1141,8 @@ function EditProjectTeamForm({ project, users, onSave }) {
 }
 
 function ProjectForm({ onSave, users, currentUser }) {
-  const supervisorOptions = users.filter(u => u.role === "Supervisor" && u.active !== false);
-  const architectOptions = users.filter(u => u.role === "Architect" && u.active !== false)
+  const supervisorOptions = users.filter(u => u.role === "Supervisor" && u.active !== false && !u.removed);
+  const architectOptions = users.filter(u => u.role === "Architect" && u.active !== false && !u.removed)
     .sort((a, b) => ARCHITECT_RANKS.indexOf(a.rank) - ARCHITECT_RANKS.indexOf(b.rank));
   const [form, setForm] = useState({
     name: "", client: "", location: "", type: PROJECT_TYPES[0], area: "",
@@ -1580,8 +1580,8 @@ function TeamView({ data, currentUser, actions }) {
   const [editingUser, setEditingUser] = useState(null);
 
   const ROLE_ORDER = ["Admin", "Accounts", "Architect", "Supervisor"];
-  const pending = users.filter(u => u.active === false);
-  const active = users.filter(u => u.active !== false).sort((a, b) => {
+  const pending = users.filter(u => u.active === false && !u.removed);
+  const active = users.filter(u => u.active !== false && !u.removed).sort((a, b) => {
     const roleDiff = ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role);
     if (roleDiff !== 0) return roleDiff;
     if (a.role === "Architect") return ARCHITECT_RANKS.indexOf(a.rank) - ARCHITECT_RANKS.indexOf(b.rank);
@@ -1649,15 +1649,17 @@ function TeamView({ data, currentUser, actions }) {
 
       {editingUser && (
         <EditUserModal user={editingUser} isSelf={editingUser.id === currentUser.id} onClose={() => setEditingUser(null)}
-          onSave={(updates) => { actions.updateUser(editingUser.id, updates); setEditingUser(null); }} />
+          onSave={(updates) => { actions.updateUser(editingUser.id, updates); setEditingUser(null); }}
+          onRemove={() => { actions.removeUser(editingUser.id); setEditingUser(null); }} />
       )}
     </div>
   );
 }
 
-function EditUserModal({ user, isSelf, onClose, onSave }) {
+function EditUserModal({ user, isSelf, onClose, onSave, onRemove }) {
   const [form, setForm] = useState({ name: user.name, email: user.email, role: user.role, rank: user.rank || ARCHITECT_RANKS[2], active: user.active !== false });
   const [error, setError] = useState("");
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
 
   const handleSave = () => {
@@ -1692,6 +1694,32 @@ function EditUserModal({ user, isSelf, onClose, onSave }) {
       </Field>
       {error && <p className="text-xs text-rose-600 mb-3 -mt-2">{error}</p>}
       <button onClick={handleSave} className="w-full dia-btn-gold font-semibold text-sm py-2.5 rounded-lg mt-1">Save changes</button>
+
+      {!isSelf && onRemove && (
+        <div className="mt-4 pt-4 border-t border-stone-100">
+          {!confirmingRemove ? (
+            <button onClick={() => setConfirmingRemove(true)}
+              className="w-full text-xs font-semibold text-rose-600 hover:text-rose-700 py-2 rounded-lg border border-rose-200 hover:bg-rose-50 transition-colors">
+              Remove from team
+            </button>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-stone-600">
+                This removes <b>{user.name}</b> from Team, unassigns them from every project, and blocks them from signing in.
+                Their past site reports, expenses, and photos stay on record. This can't be undone from the app.
+              </p>
+              <div className="flex gap-2">
+                <button onClick={onRemove} className="flex-1 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 py-2 rounded-lg">
+                  Yes, remove {user.name.split(" ")[0]}
+                </button>
+                <button onClick={() => setConfirmingRemove(false)} className="flex-1 text-xs font-semibold text-stone-600 border border-stone-200 py-2 rounded-lg">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </Modal>
   );
 }
@@ -2011,6 +2039,7 @@ export default function App() {
 
   const actions = useMemo(() => ({
     updateUser: (userId, updates) => dbUpdateProfile(userId, updates).then(reload),
+    removeUser: (userId) => dbRemoveUser(userId, data?.projects || []).then(reload),
     addProject: (proj) => dbAddProject(proj, data?.users || []).then(reload),
     updateProjectTeam: (projectId, updates) => dbUpdateProject(projectId, updates).then(reload),
     updateTask: (taskId, updates) => dbUpdateTask(taskId, updates).then(reload),
