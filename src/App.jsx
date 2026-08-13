@@ -28,6 +28,7 @@ import {
   dbUpdateDesignPhase, dbUpdateDrawing, dbAddDrawing, dbRemoveDrawing,
   dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbMarkExpensePaid, dbAddIssue,
   dbAddVendor, dbUpdateVendor, dbDeleteVendor,
+  dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
   uploadProofFile, uploadSitePhoto,
 } from "./lib/dataStore";
 
@@ -972,11 +973,17 @@ function SiteReportForm({ onSave }) {
 
 function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete, onMarkPaid }) {
   const [showModal, setShowModal] = useState(false);
-  const list = expenses.filter(e => e.projectId === project.id).sort((a, b) => new Date(b.date) - new Date(a.date));
+  const list = expenses
+    .filter(e => e.projectId === project.id)
+    .filter(e => canApprove || e.submittedBy === currentUser.id)
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
   const userName = (id) => users.find(u => u.id === id)?.name || id;
 
   return (
     <div className="space-y-4">
+      {!canApprove && (
+        <p className="text-xs text-stone-400">You're seeing only the expenses you've submitted. Admin and Accounts can see every expense on this project.</p>
+      )}
       <div className="flex items-center justify-between flex-wrap gap-2">
         {canAdd && <button onClick={() => setShowModal(true)} className="flex items-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg">
           <Plus size={16} /> Add Expense
@@ -1354,6 +1361,136 @@ function PhotosTab({ project, reports, onAddPhoto, canAdd }) {
   );
 }
 
+function MaterialsTab({ project, requests, users, currentUser, isAdmin, canRequest, onAdd, onApprove, onReject, onDelete }) {
+  const [showModal, setShowModal] = useState(false);
+  const userName = (id) => users.find(u => u.id === id)?.name || id;
+  const sorted = [...requests].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const pending = sorted.filter(r => r.status === "Pending");
+  const rest = sorted.filter(r => r.status !== "Pending");
+
+  return (
+    <div className="space-y-4">
+      {canRequest && <button onClick={() => setShowModal(true)} className="flex items-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg">
+        <Plus size={16} /> Request Materials
+      </button>}
+
+      {sorted.length === 0 && (
+        <Card className="p-8 text-center">
+          <Store size={26} className="mx-auto text-stone-300 mb-2" />
+          <p className="text-sm text-stone-400">No material requests yet. Architects can raise what's needed on site here, for Admin to approve.</p>
+        </Card>
+      )}
+
+      {pending.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2">Awaiting approval</div>
+          <div className="space-y-2">
+            {pending.map(r => <MaterialRequestRow key={r.id} r={r} userName={userName} isAdmin={isAdmin} onApprove={onApprove} onReject={onReject} onDelete={onDelete} />)}
+          </div>
+        </div>
+      )}
+
+      {rest.length > 0 && (
+        <div>
+          {pending.length > 0 && <div className="text-xs font-semibold text-stone-500 uppercase tracking-wide mb-2 mt-4">Earlier requests</div>}
+          <div className="space-y-2">
+            {rest.map(r => <MaterialRequestRow key={r.id} r={r} userName={userName} isAdmin={isAdmin} onApprove={onApprove} onReject={onReject} onDelete={onDelete} />)}
+          </div>
+        </div>
+      )}
+
+      {showModal && <Modal title="Request Materials" onClose={() => setShowModal(false)}>
+        <MaterialRequestForm isAdmin={isAdmin} onSave={(req, autoApprove) => { onAdd(req, autoApprove); setShowModal(false); }} />
+      </Modal>}
+    </div>
+  );
+}
+
+function MaterialRequestRow({ r, userName, isAdmin, onApprove, onReject, onDelete }) {
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const statusColor = r.status === "Approved" ? "border-emerald-200 bg-emerald-50/40" : r.status === "Rejected" ? "border-rose-200 bg-rose-50/30" : "border-amber-200 bg-amber-50/30";
+
+  return (
+    <Card className={`p-4 ${statusColor}`}>
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <StatusPill status={r.status} />
+            <span className="text-[11px] text-stone-400">Requested by {userName(r.requestedBy)} · {fmtDate(r.createdAt)}</span>
+          </div>
+          <p className="text-sm font-semibold text-stone-800 mt-1.5 whitespace-pre-wrap">{r.items}</p>
+          <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-stone-500 mt-1">
+            {r.quantity && <span>Qty: {r.quantity}</span>}
+            {r.neededBy && <span>Needed by: {fmtDate(r.neededBy)}</span>}
+          </div>
+          {r.notes && <p className="text-xs text-stone-500 mt-1">{r.notes}</p>}
+          {r.status === "Rejected" && r.rejectionReason && <p className="text-xs text-rose-600 mt-1">Reason: {r.rejectionReason}</p>}
+          {r.status === "Approved" && <p className="text-xs text-emerald-700 font-semibold mt-1">Approved — site supervisor can proceed to procure/receive this.</p>}
+        </div>
+        {isAdmin && (
+          <div className="flex gap-1.5 items-center shrink-0">
+            {confirmingDelete ? (
+              <>
+                <span className="text-[11px] text-stone-500">Delete?</span>
+                <button onClick={() => onDelete(r.id)} className="text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 px-2 py-1 rounded-md">Delete</button>
+                <button onClick={() => setConfirmingDelete(false)} className="text-xs font-semibold text-stone-500">Cancel</button>
+              </>
+            ) : (
+              <>
+                {r.status === "Pending" && !rejecting && (
+                  <>
+                    <button onClick={() => onApprove(r.id)} className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100"><Check size={14} /></button>
+                    <button onClick={() => setRejecting(true)} className="p-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"><XCircle size={14} /></button>
+                  </>
+                )}
+                {r.status === "Pending" && rejecting && (
+                  <div className="flex gap-1.5 items-center min-w-[180px]">
+                    <input value={reason} onChange={e => setReason(e.target.value)} placeholder="Reason…" className="text-xs border border-stone-300 rounded-md px-2 py-1 w-full" />
+                    <button onClick={() => { onReject(r.id, reason || "Not specified"); setRejecting(false); }} className="text-xs font-semibold text-rose-700 shrink-0">Confirm</button>
+                  </div>
+                )}
+                <button onClick={() => setConfirmingDelete(true)} title="Delete request" className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50"><Trash2 size={14} /></button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function MaterialRequestForm({ isAdmin, onSave }) {
+  const [form, setForm] = useState({ items: "", quantity: "", neededBy: "", notes: "" });
+  const [autoApprove, setAutoApprove] = useState(isAdmin);
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  return (
+    <div>
+      <Field label="Materials needed"><textarea className={inputCls} rows={3} value={form.items} onChange={set("items")} placeholder="e.g. 40 bags white cement, 200 sq.ft. marble tiles" /></Field>
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Quantity (optional)"><input className={inputCls} value={form.quantity} onChange={set("quantity")} /></Field>
+        <Field label="Needed by (optional)"><input type="date" className={inputCls} value={form.neededBy} onChange={set("neededBy")} /></Field>
+      </div>
+      <Field label="Notes (optional)"><textarea className={inputCls} rows={2} value={form.notes} onChange={set("notes")} /></Field>
+      {isAdmin && (
+        <Field label="Approval">
+          <button type="button" onClick={() => setAutoApprove(a => !a)}
+            className={`w-full text-left px-3 py-2.5 rounded-lg text-sm font-semibold border transition-colors ${autoApprove ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-white text-stone-600 border-stone-200"}`}>
+            {autoApprove ? "Post as already approved" : "Post as pending (approve later)"}
+          </button>
+        </Field>
+      )}
+      {!isAdmin && <p className="text-[11px] text-stone-400 mb-3">This will be sent to Admin for approval before the site supervisor is notified.</p>}
+      <button onClick={() => onSave(form, autoApprove)} disabled={!form.items.trim()}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">
+        {isAdmin && autoApprove ? "Post approved request" : "Submit for approval"}
+      </button>
+    </div>
+  );
+}
+
 function PhotoForm({ onSave }) {
   const [form, setForm] = useState({ caption: "", category: PHASE_TEMPLATE[0], date: TODAY.toISOString().slice(0, 10) });
   const [url, setUrl] = useState("");
@@ -1487,6 +1624,7 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
     ...(isDesigning ? [] : [{ key: "reports", label: "Site Reports" }]),
     { key: "expenses", label: "Expenses" },
     ...(isDesigning ? [] : [{ key: "photos", label: "Photos" }]),
+    ...(isDesigning ? [] : [{ key: "materials", label: "Materials" }]),
   ];
 
   return (
@@ -1585,6 +1723,12 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
         onDelete={(id) => actions.deleteExpense(id)}
         onMarkPaid={(id, paid) => actions.markExpensePaid(id, currentUser.id, paid)} />}
       {tab === "photos" && <PhotosTab project={project} reports={projectReports} canAdd={isAssignedSupervisor || isAssignedArchitect} onAddPhoto={(photo) => actions.addPhoto(project.id, photo)} />}
+      {tab === "materials" && <MaterialsTab project={project} requests={data.materialRequests.filter(m => m.projectId === project.id)} users={data.users} currentUser={currentUser}
+        isAdmin={isAdmin} canRequest={isAssignedArchitect || isAdmin}
+        onAdd={(req, autoApprove) => actions.addMaterialRequest(project.id, currentUser.id, req, autoApprove)}
+        onApprove={(id) => actions.approveMaterialRequest(id, currentUser.id)}
+        onReject={(id, reason) => actions.rejectMaterialRequest(id, currentUser.id, reason)}
+        onDelete={(id) => actions.deleteMaterialRequest(id)} />}
     </div>
   );
 }
@@ -2112,6 +2256,28 @@ function SupervisorHome({ data, currentUser, actions }) {
         </div>
       </Card>
 
+      {(() => {
+        const approvedMaterials = data.materialRequests.filter(m => m.projectId === project.id && m.status === "Approved");
+        if (approvedMaterials.length === 0) return null;
+        return (
+          <Card className="p-4 border-emerald-200 bg-emerald-50/40">
+            <div className="flex items-center gap-2 mb-2">
+              <Store size={16} className="text-emerald-700" />
+              <h3 className="text-sm font-semibold text-emerald-800">{approvedMaterials.length} material request{approvedMaterials.length !== 1 ? "s" : ""} approved</h3>
+            </div>
+            <div className="space-y-2">
+              {approvedMaterials.slice(0, 4).map(m => (
+                <div key={m.id} className="text-xs text-stone-700 bg-white/70 rounded-lg px-3 py-2">
+                  <div className="font-medium whitespace-pre-wrap">{m.items}</div>
+                  {m.neededBy && <div className="text-stone-500 mt-0.5">Needed by {fmtDate(m.neededBy)}</div>}
+                </div>
+              ))}
+            </div>
+            {approvedMaterials.length > 4 && <p className="text-[11px] text-emerald-700 mt-1.5">+{approvedMaterials.length - 4} more — see Materials tab.</p>}
+          </Card>
+        );
+      })()}
+
       <div>
         <h3 className="text-sm font-semibold text-stone-700 mb-2.5">Today's Site Report</h3>
         <div className="grid grid-cols-2 gap-3">
@@ -2398,6 +2564,10 @@ export default function App() {
     addVendor: (v) => dbAddVendor(v).then(reload),
     updateVendor: (id, v) => dbUpdateVendor(id, v).then(reload),
     deleteVendor: (id) => dbDeleteVendor(id).then(reload),
+    addMaterialRequest: (projectId, requestedBy, req, autoApprove) => dbAddMaterialRequest(projectId, requestedBy, req, autoApprove).then(reload),
+    approveMaterialRequest: (id, approverId) => dbApproveMaterialRequest(id, approverId).then(reload),
+    rejectMaterialRequest: (id, approverId, reason) => dbRejectMaterialRequest(id, approverId, reason).then(reload),
+    deleteMaterialRequest: (id) => dbDeleteMaterialRequest(id).then(reload),
     addPhoto: (projectId, photo) => dbAddPhoto(projectId, photo).then(reload),
     addIssue: (projectId, supervisorId, issue) => dbAddIssue(projectId, supervisorId, issue).then(reload),
   }), [reload, data, profile]);
