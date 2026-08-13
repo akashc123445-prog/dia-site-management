@@ -137,6 +137,30 @@ export async function dbUpdateProfile(userId, updates) {
   if (error) throw error;
 }
 
+/* Admin-only: create a teammate directly with a chosen email/password/role,
+   already active — no self-signup step needed. Runs through a secure edge
+   function since creating a user with a password requires the service role
+   key, which must never be present in browser code. */
+export async function dbAdminCreateUser({ email, password, name, role, rank }) {
+  const { data, error } = await supabase.functions.invoke("admin-manage-user", {
+    body: { action: "create", email, password, name, role, rank },
+  });
+  if (error) throw error;
+  if (!data?.ok) throw new Error(data?.error || "Failed to create user.");
+  return data.userId;
+}
+
+/* Admin-only: set a new password for an existing teammate (the "forgot
+   password" flow — Admin sets a new one and tells the person directly,
+   rather than anyone being able to see anyone's actual password). */
+export async function dbAdminResetPassword(userId, password) {
+  const { data, error } = await supabase.functions.invoke("admin-manage-user", {
+    body: { action: "reset_password", userId, password },
+  });
+  if (error) throw error;
+  if (!data?.ok) throw new Error(data?.error || "Failed to reset password.");
+}
+
 /* Removes someone from the team entirely: unassigns them from every project's
    architect/supervisor lists, then marks their profile removed and inactive.
    Their historical site reports/expenses/photos are kept intact for records;
