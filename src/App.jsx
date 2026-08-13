@@ -955,7 +955,7 @@ function ReportsTab({ project, reports, users, currentUser, canAdd, onAdd }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-xs text-stone-400">Three reports are expected each day — Opening, Midday, and Closing — from both the site supervisor and the architect.</p>
+      <p className="text-xs text-stone-400">Three reports are expected each day from the site supervisor — Opening, Midday, and Closing.</p>
       {dates.map(d => {
         const dayReports = byDate[d] || [];
         const isToday = d === todayStr;
@@ -1968,7 +1968,7 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
         onAddDrawing={(phaseId, name) => actions.addDrawingItem(phaseId, name)}
         onRemoveDrawing={(phaseId, drawingId) => actions.removeDrawingItem(phaseId, drawingId)} />}
       {tab === "timeline" && <TimelineTab project={project} tasks={data.tasks} onUpdateTask={actions.updateTask} canEdit={canEditTimeline} />}
-      {tab === "reports" && <ReportsTab project={project} reports={projectReports} users={data.users} currentUser={currentUser} canAdd={isAssignedSupervisor || isAssignedArchitect} onAdd={(rep) => actions.addSiteReport(project.id, currentUser.id, rep)} />}
+      {tab === "reports" && <ReportsTab project={project} reports={projectReports} users={data.users} currentUser={currentUser} canAdd={isAssignedSupervisor} onAdd={(rep) => actions.addSiteReport(project.id, currentUser.id, rep)} />}
       {tab === "visits" && <SiteVisitsTab project={project} visits={data.siteVisits.filter(v => v.projectId === project.id)} users={data.users} currentUser={currentUser}
         canLog={isAssignedArchitect}
         onStart={(entryPhotoUrl) => actions.startSiteVisit(project.id, currentUser.id, entryPhotoUrl)}
@@ -2337,7 +2337,7 @@ function TeamView({ data, currentUser, actions }) {
       : projects.filter(p => p.supervisors.includes(u.id));
     const isActive = u.active !== false;
     const roleLabel = u.role === "Supervisor" ? "Site Supervisor" : u.role === "Architect" ? (u.rank || "Architect") : u.role;
-    const missedCount = (u.role === "Supervisor" || u.role === "Architect")
+    const missedCount = u.role === "Supervisor"
       ? assigned.reduce((sum, p) => sum + computeMissedReportSlots(p, siteReports, u.id).length, 0)
       : 0;
     return (
@@ -2862,11 +2862,6 @@ function ArchitectHome({ data, currentUser, setView }) {
       </Card>
 
       {openVisitProject && <OpenVisitBanner project={openVisitProject} visit={myOpenVisit} setView={setView} />}
-
-      {myProjects.map(p => {
-        const missed = computeMissedReportSlots(p, data.siteReports, currentUser.id);
-        return missed.length > 0 ? <MissedReportsBanner key={p.id} project={p} missed={missed} setView={setView} /> : null;
-      })}
 
       {myProjects.length === 0 && (
         <Card className="p-8 text-center">
