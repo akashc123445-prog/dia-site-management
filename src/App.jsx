@@ -117,6 +117,43 @@ function Modal({ title, onClose, children, wide }) {
   );
 }
 
+/* Full-screen photo viewer. Pinch-to-zoom works natively on mobile since we
+   don't block it (no user-scalable=no, and the image container allows the
+   browser's own pinch gesture). For mouse users, clicking the image toggles
+   a 2.5x zoom centered on the click point. */
+function Lightbox({ url, caption, meta, onClose }) {
+  const [zoomed, setZoomed] = useState(false);
+  const [origin, setOrigin] = useState("center center");
+
+  const handleImageClick = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    setOrigin(`${x}% ${y}%`);
+    setZoomed(z => !z);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/95 flex flex-col" style={{ touchAction: "pinch-zoom pan-x pan-y" }}>
+      <div className="flex items-center justify-between px-4 py-3 shrink-0">
+        <div className="min-w-0 text-white/80 text-xs">{meta}</div>
+        <button onClick={onClose} className="p-2 rounded-full hover:bg-white/10 text-white shrink-0"><X size={20} /></button>
+      </div>
+      <div className="flex-1 overflow-auto flex items-center justify-center px-2 pb-2">
+        <img
+          src={url}
+          alt={caption || ""}
+          onClick={handleImageClick}
+          className="max-w-full max-h-full object-contain cursor-zoom-in transition-transform duration-200 select-none"
+          style={{ transform: zoomed ? "scale(2.5)" : "scale(1)", transformOrigin: origin, cursor: zoomed ? "zoom-out" : "zoom-in" }}
+          draggable={false}
+        />
+      </div>
+      {caption && <div className="px-4 py-3 text-center text-white text-sm shrink-0">{caption}</div>}
+    </div>
+  );
+}
+
 function Field({ label, children }) {
   return (
     <label className="block mb-3.5">
@@ -1409,6 +1446,7 @@ function ProjectForm({ onSave, users, currentUser }) {
 
 function PhotosTab({ project, reports, onAddPhoto, canAdd }) {
   const [showModal, setShowModal] = useState(false);
+  const [lightboxPhoto, setLightboxPhoto] = useState(null);
   const allPhotos = reports.flatMap(r => (r.photos || []).map(p => ({ ...p, date: r.date })));
   const byDate = {};
   allPhotos.forEach(p => { byDate[p.date] = byDate[p.date] || []; byDate[p.date].push(p); });
@@ -1430,12 +1468,13 @@ function PhotosTab({ project, reports, onAddPhoto, canAdd }) {
           <div className="text-xs font-semibold text-stone-500 uppercase mb-2">{fmtDate(d)}</div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {byDate[d].map((p, i) => (
-              <div key={i} className="rounded-lg overflow-hidden border border-stone-200 bg-stone-100 aspect-square flex items-center justify-center relative">
+              <button key={i} onClick={() => p.url && setLightboxPhoto(p)}
+                className="rounded-lg overflow-hidden border border-stone-200 bg-stone-100 aspect-square flex items-center justify-center relative">
                 {p.url ? <img src={p.url} alt={p.caption} className="w-full h-full object-cover" /> : <ImageIcon size={22} className="text-stone-300" />}
-                <div className="absolute bottom-0 inset-x-0 bg-stone-900/70 text-white text-[10px] px-2 py-1 truncate">
+                <div className="absolute bottom-0 inset-x-0 bg-stone-900/70 text-white text-[10px] px-2 py-1 truncate text-left">
                   {p.caption || p.category}{p.uploadedAt ? ` · ${fmtTime(p.uploadedAt)}` : ""}
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -1443,6 +1482,11 @@ function PhotosTab({ project, reports, onAddPhoto, canAdd }) {
       {showModal && <Modal title="Upload Site Photo" onClose={() => setShowModal(false)}>
         <PhotoForm onSave={(p) => { onAddPhoto(p); setShowModal(false); }} />
       </Modal>}
+      {lightboxPhoto && (
+        <Lightbox url={lightboxPhoto.url} caption={lightboxPhoto.caption}
+          meta={`${fmtDate(lightboxPhoto.date)}${lightboxPhoto.uploadedAt ? " · " + fmtTime(lightboxPhoto.uploadedAt) : ""}`}
+          onClose={() => setLightboxPhoto(null)} />
+      )}
     </div>
   );
 }
@@ -2209,6 +2253,7 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
 
 function UpdatesFeed({ data, setView }) {
   const [projectFilter, setProjectFilter] = useState("All");
+  const [lightboxPhoto, setLightboxPhoto] = useState(null);
   const projectName = (id) => data.projects.find(p => p.id === id)?.name || "Unknown project";
   const userName = (id) => data.users.find(u => u.id === id)?.name || null;
 
@@ -2239,9 +2284,9 @@ function UpdatesFeed({ data, setView }) {
                 <span className="font-display text-sm font-semibold text-stone-900 truncate">{projectName(p.projectId)}</span>
                 <ChevronRight size={14} className="text-stone-400 shrink-0" />
               </button>
-              <div className="bg-stone-100 aspect-square flex items-center justify-center">
+              <button onClick={() => p.url && setLightboxPhoto(p)} className="w-full bg-stone-100 aspect-square flex items-center justify-center">
                 {p.url ? <img src={p.url} alt={p.caption || ""} className="w-full h-full object-cover" /> : <ImageIcon size={32} className="text-stone-300" />}
-              </div>
+              </button>
               <div className="px-4 py-3">
                 {p.caption && <p className="text-sm text-stone-800">{p.caption}</p>}
                 {p.category && <span className="inline-block mt-1.5 text-xs bg-stone-100 text-stone-600 px-2 py-0.5 rounded-full font-medium">{p.category}</span>}
@@ -2254,6 +2299,11 @@ function UpdatesFeed({ data, setView }) {
           ))}
         </div>
       </div>
+      {lightboxPhoto && (
+        <Lightbox url={lightboxPhoto.url} caption={lightboxPhoto.caption}
+          meta={`${projectName(lightboxPhoto.projectId)} · ${fmtDate(lightboxPhoto.date)} · ${fmtTime(lightboxPhoto.uploadedAt)}`}
+          onClose={() => setLightboxPhoto(null)} />
+      )}
     </div>
   );
 }
