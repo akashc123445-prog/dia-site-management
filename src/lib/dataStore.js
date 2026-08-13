@@ -12,7 +12,7 @@ import { generatePhaseTasks, generateDesignPhases } from "./helpers";
 /* ---- DB row -> UI object ------------------------------------------- */
 
 const mapUser = (r) => ({
-  id: r.id, name: r.name, email: r.email, role: r.role, rank: r.rank, active: r.active,
+  id: r.id, name: r.name, email: r.email, role: r.role, rank: r.rank, active: r.active, removed: r.removed,
 });
 
 const mapProject = (r) => ({
@@ -110,6 +110,25 @@ export async function dbUpdateProfile(userId, updates) {
   if (updates.rank !== undefined) payload.rank = updates.rank;
   if (updates.active !== undefined) payload.active = updates.active;
   const { error } = await supabase.from("profiles").update(payload).eq("id", userId);
+  if (error) throw error;
+}
+
+/* Removes someone from the team entirely: unassigns them from every project's
+   architect/supervisor lists, then marks their profile removed and inactive.
+   Their historical site reports/expenses/photos are kept intact for records;
+   they simply disappear from Team and can no longer sign in. */
+export async function dbRemoveUser(userId, projects) {
+  for (const p of projects) {
+    const inArch = (p.architects || []).includes(userId);
+    const inSup = (p.supervisors || []).includes(userId);
+    if (inArch || inSup) {
+      await dbUpdateProject(p.id, {
+        architects: inArch ? p.architects.filter((x) => x !== userId) : undefined,
+        supervisors: inSup ? p.supervisors.filter((x) => x !== userId) : undefined,
+      });
+    }
+  }
+  const { error } = await supabase.from("profiles").update({ removed: true, active: false }).eq("id", userId);
   if (error) throw error;
 }
 
