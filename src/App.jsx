@@ -24,7 +24,7 @@ import {
   computeHealth, HEALTH_META, exportToExcel,
 } from "./lib/helpers";
 import {
-  fetchAllData, dbUpdateProfile, dbRemoveUser, dbAddProject, dbUpdateProject, dbUpdateTask,
+  fetchAllData, dbUpdateProfile, dbRemoveUser, dbAddProject, dbUpdateProject, dbDeleteProject, dbUpdateTask,
   dbUpdateDesignPhase, dbUpdateDrawing, dbAddDrawing, dbRemoveDrawing,
   dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbMarkExpensePaid, dbAddIssue,
   dbAddVendor, dbUpdateVendor, dbDeleteVendor,
@@ -1408,6 +1408,44 @@ function PhotoForm({ onSave }) {
   );
 }
 
+function DeleteProjectZone({ project, onDelete }) {
+  const [confirming, setConfirming] = useState(false);
+  const [typed, setTyped] = useState("");
+  const canDelete = typed.trim() === project.name;
+
+  return (
+    <Card className="p-5 border-rose-200 bg-rose-50/30 mt-5">
+      <div className="text-xs font-semibold text-rose-700 uppercase tracking-wide mb-1">Danger zone</div>
+      {!confirming ? (
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <p className="text-sm text-stone-600">Permanently delete this project and everything in it — tasks, design phases, drawings, site reports, photos, and expenses.</p>
+          <button onClick={() => setConfirming(true)}
+            className="flex items-center gap-1.5 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 px-3 py-2 rounded-lg shrink-0">
+            <Trash2 size={13} /> Delete project
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-sm text-stone-600">
+            This can't be undone. It will permanently delete <b>{project.name}</b> and all its tasks, design phases, drawings, site reports, photos, and expenses.
+            Type the project name below to confirm.
+          </p>
+          <input className={inputCls} value={typed} onChange={e => setTyped(e.target.value)} placeholder={project.name} />
+          <div className="flex gap-2">
+            <button onClick={onDelete} disabled={!canDelete}
+              className="flex-1 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed py-2.5 rounded-lg">
+              Permanently delete
+            </button>
+            <button onClick={() => { setConfirming(false); setTyped(""); }} className="flex-1 text-xs font-semibold text-stone-600 border border-stone-200 py-2.5 rounded-lg">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) {
   const project = data.projects.find(p => p.id === projectId);
   const [tab, setTab] = useState(sub || "overview");
@@ -1529,6 +1567,9 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
         <Card className="p-5">
           <p className="text-sm text-stone-500">Financial dashboards are visible to Admin and Accounts. Use the Design, Timeline, Site Reports and Expenses tabs to update this project.</p>
         </Card>
+      )}
+      {tab === "overview" && isAdmin && (
+        <DeleteProjectZone project={project} onDelete={() => { actions.deleteProject(project.id); setView({ tab: "projects" }); }} />
       )}
       {tab === "design" && <DesignTab project={project} phases={projectDesignPhases} users={data.users} canEdit={canEditDesign} currentUser={currentUser}
         onUpdatePhase={(id, updates) => actions.updateDesignPhase(id, updates)}
@@ -2342,6 +2383,7 @@ export default function App() {
     removeUser: (userId) => dbRemoveUser(userId, data?.projects || []).then(reload),
     addProject: (proj) => dbAddProject(proj, data?.users || []).then(reload),
     updateProjectTeam: (projectId, updates) => dbUpdateProject(projectId, updates).then(reload),
+    deleteProject: (projectId) => dbDeleteProject(projectId).then(reload),
     updateTask: (taskId, updates) => dbUpdateTask(taskId, updates).then(reload),
     updateDesignPhase: (phaseId, updates) => dbUpdateDesignPhase(phaseId, updates).then(reload),
     updateDrawingItem: (phaseId, drawingId, updates, updatedBy) => dbUpdateDrawing(drawingId, updates, updatedBy || profile?.id).then(reload),
