@@ -107,13 +107,14 @@ function generatePhaseTasks(projectId, startDate, plannedEnd, assignedTo) {
 }
 
 /* Design phases run ahead of construction, ending at the project's construction
-   start date. The Working Drawings phase also carries a drawing checklist. */
-function generateDesignPhases(projectId, constructionStart, assignedTo, designWindowDays = 60) {
+   start date. The Working Drawings phase also carries a drawing checklist.
+   Pass a custom phaseList (e.g. DESIGN_PHASES_DESIGNING) for design-only contracts. */
+function generateDesignPhases(projectId, constructionStart, assignedTo, designWindowDays = 60, phaseList = DESIGN_PHASES) {
   const end = new Date(constructionStart);
   const start = new Date(end.getTime() - designWindowDays * 86400000);
   const totalDays = designWindowDays;
-  const n = DESIGN_PHASES.length;
-  return DESIGN_PHASES.map((phase, i) => {
+  const n = phaseList.length;
+  return phaseList.map((phase, i) => {
     const segStart = new Date(start.getTime() + Math.round((totalDays * i) / n) * 86400000);
     const segEnd = new Date(start.getTime() + Math.round((totalDays * (i + 1)) / n) * 86400000);
     const entry = {
