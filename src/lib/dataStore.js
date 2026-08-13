@@ -296,6 +296,11 @@ export async function dbRejectExpense(id, approverId, reason) {
   if (error) throw error;
 }
 
+export async function dbDeleteExpense(id) {
+  const { error } = await supabase.from("expenses").delete().eq("id", id);
+  if (error) throw error;
+}
+
 /* ---- issues ------------------------------------------------------------ */
 
 export async function dbAddIssue(projectId, supervisorId, issue) {
