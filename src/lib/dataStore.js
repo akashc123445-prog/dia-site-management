@@ -46,7 +46,7 @@ const mapDesignPhase = (r, allDrawings) => ({
 
 const mapPhoto = (r) => ({
   id: r.id, url: r.url, dataUrl: r.url, caption: r.caption, category: r.category,
-  date: r.date, uploadedAt: r.uploaded_at,
+  date: r.date, uploadedAt: r.uploaded_at, projectId: r.project_id, uploadedBy: r.uploaded_by,
 });
 
 const mapSiteReport = (r, allPhotos) => ({
@@ -126,6 +126,7 @@ export async function fetchAllData() {
     tasks: (tasks.data || []).map(mapTask),
     designPhases: (designPhasesRaw.data || []).map((r) => mapDesignPhase(r, drawingsRaw.data || [])),
     siteReports: (siteReportsRaw.data || []).map((r) => mapSiteReport(r, photosRaw.data || [])),
+    photos: (photosRaw.data || []).map(mapPhoto),
     expenses: (expensesRaw.data || []).map(mapExpense),
     issues: (issuesRaw.data || []).map(mapIssue),
     vendors: (vendorsRaw.data || []).map(mapVendor),
@@ -324,7 +325,7 @@ export async function dbAddSiteReport(projectId, supervisorId, rep) {
   if (error) throw error;
 }
 
-export async function dbAddPhoto(projectId, photo) {
+export async function dbAddPhoto(projectId, photo, uploadedBy) {
   // Find (or note the absence of) a same-day site report to attach this photo to,
   // mirroring the original app's "photos build into the day's report" behaviour.
   const { data: existing, error: findErr } = await supabase
@@ -344,7 +345,7 @@ export async function dbAddPhoto(projectId, photo) {
 
   const { error: photoErr } = await supabase.from("photos").insert({
     project_id: projectId, site_report_id: siteReportId, url: photo.url,
-    caption: photo.caption, category: photo.category, date: photo.date,
+    caption: photo.caption, category: photo.category, date: photo.date, uploaded_by: uploadedBy || null,
   });
   if (photoErr) throw photoErr;
 }
