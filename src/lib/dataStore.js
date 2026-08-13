@@ -1,0 +1,283 @@
+/* ----------------------------------------------------------------------
+   Data access layer. Every function here talks to Supabase and returns/
+   accepts the same camelCase shapes the UI already uses (the original
+   in-browser prototype's `data` object and `actions`). Column names in
+   Postgres are snake_case (see supabase/schema.sql); the map* functions
+   below are the only place that translation happens.
+   ---------------------------------------------------------------------- */
+
+import { supabase, PROOF_BUCKET, SITE_PHOTOS_BUCKET } from "./supabaseClient";
+import { generatePhaseTasks, generateDesignPhases } from "./helpers";
+
+/* ---- DB row -> UI object ------------------------------------------- */
+
+const mapUser = (r) => ({
+  id: r.id, name: r.name, email: r.email, role: r.role, rank: r.rank, active: r.active,
+});
+
+const mapProject = (r) => ({
+  id: r.id, name: r.name, client: r.client, location: r.location, type: r.type,
+  area: Number(r.area) || 0, startDate: r.start_date, plannedEnd: r.planned_end, actualEnd: r.actual_end,
+  pm: r.pm, supervisors: r.supervisors || [], architects: r.architects || [],
+  contractValue: Number(r.contract_value) || 0, estimatedCost: Number(r.estimated_cost) || 0, status: r.status,
+});
+
+const mapTask = (r) => ({
+  id: r.id, projectId: r.project_id, phase: r.phase, name: r.name,
+  start: r.start, target: r.target, actual: r.actual, status: r.status,
+  pct: r.pct, assignedTo: r.assigned_to, dependsOn: r.depends_on,
+});
+
+const mapDrawing = (r) => ({
+  id: r.id, name: r.name, status: r.status, proof: r.proof || null,
+  updatedAt: r.updated_at, updatedBy: r.updated_by,
+});
+
+const mapDesignPhase = (r, allDrawings) => ({
+  id: r.id, projectId: r.project_id, phase: r.phase,
+  start: r.start, target: r.target, actual: r.actual,
+  status: r.status, pct: r.pct, assignedTo: r.assigned_to, notes: r.notes, proof: r.proof || null,
+  drawings: r.phase === "Working Drawings"
+    ? allDrawings.filter((d) => d.design_phase_id === r.id).map(mapDrawing)
+    : undefined,
+});
+
+const mapPhoto = (r) => ({
+  id: r.id, url: r.url, dataUrl: r.url, caption: r.caption, category: r.category,
+  date: r.date, uploadedAt: r.uploaded_at,
+});
+
+const mapSiteReport = (r, allPhotos) => ({
+  id: r.id, projectId: r.project_id, supervisorId: r.supervisor_id, date: r.date, workers: r.workers,
+  workDone: r.work_done, workInProgress: r.work_in_progress, workPlanned: r.work_planned,
+  materialsReceived: r.materials_received, materialsNeeded: r.materials_needed,
+  issues: r.issues, delays: r.delays, pctComplete: r.pct_complete, remarks: r.remarks,
+  submittedAt: r.submitted_at,
+  photos: allPhotos.filter((p) => p.site_report_id === r.id).map(mapPhoto),
+});
+
+const mapExpense = (r) => ({
+  id: r.id, projectId: r.project_id, submittedBy: r.submitted_by, date: r.date, category: r.category,
+  description: r.description, amount: Number(r.amount) || 0, paymentMethod: r.payment_method,
+  vendor: r.vendor, invoiceNo: r.invoice_no, status: r.status, approvedBy: r.approved_by,
+  rejectionReason: r.rejection_reason, submittedAt: r.submitted_at,
+});
+
+const mapIssue = (r) => ({
+  id: r.id, projectId: r.project_id, supervisorId: r.supervisor_id, date: r.date,
+  description: r.description, severity: r.severity, status: r.status, submittedAt: r.submitted_at,
+});
+
+/* ---- fetch everything ------------------------------------------------ */
+
+export async function fetchAllData() {
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw] =
+    await Promise.all([
+      supabase.from("profiles").select("*").order("created_at"),
+      supabase.from("projects").select("*").order("created_at"),
+      supabase.from("tasks").select("*"),
+      supabase.from("design_phases").select("*"),
+      supabase.from("drawings").select("*"),
+      supabase.from("site_reports").select("*").order("date", { ascending: false }),
+      supabase.from("photos").select("*"),
+      supabase.from("expenses").select("*").order("date", { ascending: false }),
+      supabase.from("issues").select("*").order("date", { ascending: false }),
+    ]);
+
+  const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw };
+  for (const [key, res] of Object.entries(results)) {
+    if (res.error) throw new Error(`Failed to load ${key}: ${res.error.message}`);
+  }
+
+  return {
+    users: (profiles.data || []).map(mapUser),
+    projects: (projects.data || []).map(mapProject),
+    tasks: (tasks.data || []).map(mapTask),
+    designPhases: (designPhasesRaw.data || []).map((r) => mapDesignPhase(r, drawingsRaw.data || [])),
+    siteReports: (siteReportsRaw.data || []).map((r) => mapSiteReport(r, photosRaw.data || [])),
+    expenses: (expensesRaw.data || []).map(mapExpense),
+    issues: (issuesRaw.data || []).map(mapIssue),
+  };
+}
+
+/* ---- profiles ---------------------------------------------------------- */
+
+export async function dbUpdateProfile(userId, updates) {
+  const payload = {};
+  if (updates.name !== undefined) payload.name = updates.name;
+  if (updates.email !== undefined) payload.email = updates.email;
+  if (updates.role !== undefined) payload.role = updates.role;
+  if (updates.rank !== undefined) payload.rank = updates.rank;
+  if (updates.active !== undefined) payload.active = updates.active;
+  const { error } = await supabase.from("profiles").update(payload).eq("id", userId);
+  if (error) throw error;
+}
+
+/* ---- projects ------------------------------------------------------- */
+
+export async function dbAddProject(proj, users) {
+  const { data: projectRow, error } = await supabase.from("projects").insert({
+    name: proj.name, client: proj.client, location: proj.location, type: proj.type, area: proj.area,
+    start_date: proj.startDate, planned_end: proj.plannedEnd, actual_end: null, pm: proj.pm,
+    supervisors: proj.supervisors || [], architects: proj.architects || [],
+    contract_value: proj.contractValue, estimated_cost: proj.estimatedCost, status: proj.status,
+  }).select().single();
+  if (error) throw error;
+
+  const projectId = projectRow.id;
+  const leadSupervisorName = users.find((u) => u.id === (proj.supervisors || [])[0])?.name || null;
+  const leadArchitectName = users.find((u) => u.id === (proj.architects || [])[0])?.name || null;
+
+  const taskTemplates = generatePhaseTasks(projectId, proj.startDate, proj.plannedEnd, leadSupervisorName);
+  if (taskTemplates.length) {
+    const { error: taskErr } = await supabase.from("tasks").insert(taskTemplates.map((t) => ({
+      project_id: projectId, phase: t.phase, name: t.name, start: t.start, target: t.target,
+      actual: t.actual, status: t.status, pct: t.pct, assigned_to: t.assignedTo, depends_on: null,
+    })));
+    if (taskErr) throw taskErr;
+  }
+
+  const phaseTemplates = generateDesignPhases(projectId, proj.startDate, leadArchitectName);
+  for (const dp of phaseTemplates) {
+    const { data: dpRow, error: dpErr } = await supabase.from("design_phases").insert({
+      project_id: projectId, phase: dp.phase, start: dp.start, target: dp.target, actual: dp.actual,
+      status: dp.status, pct: dp.pct, assigned_to: dp.assignedTo, notes: dp.notes, proof: null,
+    }).select().single();
+    if (dpErr) throw dpErr;
+    if (dp.drawings && dp.drawings.length) {
+      const { error: drErr } = await supabase.from("drawings").insert(
+        dp.drawings.map((d) => ({ design_phase_id: dpRow.id, name: d.name, status: d.status, proof: null }))
+      );
+      if (drErr) throw drErr;
+    }
+  }
+
+  return projectId;
+}
+
+/* ---- construction tasks --------------------------------------------- */
+
+export async function dbUpdateTask(taskId, updates) {
+  const payload = {};
+  if (updates.status !== undefined) payload.status = updates.status;
+  if (updates.pct !== undefined) payload.pct = updates.pct;
+  if (updates.actual !== undefined) payload.actual = updates.actual;
+  const { error } = await supabase.from("tasks").update(payload).eq("id", taskId);
+  if (error) throw error;
+}
+
+/* ---- design phases + drawings ---------------------------------------- */
+
+export async function dbUpdateDesignPhase(phaseId, updates) {
+  const payload = {};
+  if (updates.status !== undefined) payload.status = updates.status;
+  if (updates.pct !== undefined) payload.pct = updates.pct;
+  if (updates.actual !== undefined) payload.actual = updates.actual;
+  if (updates.assignedTo !== undefined) payload.assigned_to = updates.assignedTo;
+  if (updates.notes !== undefined) payload.notes = updates.notes;
+  if (updates.proof !== undefined) payload.proof = updates.proof;
+  const { error } = await supabase.from("design_phases").update(payload).eq("id", phaseId);
+  if (error) throw error;
+}
+
+export async function dbUpdateDrawing(drawingId, updates, updatedBy) {
+  const payload = { updated_at: new Date().toISOString(), updated_by: updatedBy || null };
+  if (updates.status !== undefined) payload.status = updates.status;
+  if (updates.proof !== undefined) payload.proof = updates.proof;
+  const { error } = await supabase.from("drawings").update(payload).eq("id", drawingId);
+  if (error) throw error;
+}
+
+export async function dbAddDrawing(designPhaseId, name) {
+  const { error } = await supabase.from("drawings").insert({ design_phase_id: designPhaseId, name, status: "Pending" });
+  if (error) throw error;
+}
+
+export async function dbRemoveDrawing(drawingId) {
+  const { error } = await supabase.from("drawings").delete().eq("id", drawingId);
+  if (error) throw error;
+}
+
+/* ---- site reports + photos -------------------------------------------- */
+
+export async function dbAddSiteReport(projectId, supervisorId, rep) {
+  const { error } = await supabase.from("site_reports").insert({
+    project_id: projectId, supervisor_id: supervisorId, date: rep.date,
+    workers: Number(rep.workers) || 0, work_done: rep.workDone, work_in_progress: rep.workInProgress,
+    work_planned: rep.workPlanned, materials_received: rep.materialsReceived, materials_needed: rep.materialsNeeded,
+    issues: rep.issues, delays: rep.delays, pct_complete: Number(rep.pctComplete) || 0, remarks: rep.remarks,
+  });
+  if (error) throw error;
+}
+
+export async function dbAddPhoto(projectId, photo) {
+  // Find (or note the absence of) a same-day site report to attach this photo to,
+  // mirroring the original app's "photos build into the day's report" behaviour.
+  const { data: existing, error: findErr } = await supabase
+    .from("site_reports").select("id").eq("project_id", projectId).eq("date", photo.date).maybeSingle();
+  if (findErr) throw findErr;
+
+  let siteReportId = existing?.id || null;
+  if (!siteReportId) {
+    const { data: newReport, error: insErr } = await supabase.from("site_reports").insert({
+      project_id: projectId, supervisor_id: null, date: photo.date, workers: 0,
+      work_done: "", work_in_progress: "", work_planned: "", materials_received: "", materials_needed: "",
+      issues: "", delays: "", pct_complete: 0, remarks: "",
+    }).select().single();
+    if (insErr) throw insErr;
+    siteReportId = newReport.id;
+  }
+
+  const { error: photoErr } = await supabase.from("photos").insert({
+    project_id: projectId, site_report_id: siteReportId, url: photo.url,
+    caption: photo.caption, category: photo.category, date: photo.date,
+  });
+  if (photoErr) throw photoErr;
+}
+
+/* ---- expenses ------------------------------------------------------- */
+
+export async function dbAddExpense(exp) {
+  const { error } = await supabase.from("expenses").insert({
+    project_id: exp.projectId, submitted_by: exp.submittedBy, date: exp.date, category: exp.category,
+    description: exp.description, amount: exp.amount, payment_method: exp.paymentMethod,
+    vendor: exp.vendor, invoice_no: exp.invoiceNo, status: "Pending",
+  });
+  if (error) throw error;
+}
+
+export async function dbApproveExpense(id, approverId) {
+  const { error } = await supabase.from("expenses")
+    .update({ status: "Approved", approved_by: approverId, rejection_reason: null }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbRejectExpense(id, approverId, reason) {
+  const { error } = await supabase.from("expenses")
+    .update({ status: "Rejected", approved_by: approverId, rejection_reason: reason }).eq("id", id);
+  if (error) throw error;
+}
+
+/* ---- issues ------------------------------------------------------------ */
+
+export async function dbAddIssue(projectId, supervisorId, issue) {
+  const { error } = await supabase.from("issues").insert({
+    project_id: projectId, supervisor_id: supervisorId, date: new Date().toISOString().slice(0, 10),
+    description: issue.description, severity: issue.severity, status: "Open",
+  });
+  if (error) throw error;
+}
+
+/* ---- file uploads (proof-of-work photos/PDFs, site diary photos) ------ */
+
+export async function uploadFile(bucket, file, pathPrefix) {
+  const ext = file.name.split(".").pop();
+  const path = `${pathPrefix}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const { error } = await supabase.storage.from(bucket).upload(path, file);
+  if (error) throw error;
+  const { data } = supabase.storage.from(bucket).getPublicUrl(path);
+  return data.publicUrl;
+}
+
+export const uploadProofFile = (file, pathPrefix) => uploadFile(PROOF_BUCKET, file, pathPrefix);
+export const uploadSitePhoto = (file, pathPrefix) => uploadFile(SITE_PHOTOS_BUCKET, file, pathPrefix);
