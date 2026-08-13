@@ -59,8 +59,19 @@ const mapSiteReport = (r, allPhotos) => ({
 const mapExpense = (r) => ({
   id: r.id, projectId: r.project_id, submittedBy: r.submitted_by, date: r.date, category: r.category,
   description: r.description, amount: Number(r.amount) || 0, paymentMethod: r.payment_method,
-  vendor: r.vendor, invoiceNo: r.invoice_no, status: r.status, approvedBy: r.approved_by,
+  vendor: r.vendor, vendorId: r.vendor_id,
+  totalInvoiceValue: r.total_invoice_value === null ? null : Number(r.total_invoice_value),
+  advancePaid: Number(r.advance_paid) || 0,
+  proofUrl: r.proof_url,
+  paid: r.paid, paidAt: r.paid_at, paidBy: r.paid_by,
+  invoiceNo: r.invoice_no, status: r.status, approvedBy: r.approved_by,
   rejectionReason: r.rejection_reason, submittedAt: r.submitted_at,
+});
+
+const mapVendor = (r) => ({
+  id: r.id, name: r.name, material: r.material, gstNumber: r.gst_number, address: r.address,
+  bankAccountName: r.bank_account_name, bankAccountNumber: r.bank_account_number,
+  bankIfsc: r.bank_ifsc, bankName: r.bank_name, createdAt: r.created_at,
 });
 
 const mapIssue = (r) => ({
@@ -71,7 +82,7 @@ const mapIssue = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -82,9 +93,10 @@ export async function fetchAllData() {
       supabase.from("photos").select("*"),
       supabase.from("expenses").select("*").order("date", { ascending: false }),
       supabase.from("issues").select("*").order("date", { ascending: false }),
+      supabase.from("vendors").select("*").order("name"),
     ]);
 
-  const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw };
+  const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw };
   for (const [key, res] of Object.entries(results)) {
     if (res.error) throw new Error(`Failed to load ${key}: ${res.error.message}`);
   }
@@ -97,6 +109,7 @@ export async function fetchAllData() {
     siteReports: (siteReportsRaw.data || []).map((r) => mapSiteReport(r, photosRaw.data || [])),
     expenses: (expensesRaw.data || []).map(mapExpense),
     issues: (issuesRaw.data || []).map(mapIssue),
+    vendors: (vendorsRaw.data || []).map(mapVendor),
   };
 }
 
@@ -279,7 +292,11 @@ export async function dbAddExpense(exp) {
   const { error } = await supabase.from("expenses").insert({
     project_id: exp.projectId, submitted_by: exp.submittedBy, date: exp.date, category: exp.category,
     description: exp.description, amount: exp.amount, payment_method: exp.paymentMethod,
-    vendor: exp.vendor, invoice_no: exp.invoiceNo, status: "Pending",
+    vendor: exp.vendor, vendor_id: exp.vendorId,
+    total_invoice_value: exp.totalInvoiceValue === "" || exp.totalInvoiceValue === undefined ? null : exp.totalInvoiceValue,
+    advance_paid: exp.advancePaid || 0,
+    proof_url: exp.proofUrl,
+    invoice_no: exp.invoiceNo, status: "Pending",
   });
   if (error) throw error;
 }
@@ -298,6 +315,38 @@ export async function dbRejectExpense(id, approverId, reason) {
 
 export async function dbDeleteExpense(id) {
   const { error } = await supabase.from("expenses").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbMarkExpensePaid(id, paidBy, paid) {
+  const { error } = await supabase.from("expenses")
+    .update({ paid, paid_at: paid ? new Date().toISOString() : null, paid_by: paid ? paidBy : null })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+/* ---- vendors ------------------------------------------------------------ */
+
+export async function dbAddVendor(v) {
+  const { error } = await supabase.from("vendors").insert({
+    name: v.name, material: v.material, gst_number: v.gstNumber, address: v.address,
+    bank_account_name: v.bankAccountName, bank_account_number: v.bankAccountNumber,
+    bank_ifsc: v.bankIfsc, bank_name: v.bankName,
+  });
+  if (error) throw error;
+}
+
+export async function dbUpdateVendor(id, v) {
+  const { error } = await supabase.from("vendors").update({
+    name: v.name, material: v.material, gst_number: v.gstNumber, address: v.address,
+    bank_account_name: v.bankAccountName, bank_account_number: v.bankAccountNumber,
+    bank_ifsc: v.bankIfsc, bank_name: v.bankName,
+  }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteVendor(id) {
+  const { error } = await supabase.from("vendors").delete().eq("id", id);
   if (error) throw error;
 }
 
