@@ -89,14 +89,14 @@ function AccessDenied({ message = "You don't have access to this page." }) {
 
 function KPI({ label, value, sub, icon: Icon }) {
   return (
-    <Card className="p-4">
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="text-[11px] uppercase tracking-wide text-stone-500 font-semibold font-body">{label}</div>
-          <div className="text-2xl font-display font-semibold text-stone-900 mt-1">{value}</div>
-          {sub && <div className="text-xs text-stone-500 mt-1 font-body">{sub}</div>}
+    <Card className="p-3.5 sm:p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-[10px] sm:text-[11px] uppercase tracking-wide text-stone-500 font-semibold font-body truncate">{label}</div>
+          <div className="text-base sm:text-2xl font-display font-semibold text-stone-900 mt-1 break-words">{value}</div>
+          {sub && <div className="text-[11px] sm:text-xs text-stone-500 mt-1 font-body truncate">{sub}</div>}
         </div>
-        {Icon && <div className="p-2 rounded-lg dia-bg-cream-soft"><Icon size={18} className="dia-text-bronze" /></div>}
+        {Icon && <div className="p-1.5 sm:p-2 rounded-lg dia-bg-cream-soft shrink-0"><Icon size={16} className="dia-text-bronze sm:hidden" /><Icon size={18} className="dia-text-bronze hidden sm:block" /></div>}
       </div>
     </Card>
   );
@@ -232,7 +232,7 @@ function LoginScreen() {
 /* App Shell (Sidebar + Header)                                             */
 /* ---------------------------------------------------------------------- */
 
-function Sidebar({ user, view, setView, onLogout, pendingCount }) {
+function Sidebar({ user, view, setView, onLogout, pendingCount, mobileOpen, onCloseMobile }) {
   const adminNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { key: "projects", label: "Projects", icon: Building2 },
@@ -255,56 +255,71 @@ function Sidebar({ user, view, setView, onLogout, pendingCount }) {
   const nav = user.role === "Admin" ? adminNav : user.role === "Accounts" ? accountsNav : user.role === "Architect" ? archNav : supNav;
 
   return (
-    <div className="w-60 dia-bg-maroon-deep h-screen flex flex-col shrink-0 sticky top-0">
-      <div className="px-5 py-6 flex items-center justify-center border-b dia-border-maroon-line">
-        <img src={LOGO_FULL} alt="Dia Retail Solutions" className="h-28 object-contain" />
-      </div>
-      <nav className="flex-1 px-3 py-4 space-y-1">
-        {nav.map(item => {
-          const Icon = item.icon;
-          const active = view.tab === item.key;
-          return (
-            <button key={item.key} onClick={() => setView({ tab: item.key })}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors font-body ${active ? "dia-btn-gold" : "dia-text-cream-70 dia-hover-maroon hover:text-white"}`}>
-              <span className="flex items-center gap-2.5"><Icon size={16} /> {item.label}</span>
-              {!!item.badge && <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${active ? "bg-white dia-text-bronze" : "dia-btn-gold"}`}>{item.badge}</span>}
-            </button>
-          );
-        })}
-      </nav>
-      <div className="px-3 py-4 border-t dia-border-maroon-line">
-        <div className="flex items-center gap-2.5 px-2 mb-2">
-          <div className="w-8 h-8 rounded-full bg-stone-700 text-white flex items-center justify-center text-xs font-semibold font-display shrink-0">
-            {user.name.split(" ").map(n => n[0]).join("")}
-          </div>
-          <div className="min-w-0">
-            <div className="text-sm text-white font-medium truncate">{user.name}</div>
-            <div className="text-xs text-stone-400 truncate">{user.role === "Supervisor" ? "Site Supervisor" : user.role === "Architect" ? user.rank : user.role}</div>
-          </div>
+    <>
+      {mobileOpen && (
+        <div onClick={onCloseMobile} className="fixed inset-0 bg-black/40 z-40 sm:hidden" aria-hidden="true" />
+      )}
+      <div className={`w-64 sm:w-60 dia-bg-maroon-deep h-screen flex flex-col shrink-0 fixed sm:sticky top-0 left-0 z-50 sm:z-auto transition-transform duration-200 ${mobileOpen ? "translate-x-0" : "-translate-x-full"} sm:translate-x-0`}>
+        <div className="px-5 py-6 flex items-center justify-center border-b dia-border-maroon-line relative">
+          <img src={LOGO_FULL} alt="Dia Retail Solutions" className="h-28 object-contain" />
+          <button onClick={onCloseMobile} className="sm:hidden absolute right-3 top-3 p-1.5 rounded-lg dia-text-cream-70 hover:text-white">
+            <X size={18} />
+          </button>
         </div>
-        <button onClick={onLogout} className="w-full flex items-center gap-2 px-2 py-2 rounded-lg text-sm dia-text-cream-50 dia-hover-maroon hover:text-white transition-colors font-body">
-          <LogOut size={15} /> Switch user
-        </button>
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+          {nav.map(item => {
+            const Icon = item.icon;
+            const active = view.tab === item.key;
+            return (
+              <button key={item.key} onClick={() => { setView({ tab: item.key }); onCloseMobile(); }}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-colors font-body ${active ? "dia-btn-gold" : "dia-text-cream-70 dia-hover-maroon hover:text-white"}`}>
+                <span className="flex items-center gap-2.5"><Icon size={16} /> {item.label}</span>
+                {!!item.badge && <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${active ? "bg-white dia-text-bronze" : "dia-btn-gold"}`}>{item.badge}</span>}
+              </button>
+            );
+          })}
+        </nav>
+        <div className="px-3 py-4 border-t dia-border-maroon-line">
+          <div className="flex items-center gap-2.5 px-2 mb-2">
+            <div className="w-8 h-8 rounded-full bg-stone-700 text-white flex items-center justify-center text-xs font-semibold font-display shrink-0">
+              {user.name.split(" ").map(n => n[0]).join("")}
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm text-white font-medium truncate">{user.name}</div>
+              <div className="text-xs text-stone-400 truncate">{user.role === "Supervisor" ? "Site Supervisor" : user.role === "Architect" ? user.rank : user.role}</div>
+            </div>
+          </div>
+          <button onClick={onLogout} className="w-full flex items-center gap-2 px-2 py-2 rounded-lg text-sm dia-text-cream-50 dia-hover-maroon hover:text-white transition-colors font-body">
+            <LogOut size={15} /> Switch user
+          </button>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
-function Header({ title, subtitle, notifications }) {
+function Header({ title, subtitle, notifications, onMenuClick }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="flex items-center justify-between px-6 sm:px-8 py-5 border-b border-stone-200 bg-white/70 backdrop-blur sticky top-0 z-20">
-      <div>
-        <h1 className="font-display text-xl sm:text-2xl font-semibold text-stone-900">{title}</h1>
-        {subtitle && <p className="text-sm text-stone-500 mt-0.5 flex items-center gap-2"><span className="dia-diamond" style={{ width: 4, height: 4 }} />{subtitle}</p>}
+    <div className="flex items-center justify-between px-4 sm:px-8 py-4 sm:py-5 border-b border-stone-200 bg-white/70 backdrop-blur sticky top-0 z-20">
+      <div className="flex items-center gap-3 min-w-0">
+        {onMenuClick && (
+          <button onClick={onMenuClick} className="sm:hidden p-2 -ml-2 rounded-lg hover:bg-stone-100 shrink-0">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-stone-700"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
+          </button>
+        )}
+        <div className="min-w-0">
+          <h1 className="font-display text-lg sm:text-2xl font-semibold text-stone-900 truncate">{title}</h1>
+          {subtitle && <p className="text-xs sm:text-sm text-stone-500 mt-0.5 flex items-center gap-2 truncate"><span className="dia-diamond shrink-0" style={{ width: 4, height: 4 }} /><span className="truncate">{subtitle}</span></p>}
+        </div>
       </div>
-      <div className="relative">
+      <div className="relative shrink-0">
         <button onClick={() => setOpen(o => !o)} className="p-2 rounded-lg hover:bg-stone-100 relative">
           <Bell size={19} className="text-stone-600" />
           {notifications.length > 0 && <span className="absolute top-1 right-1 w-2 h-2 bg-rose-600 rounded-full" />}
         </button>
         {open && (
-          <div className="absolute right-0 mt-2 w-80 bg-white border border-stone-200 rounded-xl shadow-xl z-30 max-h-96 overflow-y-auto">
+          <div className="absolute right-0 mt-2 w-[calc(100vw-2rem)] max-w-80 bg-white border border-stone-200 rounded-xl shadow-xl z-30 max-h-96 overflow-y-auto">
             <div className="px-4 py-3 border-b border-stone-100 font-semibold text-sm text-stone-800">Notifications</div>
             {notifications.length === 0 ? (
               <div className="px-4 py-6 text-center text-sm text-stone-400">You're all caught up.</div>
@@ -354,7 +369,7 @@ function AdminDashboard({ data, setView }) {
   const projectName = (id) => projects.find(p => p.id === id)?.name || id;
 
   return (
-    <div className="p-6 sm:p-8 space-y-6">
+    <div className="p-4 sm:p-8 space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KPI label="Active Projects" value={kpis.active.length} sub={`${kpis.completed.length} completed`} icon={Building2} />
         <KPI label="Total Contract Value" value={fmtINR(kpis.totalContract)} icon={IndianRupee} />
@@ -479,7 +494,7 @@ function ProjectsList({ data, setView, actions, currentUser }) {
   });
 
   return (
-    <div className="p-6 sm:p-8 space-y-5">
+    <div className="p-4 sm:p-8 space-y-5">
       <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
         <div className="relative flex-1 max-w-sm">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
@@ -1583,7 +1598,7 @@ function DeleteProjectZone({ project, onDelete }) {
   );
 }
 
-function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) {
+function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, onMenuClick }) {
   const project = data.projects.find(p => p.id === projectId);
   const [tab, setTab] = useState(sub || "overview");
   const [showEditTeam, setShowEditTeam] = useState(false);
@@ -1598,7 +1613,7 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
 
   if (!isFinance && !isAssignedSupervisor && !isAssignedArchitect) {
     return (
-      <div className="p-6 sm:p-8">
+      <div className="p-4 sm:p-8">
         <button onClick={() => setView({ tab: "projects" })} className="flex items-center gap-1.5 text-sm text-stone-500 hover:text-stone-800 font-semibold mb-4">
           <ArrowLeft size={15} /> All projects
         </button>
@@ -1628,10 +1643,17 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
   ];
 
   return (
-    <div className="p-6 sm:p-8">
-      <button onClick={() => setView({ tab: "projects" })} className="flex items-center gap-1.5 text-sm text-stone-500 hover:text-stone-800 font-semibold mb-4">
-        <ArrowLeft size={15} /> All projects
-      </button>
+    <div className="p-4 sm:p-8">
+      <div className="flex items-center justify-between mb-4">
+        <button onClick={() => setView({ tab: "projects" })} className="flex items-center gap-1.5 text-sm text-stone-500 hover:text-stone-800 font-semibold">
+          <ArrowLeft size={15} /> All projects
+        </button>
+        {onMenuClick && (
+          <button onClick={onMenuClick} className="sm:hidden p-2 rounded-lg hover:bg-stone-100">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-stone-700"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
+          </button>
+        )}
+      </div>
 
       <Card className="p-5 mb-5">
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
@@ -1761,7 +1783,7 @@ function ExpensesGlobal({ data, currentUser, actions }) {
   const totalDue = paymentsDue.reduce((s, e) => s + (e.totalInvoiceValue != null ? e.totalInvoiceValue - e.advancePaid : e.amount), 0);
 
   return (
-    <div className="p-6 sm:p-8 space-y-5">
+    <div className="p-4 sm:p-8 space-y-5">
       {paymentsDue.length > 0 && (
         <Card className="border-amber-200 bg-amber-50/50 overflow-hidden">
           <button onClick={() => setShowPaymentsDue(s => !s)} className="w-full flex items-center justify-between p-4">
@@ -1955,7 +1977,7 @@ function VendorsView({ data, actions }) {
   const vendors = [...data.vendors].sort((a, b) => a.name.localeCompare(b.name));
 
   return (
-    <div className="p-6 sm:p-8 space-y-5">
+    <div className="p-4 sm:p-8 space-y-5">
       <div className="flex items-center justify-between">
         <p className="text-sm text-stone-500">{vendors.length} vendor{vendors.length !== 1 ? "s" : ""} on file</p>
         <button onClick={() => setShowForm(true)} className="flex items-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg">
@@ -2115,7 +2137,7 @@ function TeamView({ data, currentUser, actions }) {
   };
 
   return (
-    <div className="p-6 sm:p-8 space-y-6">
+    <div className="p-4 sm:p-8 space-y-6">
       {pending.length > 0 && (
         <div>
           <h3 className="text-sm font-semibold text-amber-700 mb-2.5 flex items-center gap-1.5"><AlertTriangle size={14} /> Pending approval ({pending.length})</h3>
@@ -2502,6 +2524,7 @@ export default function App() {
   const [view, setView] = useState({ tab: "dashboard" });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const loadProfileAndData = useCallback(async (userId) => {
     setLoading(true);
@@ -2625,17 +2648,18 @@ export default function App() {
   return (
     <div className="font-body min-h-screen bg-stone-50 flex">
       <style>{FONT_STYLE}</style>
-      <Sidebar user={currentUser} view={view} setView={setView} onLogout={handleLogout} pendingCount={pendingCount} />
+      <Sidebar user={currentUser} view={view} setView={setView} onLogout={handleLogout} pendingCount={pendingCount}
+        mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
       <div className="flex-1 min-w-0">
         {view.tab !== "project" && view.tab !== "sup-home" && view.tab !== "arch-home" && (
-          <Header title={titles[view.tab]?.[0] || ""} subtitle={titles[view.tab]?.[1]} notifications={notifications} />
+          <Header title={titles[view.tab]?.[0] || ""} subtitle={titles[view.tab]?.[1]} notifications={notifications} onMenuClick={() => setMobileNavOpen(true)} />
         )}
-        {view.tab === "sup-home" && <Header title="My Sites" subtitle={`Welcome back, ${currentUser.name.split(" ")[0]}`} notifications={notifications} />}
-        {view.tab === "arch-home" && <Header title="My Design Work" subtitle={`Welcome back, ${currentUser.name.split(" ")[0]}`} notifications={notifications} />}
+        {view.tab === "sup-home" && <Header title="My Sites" subtitle={`Welcome back, ${currentUser.name.split(" ")[0]}`} notifications={notifications} onMenuClick={() => setMobileNavOpen(true)} />}
+        {view.tab === "arch-home" && <Header title="My Design Work" subtitle={`Welcome back, ${currentUser.name.split(" ")[0]}`} notifications={notifications} onMenuClick={() => setMobileNavOpen(true)} />}
 
         {view.tab === "dashboard" && (isStaffOnly ? <AdminDashboard data={data} setView={setView} /> : <AccessDenied />)}
         {view.tab === "projects" && (isStaffOnly ? <ProjectsList data={data} setView={setView} actions={actions} currentUser={currentUser} /> : <AccessDenied />)}
-        {view.tab === "project" && <ProjectDetail data={data} projectId={view.projectId} sub={view.sub} setView={setView} currentUser={currentUser} actions={actions} />}
+        {view.tab === "project" && <ProjectDetail data={data} projectId={view.projectId} sub={view.sub} setView={setView} currentUser={currentUser} actions={actions} onMenuClick={() => setMobileNavOpen(true)} />}
         {view.tab === "expenses" && (isStaffOnly ? <ExpensesGlobal data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "vendors" && (isStaffOnly ? <VendorsView data={data} actions={actions} /> : <AccessDenied />)}
         {view.tab === "users" && (isAdmin ? <TeamView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
