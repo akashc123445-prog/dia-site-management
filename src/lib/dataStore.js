@@ -50,12 +50,20 @@ const mapPhoto = (r) => ({
 });
 
 const mapSiteReport = (r, allPhotos) => ({
-  id: r.id, projectId: r.project_id, supervisorId: r.supervisor_id, date: r.date, workers: r.workers,
+  id: r.id, projectId: r.project_id, supervisorId: r.supervisor_id, date: r.date, reportType: r.report_type, workers: r.workers,
   workDone: r.work_done, workInProgress: r.work_in_progress, workPlanned: r.work_planned,
   materialsReceived: r.materials_received, materialsNeeded: r.materials_needed,
   issues: r.issues, delays: r.delays, pctComplete: r.pct_complete, remarks: r.remarks,
   submittedAt: r.submitted_at,
   photos: allPhotos.filter((p) => p.site_report_id === r.id).map(mapPhoto),
+});
+
+const mapSiteVisit = (r) => ({
+  id: r.id, projectId: r.project_id, architectId: r.architect_id,
+  entryTime: r.entry_time, entryPhotoUrl: r.entry_photo_url,
+  exitTime: r.exit_time, exitPhotoUrl: r.exit_photo_url,
+  momNotes: r.mom_notes, momAttachmentUrl: r.mom_attachment_url,
+  status: r.status, createdAt: r.created_at,
 });
 
 const mapExpense = (r) => ({
@@ -91,7 +99,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -104,9 +112,10 @@ export async function fetchAllData() {
       supabase.from("issues").select("*").order("date", { ascending: false }),
       supabase.from("vendors").select("*").order("name"),
       supabase.from("material_requests").select("*").order("created_at", { ascending: false }),
+      supabase.from("site_visits").select("*").order("entry_time", { ascending: false }),
     ]);
 
-  const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw };
+  const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw };
   for (const [key, res] of Object.entries(results)) {
     if (res.error) throw new Error(`Failed to load ${key}: ${res.error.message}`);
   }
@@ -121,6 +130,7 @@ export async function fetchAllData() {
     issues: (issuesRaw.data || []).map(mapIssue),
     vendors: (vendorsRaw.data || []).map(mapVendor),
     materialRequests: (materialRequestsRaw.data || []).map(mapMaterialRequest),
+    siteVisits: (siteVisitsRaw.data || []).map(mapSiteVisit),
   };
 }
 
@@ -306,7 +316,7 @@ export async function dbRemoveDrawing(drawingId) {
 
 export async function dbAddSiteReport(projectId, supervisorId, rep) {
   const { error } = await supabase.from("site_reports").insert({
-    project_id: projectId, supervisor_id: supervisorId, date: rep.date,
+    project_id: projectId, supervisor_id: supervisorId, date: rep.date, report_type: rep.reportType || "Opening",
     workers: Number(rep.workers) || 0, work_done: rep.workDone, work_in_progress: rep.workInProgress,
     work_planned: rep.workPlanned, materials_received: rep.materialsReceived, materials_needed: rep.materialsNeeded,
     issues: rep.issues, delays: rep.delays, pct_complete: Number(rep.pctComplete) || 0, remarks: rep.remarks,
@@ -448,6 +458,25 @@ export async function dbRejectMaterialRequest(id, approverId, reason) {
 
 export async function dbDeleteMaterialRequest(id) {
   const { error } = await supabase.from("material_requests").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/* ---- site visits (architect entry/exit log) ----------------------------- */
+
+export async function dbStartSiteVisit(projectId, architectId, entryPhotoUrl) {
+  const { error } = await supabase.from("site_visits").insert({
+    project_id: projectId, architect_id: architectId, entry_time: new Date().toISOString(),
+    entry_photo_url: entryPhotoUrl, status: "Open",
+  });
+  if (error) throw error;
+}
+
+export async function dbEndSiteVisit(visitId, { exitPhotoUrl, momNotes, momAttachmentUrl }) {
+  const { error } = await supabase.from("site_visits").update({
+    exit_time: new Date().toISOString(), exit_photo_url: exitPhotoUrl,
+    mom_notes: momNotes || null, mom_attachment_url: momAttachmentUrl || null,
+    status: "Closed",
+  }).eq("id", visitId);
   if (error) throw error;
 }
 
