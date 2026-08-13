@@ -255,8 +255,8 @@ function Sidebar({ user, view, setView, onLogout, pendingCount }) {
 
   return (
     <div className="w-60 dia-bg-maroon-deep h-screen flex flex-col shrink-0 sticky top-0">
-      <div className="px-5 py-5 flex items-center border-b dia-border-maroon-line">
-        <img src={LOGO_MARK} alt="Dia Retail Solutions" className="h-11 object-contain" />
+      <div className="px-5 py-6 flex items-center justify-center border-b dia-border-maroon-line">
+        <img src={LOGO_FULL} alt="Dia Retail Solutions" className="h-28 object-contain" />
       </div>
       <nav className="flex-1 px-3 py-4 space-y-1">
         {nav.map(item => {
