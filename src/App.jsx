@@ -24,7 +24,7 @@ import {
   computeHealth, HEALTH_META, exportToExcel,
 } from "./lib/helpers";
 import {
-  fetchAllData, dbUpdateProfile, dbRemoveUser, dbAddProject, dbUpdateProject, dbDeleteProject, dbUpdateTask,
+  fetchAllData, dbUpdateProfile, dbRemoveUser, dbAdminCreateUser, dbAdminResetPassword, dbAddProject, dbUpdateProject, dbDeleteProject, dbUpdateTask,
   dbUpdateDesignPhase, dbUpdateDrawing, dbAddDrawing, dbRemoveDrawing,
   dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbMarkExpensePaid, dbAddIssue,
   dbAddVendor, dbUpdateVendor, dbDeleteVendor,
@@ -2085,6 +2085,7 @@ function VendorForm({ vendor, onSave, onDelete }) {
 function TeamView({ data, currentUser, actions }) {
   const { users, projects } = data;
   const [editingUser, setEditingUser] = useState(null);
+  const [showAddUser, setShowAddUser] = useState(false);
 
   const ROLE_ORDER = ["Admin", "Accounts", "Architect", "Supervisor"];
   const pending = users.filter(u => u.active === false && !u.removed);
@@ -2138,6 +2139,12 @@ function TeamView({ data, currentUser, actions }) {
 
   return (
     <div className="p-4 sm:p-8 space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <p className="text-xs text-stone-400 max-w-md">Add teammates directly with a role and password, or let them sign up themselves and activate them below.</p>
+        <button onClick={() => setShowAddUser(true)} className="flex items-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg shrink-0">
+          <Plus size={16} /> Add Teammate
+        </button>
+      </div>
       {pending.length > 0 && (
         <div>
           <h3 className="text-sm font-semibold text-amber-700 mb-2.5 flex items-center gap-1.5"><AlertTriangle size={14} /> Pending approval ({pending.length})</h3>
@@ -2152,18 +2159,161 @@ function TeamView({ data, currentUser, actions }) {
           {active.map(renderCard)}
         </div>
       </div>
-      <p className="text-xs text-stone-400">New teammates create their own account from the sign-in screen — assign their role here once you're ready to activate them.</p>
 
+      {showAddUser && (
+        <Modal title="Add Teammate" onClose={() => setShowAddUser(false)}>
+          <AddUserForm onSave={async (fields) => { await actions.adminCreateUser(fields); setShowAddUser(false); }} />
+        </Modal>
+      )}
       {editingUser && (
         <EditUserModal user={editingUser} isSelf={editingUser.id === currentUser.id} onClose={() => setEditingUser(null)}
           onSave={(updates) => { actions.updateUser(editingUser.id, updates); setEditingUser(null); }}
-          onRemove={() => { actions.removeUser(editingUser.id); setEditingUser(null); }} />
+          onRemove={() => { actions.removeUser(editingUser.id); setEditingUser(null); }}
+          onResetPassword={(password) => actions.adminResetPassword(editingUser.id, password)} />
       )}
     </div>
   );
 }
 
-function EditUserModal({ user, isSelf, onClose, onSave, onRemove }) {
+function AddUserForm({ onSave }) {
+  const [form, setForm] = useState({ name: "", email: "", password: "", role: "Supervisor", rank: ARCHITECT_RANKS[2] });
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  const genPassword = () => {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+    let pw = "";
+    for (let i = 0; i < 10; i++) pw += chars[Math.floor(Math.random() * chars.length)];
+    setForm(f => ({ ...f, password: pw }));
+    setShowPassword(true);
+  };
+
+  const handleSave = async () => {
+    setError("");
+    if (!form.name.trim() || !form.email.trim()) { setError("Name and email are required."); return; }
+    if (form.password.length < 6) { setError("Password must be at least 6 characters."); return; }
+    setBusy(true);
+    try {
+      await onSave({
+        name: form.name.trim(), email: form.email.trim(), password: form.password,
+        role: form.role, rank: form.role === "Architect" ? form.rank : null,
+      });
+    } catch (err) {
+      setError(err.message || "Failed to create account.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <Field label="Full name"><input autoFocus className={inputCls} value={form.name} onChange={set("name")} placeholder="e.g. Neha Kapoor" /></Field>
+      <Field label="Email"><input type="email" className={inputCls} value={form.email} onChange={set("email")} placeholder="name@diaretailsolutions.com" /></Field>
+      <Field label="Role">
+        <select className={inputCls} value={form.role} onChange={set("role")}>
+          {["Admin", "Accounts", "Architect", "Supervisor"].map(r => <option key={r} value={r}>{r === "Supervisor" ? "Site Supervisor" : r}</option>)}
+        </select>
+      </Field>
+      {form.role === "Architect" && (
+        <Field label="Architect rank">
+          <select className={inputCls} value={form.rank} onChange={set("rank")}>
+            {ARCHITECT_RANKS.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </Field>
+      )}
+      <Field label="Password">
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <input type={showPassword ? "text" : "password"} className={inputCls} value={form.password} onChange={set("password")} placeholder="At least 6 characters" />
+            <button type="button" onClick={() => setShowPassword(s => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600">
+              {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+            </button>
+          </div>
+          <button type="button" onClick={genPassword} className="text-xs font-semibold text-stone-600 border border-stone-200 rounded-lg px-3 hover:border-stone-400 shrink-0">Generate</button>
+        </div>
+        <p className="text-[11px] text-stone-400 mt-1">Share this password with them directly — it won't be shown here again.</p>
+      </Field>
+      {error && <p className="text-xs text-rose-600 mb-3 -mt-2">{error}</p>}
+      <button onClick={handleSave} disabled={busy}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">
+        {busy ? "Creating…" : "Create account"}
+      </button>
+      <p className="text-[11px] text-stone-400 mt-2 text-center">This account is active immediately — no separate approval step needed.</p>
+    </div>
+  );
+}
+
+function ResetPasswordBlock({ userName, onReset }) {
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  const genPassword = () => {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+    let pw = "";
+    for (let i = 0; i < 10; i++) pw += chars[Math.floor(Math.random() * chars.length)];
+    setPassword(pw);
+    setShowPassword(true);
+  };
+
+  const handleReset = async () => {
+    setError("");
+    if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
+    setBusy(true);
+    try {
+      await onReset(password);
+      setDone(true);
+    } catch (err) {
+      setError(err.message || "Failed to reset password.");
+    }
+    setBusy(false);
+  };
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="w-full text-xs font-semibold dia-text-bronze hover:underline text-left">
+        Forgot password? Set a new one for {userName.split(" ")[0]}
+      </button>
+    );
+  }
+
+  if (done) {
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-emerald-700">Password updated. Share it with {userName.split(" ")[0]} directly — it won't be shown again here.</p>
+        <div className="font-mono text-sm bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 select-all">{password}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-stone-500">Set a new password for {userName}. This signs them out anywhere they're currently logged in.</p>
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <input type={showPassword ? "text" : "password"} className={inputCls} value={password} onChange={e => setPassword(e.target.value)} placeholder="New password" />
+          <button type="button" onClick={() => setShowPassword(s => !s)} className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600">
+            {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+          </button>
+        </div>
+        <button type="button" onClick={genPassword} className="text-xs font-semibold text-stone-600 border border-stone-200 rounded-lg px-3 hover:border-stone-400 shrink-0">Generate</button>
+      </div>
+      {error && <p className="text-xs text-rose-600">{error}</p>}
+      <div className="flex gap-2">
+        <button onClick={handleReset} disabled={busy} className="flex-1 text-xs font-semibold text-white bg-stone-800 hover:bg-stone-900 disabled:opacity-40 py-2 rounded-lg">
+          {busy ? "Setting…" : "Set new password"}
+        </button>
+        <button onClick={() => { setOpen(false); setPassword(""); setError(""); }} className="flex-1 text-xs font-semibold text-stone-600 border border-stone-200 py-2 rounded-lg">Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function EditUserModal({ user, isSelf, onClose, onSave, onRemove, onResetPassword }) {
   const [form, setForm] = useState({ name: user.name, email: user.email, role: user.role, rank: user.rank || ARCHITECT_RANKS[2], active: user.active !== false });
   const [error, setError] = useState("");
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -2201,6 +2351,12 @@ function EditUserModal({ user, isSelf, onClose, onSave, onRemove }) {
       </Field>
       {error && <p className="text-xs text-rose-600 mb-3 -mt-2">{error}</p>}
       <button onClick={handleSave} className="w-full dia-btn-gold font-semibold text-sm py-2.5 rounded-lg mt-1">Save changes</button>
+
+      {onResetPassword && (
+        <div className="mt-4 pt-4 border-t border-stone-100">
+          <ResetPasswordBlock userName={user.name} onReset={onResetPassword} />
+        </div>
+      )}
 
       {!isSelf && onRemove && (
         <div className="mt-4 pt-4 border-t border-stone-100">
@@ -2570,6 +2726,8 @@ export default function App() {
   const actions = useMemo(() => ({
     updateUser: (userId, updates) => dbUpdateProfile(userId, updates).then(reload),
     removeUser: (userId) => dbRemoveUser(userId, data?.projects || []).then(reload),
+    adminCreateUser: (fields) => dbAdminCreateUser(fields).then(reload),
+    adminResetPassword: (userId, password) => dbAdminResetPassword(userId, password),
     addProject: (proj) => dbAddProject(proj, data?.users || []).then(reload),
     updateProjectTeam: (projectId, updates) => dbUpdateProject(projectId, updates).then(reload),
     deleteProject: (projectId) => dbDeleteProject(projectId).then(reload),
