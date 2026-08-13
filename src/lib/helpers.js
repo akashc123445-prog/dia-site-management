@@ -19,6 +19,27 @@ function isTaskDelayed(task) {
   return new Date(task.target) < TODAY;
 }
 
+/* For a given person on a given project, finds daily report slots (Opening/
+   Midday/Closing) they missed over the last `lookbackDays` days (not
+   counting today, since today isn't "missed" yet). Used both to nudge the
+   person on next login and to let Admin see who's falling behind. */
+function computeMissedReportSlots(project, siteReports, userId, lookbackDays = 7) {
+  const REPORT_SLOTS = ["Opening", "Midday", "Closing"];
+  const missed = [];
+  const start = new Date(project.startDate);
+  for (let i = 1; i <= lookbackDays; i++) {
+    const d = new Date(TODAY);
+    d.setDate(d.getDate() - i);
+    if (d < start) break;
+    const dateStr = d.toISOString().slice(0, 10);
+    const dayReports = siteReports.filter(r => r.projectId === project.id && r.date === dateStr && r.supervisorId === userId);
+    for (const slot of REPORT_SLOTS) {
+      if (!dayReports.some(r => r.reportType === slot)) missed.push({ date: dateStr, slot });
+    }
+  }
+  return missed;
+}
+
 function computeProjectSpend(expenses, projectId) {
   const list = expenses.filter(e => e.projectId === projectId);
   const approved = list.filter(e => e.status === "Approved").reduce((s, e) => s + e.amount, 0);
@@ -141,4 +162,5 @@ export {
   isTaskDelayed, computeProjectSpend, computeProjectProgress, computeDesignProgress,
   hasProof, effectivePhase, effectiveDrawing, fileToDataURL, demoProof, DEMO_PROOF_DATA_URL,
   computeHealth, HEALTH_META, generatePhaseTasks, generateDesignPhases, exportToExcel,
+  computeMissedReportSlots,
 };
