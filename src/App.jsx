@@ -266,6 +266,11 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, mobileOpen, onCl
             <X size={18} />
           </button>
         </div>
+        <div className="px-5 pt-3 pb-1 text-center">
+          <p className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">
+            Greetings, {user.name.toUpperCase()}
+          </p>
+        </div>
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
           {nav.map(item => {
             const Icon = item.icon;
