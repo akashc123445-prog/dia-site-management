@@ -7,7 +7,8 @@
    ---------------------------------------------------------------------- */
 
 import { supabase, PROOF_BUCKET, SITE_PHOTOS_BUCKET } from "./supabaseClient";
-import { generatePhaseTasks, generateDesignPhases } from "./helpers";
+import { generatePhaseTasks, generateDesignPhases, daysBetween } from "./helpers";
+import { DESIGN_PHASES_DESIGNING } from "./constants";
 
 /* ---- DB row -> UI object ------------------------------------------- */
 
@@ -17,6 +18,7 @@ const mapUser = (r) => ({
 
 const mapProject = (r) => ({
   id: r.id, name: r.name, client: r.client, location: r.location, type: r.type,
+  contractType: r.contract_type || "Turnkey",
   area: Number(r.area) || 0, startDate: r.start_date, plannedEnd: r.planned_end, actualEnd: r.actual_end,
   pm: r.pm, supervisors: r.supervisors || [], architects: r.architects || [],
   contractValue: Number(r.contract_value) || 0, estimatedCost: Number(r.estimated_cost) || 0, status: r.status,
@@ -148,8 +150,10 @@ export async function dbRemoveUser(userId, projects) {
 /* ---- projects ------------------------------------------------------- */
 
 export async function dbAddProject(proj, users) {
+  const isDesigning = proj.contractType === "Designing";
   const { data: projectRow, error } = await supabase.from("projects").insert({
     name: proj.name, client: proj.client, location: proj.location, type: proj.type, area: proj.area,
+    contract_type: proj.contractType || "Turnkey",
     start_date: proj.startDate, planned_end: proj.plannedEnd, actual_end: null, pm: proj.pm,
     supervisors: proj.supervisors || [], architects: proj.architects || [],
     contract_value: proj.contractValue, estimated_cost: proj.estimatedCost, status: proj.status,
@@ -160,16 +164,22 @@ export async function dbAddProject(proj, users) {
   const leadSupervisorName = users.find((u) => u.id === (proj.supervisors || [])[0])?.name || null;
   const leadArchitectName = users.find((u) => u.id === (proj.architects || [])[0])?.name || null;
 
-  const taskTemplates = generatePhaseTasks(projectId, proj.startDate, proj.plannedEnd, leadSupervisorName);
-  if (taskTemplates.length) {
-    const { error: taskErr } = await supabase.from("tasks").insert(taskTemplates.map((t) => ({
-      project_id: projectId, phase: t.phase, name: t.name, start: t.start, target: t.target,
-      actual: t.actual, status: t.status, pct: t.pct, assigned_to: t.assignedTo, depends_on: null,
-    })));
-    if (taskErr) throw taskErr;
+  // Designing (design-only) contracts have no construction phase, so no construction
+  // tasks are generated — the whole project timeline is the design workflow instead.
+  if (!isDesigning) {
+    const taskTemplates = generatePhaseTasks(projectId, proj.startDate, proj.plannedEnd, leadSupervisorName);
+    if (taskTemplates.length) {
+      const { error: taskErr } = await supabase.from("tasks").insert(taskTemplates.map((t) => ({
+        project_id: projectId, phase: t.phase, name: t.name, start: t.start, target: t.target,
+        actual: t.actual, status: t.status, pct: t.pct, assigned_to: t.assignedTo, depends_on: null,
+      })));
+      if (taskErr) throw taskErr;
+    }
   }
 
-  const phaseTemplates = generateDesignPhases(projectId, proj.startDate, leadArchitectName);
+  const phaseTemplates = isDesigning
+    ? generateDesignPhases(projectId, proj.plannedEnd, leadArchitectName, Math.max(1, daysBetween(proj.startDate, proj.plannedEnd)), DESIGN_PHASES_DESIGNING)
+    : generateDesignPhases(projectId, proj.startDate, leadArchitectName);
   for (const dp of phaseTemplates) {
     const { data: dpRow, error: dpErr } = await supabase.from("design_phases").insert({
       project_id: projectId, phase: dp.phase, start: dp.start, target: dp.target, actual: dp.actual,
@@ -193,6 +203,7 @@ export async function dbUpdateProject(projectId, updates) {
   if (updates.client !== undefined) payload.client = updates.client;
   if (updates.location !== undefined) payload.location = updates.location;
   if (updates.type !== undefined) payload.type = updates.type;
+  if (updates.contractType !== undefined) payload.contract_type = updates.contractType;
   if (updates.area !== undefined) payload.area = updates.area;
   if (updates.startDate !== undefined) payload.start_date = updates.startDate;
   if (updates.plannedEnd !== undefined) payload.planned_end = updates.plannedEnd;
