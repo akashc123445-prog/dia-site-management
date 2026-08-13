@@ -21,7 +21,7 @@ import {
   fmtINR, fmtDate, fmtTime, daysBetween, clamp,
   isTaskDelayed, computeProjectSpend, computeProjectProgress, computeDesignProgress,
   hasProof, effectivePhase, effectiveDrawing,
-  computeHealth, HEALTH_META, exportToExcel,
+  computeHealth, HEALTH_META, exportToExcel, computeMissedReportSlots,
 } from "./lib/helpers";
 import {
   fetchAllData, dbUpdateProfile, dbRemoveUser, dbAdminCreateUser, dbAdminResetPassword, dbAddProject, dbUpdateProject, dbDeleteProject, dbUpdateTask,
@@ -29,6 +29,7 @@ import {
   dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbMarkExpensePaid, dbAddIssue,
   dbAddVendor, dbUpdateVendor, dbDeleteVendor,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
+  dbStartSiteVisit, dbEndSiteVisit,
   uploadProofFile, uploadSitePhoto,
 } from "./lib/dataStore";
 
@@ -933,56 +934,109 @@ function UpdateDrawingForm({ drawing, onSave }) {
   );
 }
 
-function ReportsTab({ project, reports, users, canAdd, onAdd }) {
-  const [showModal, setShowModal] = useState(false);
-  const sorted = [...reports].sort((a, b) => new Date(b.date) - new Date(a.date));
+const REPORT_SLOTS = ["Opening", "Midday", "Closing"];
+
+function inferReportType() {
+  const h = new Date().getHours();
+  if (h < 12) return "Opening";
+  if (h < 16) return "Midday";
+  return "Closing";
+}
+
+function ReportsTab({ project, reports, users, currentUser, canAdd, onAdd }) {
+  const [showModal, setShowModal] = useState(null); // report_type being filled, or null
   const userName = (id) => users.find(u => u.id === id)?.name || id;
+
+  const byDate = {};
+  reports.forEach(r => { byDate[r.date] = byDate[r.date] || []; byDate[r.date].push(r); });
+  const dates = Object.keys(byDate).sort((a, b) => new Date(b) - new Date(a));
+  const todayStr = TODAY.toISOString().slice(0, 10);
+  if (!dates.includes(todayStr)) dates.unshift(todayStr);
 
   return (
     <div className="space-y-4">
-      {canAdd && (
-        <button onClick={() => setShowModal(true)} className="flex items-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg">
-          <Plus size={16} /> Add Daily Site Report
-        </button>
-      )}
-      {sorted.length === 0 && <p className="text-sm text-stone-400">No site reports submitted yet.</p>}
-      {sorted.map(r => (
-        <Card key={r.id} className="p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <span className="font-semibold text-stone-900 text-sm">{fmtDate(r.date)}</span>
-              {r.submittedAt && <span className="text-xs text-stone-400 font-mono ml-1.5">{fmtTime(r.submittedAt)}</span>}
-              <span className="text-xs text-stone-500 ml-2">by {userName(r.supervisorId)} · {r.workers} workers on site</span>
+      <p className="text-xs text-stone-400">Three reports are expected each day — Opening, Midday, and Closing — from both the site supervisor and the architect.</p>
+      {dates.map(d => {
+        const dayReports = byDate[d] || [];
+        const isToday = d === todayStr;
+        const isFuture = new Date(d) > new Date(todayStr);
+        return (
+          <Card key={d} className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <span className="font-semibold text-stone-900 text-sm">{fmtDate(d)}{isToday ? " · Today" : ""}</span>
             </div>
-            <span className="text-sm font-mono font-semibold dia-text-bronze">{r.pctComplete}% complete</span>
-          </div>
-          <div className="grid sm:grid-cols-2 gap-3 text-sm">
-            <div><span className="text-xs font-semibold text-stone-500 uppercase">Work completed today</span><p className="text-stone-700 mt-0.5">{r.workDone}</p></div>
-            <div><span className="text-xs font-semibold text-stone-500 uppercase">Planned for tomorrow</span><p className="text-stone-700 mt-0.5">{r.workPlanned}</p></div>
-            <div><span className="text-xs font-semibold text-stone-500 uppercase">Materials received</span><p className="text-stone-700 mt-0.5">{r.materialsReceived || "—"}</p></div>
-            <div><span className="text-xs font-semibold text-stone-500 uppercase">Materials required</span><p className="text-stone-700 mt-0.5">{r.materialsNeeded || "—"}</p></div>
-            {r.issues && <div className="sm:col-span-2"><span className="text-xs font-semibold text-rose-600 uppercase">Issues encountered</span><p className="text-stone-700 mt-0.5">{r.issues}</p></div>}
-            {r.remarks && <div className="sm:col-span-2"><span className="text-xs font-semibold text-stone-500 uppercase">Remarks</span><p className="text-stone-700 mt-0.5">{r.remarks}</p></div>}
-          </div>
-        </Card>
-      ))}
-      {showModal && <Modal title="Daily Site Report" onClose={() => setShowModal(false)} wide>
-        <SiteReportForm onSave={(rep) => { onAdd(rep); setShowModal(false); }} />
+            <div className="grid sm:grid-cols-3 gap-3">
+              {REPORT_SLOTS.map(slot => {
+                const slotReports = dayReports.filter(r => r.reportType === slot);
+                const missing = slotReports.length === 0 && !isFuture;
+                return (
+                  <div key={slot} className={`rounded-lg border p-3 ${slotReports.length ? "border-emerald-200 bg-emerald-50/40" : missing ? "border-amber-200 bg-amber-50/40" : "border-stone-200 bg-stone-50"}`}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-xs font-semibold text-stone-700">{slot}</span>
+                      {canAdd && isToday && (
+                        <button onClick={() => setShowModal(slot)} className="text-[10px] font-semibold dia-text-bronze hover:underline">
+                          {slotReports.some(r => r.supervisorId === currentUser.id) ? "Add another" : "Submit"}
+                        </button>
+                      )}
+                    </div>
+                    {slotReports.length === 0 ? (
+                      <p className={`text-xs ${missing ? "text-amber-600 font-semibold" : "text-stone-400"}`}>{missing ? "Missing" : "—"}</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {slotReports.map(r => (
+                          <div key={r.id} className="text-[11px] text-stone-600">
+                            <span className="font-semibold">{userName(r.supervisorId)}</span> · {fmtTime(r.submittedAt)}
+                            {r.pctComplete != null && <span className="text-stone-400"> · {r.pctComplete}%</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {dayReports.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-stone-100 space-y-2">
+                {dayReports.map(r => (
+                  <details key={r.id} className="text-xs">
+                    <summary className="cursor-pointer font-semibold text-stone-600">{r.reportType} report by {userName(r.supervisorId)} — details</summary>
+                    <div className="grid sm:grid-cols-2 gap-2 mt-2 text-stone-700">
+                      <div><span className="font-semibold text-stone-500 uppercase text-[10px]">Work done</span><p>{r.workDone || "—"}</p></div>
+                      <div><span className="font-semibold text-stone-500 uppercase text-[10px]">Planned next</span><p>{r.workPlanned || "—"}</p></div>
+                      <div><span className="font-semibold text-stone-500 uppercase text-[10px]">Materials received</span><p>{r.materialsReceived || "—"}</p></div>
+                      <div><span className="font-semibold text-stone-500 uppercase text-[10px]">Materials needed</span><p>{r.materialsNeeded || "—"}</p></div>
+                      {r.issues && <div className="sm:col-span-2"><span className="font-semibold text-rose-600 uppercase text-[10px]">Issues</span><p>{r.issues}</p></div>}
+                      {r.remarks && <div className="sm:col-span-2"><span className="font-semibold text-stone-500 uppercase text-[10px]">Remarks</span><p>{r.remarks}</p></div>}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            )}
+          </Card>
+        );
+      })}
+      {showModal && <Modal title={`${showModal} Report — Today`} onClose={() => setShowModal(null)} wide>
+        <SiteReportForm reportType={showModal} onSave={(rep) => { onAdd(rep); setShowModal(null); }} />
       </Modal>}
     </div>
   );
 }
 
-function SiteReportForm({ onSave }) {
+function SiteReportForm({ onSave, reportType }) {
   const [form, setForm] = useState({
-    date: TODAY.toISOString().slice(0, 10), workers: "", workDone: "", workInProgress: "", workPlanned: "",
+    date: TODAY.toISOString().slice(0, 10), reportType: reportType || inferReportType(),
+    workers: "", workDone: "", workInProgress: "", workPlanned: "",
     materialsReceived: "", materialsNeeded: "", issues: "", delays: "", pctComplete: 0, remarks: ""
   });
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
   return (
     <div>
       <div className="grid sm:grid-cols-2 gap-x-4">
-        <Field label="Date"><input type="date" className={inputCls} value={form.date} onChange={set("date")} /></Field>
+        <Field label="Report">
+          <select className={inputCls} value={form.reportType} onChange={set("reportType")} disabled={!!reportType}>
+            {REPORT_SLOTS.map(s => <option key={s}>{s}</option>)}
+          </select>
+        </Field>
         <Field label="Number of workers on site"><input type="number" className={inputCls} value={form.workers} onChange={set("workers")} /></Field>
       </div>
       <Field label="Work completed today"><textarea className={inputCls} rows={2} value={form.workDone} onChange={set("workDone")} /></Field>
@@ -1522,6 +1576,166 @@ function MaterialRequestForm({ isAdmin, onSave }) {
   );
 }
 
+function SiteVisitsTab({ project, visits, users, currentUser, canLog, onStart, onEnd }) {
+  const userName = (id) => users.find(u => u.id === id)?.name || id;
+  const sorted = [...visits].sort((a, b) => new Date(b.entryTime) - new Date(a.entryTime));
+  const myOpenVisit = visits.find(v => v.status === "Open" && v.architectId === currentUser.id);
+  const [showEnd, setShowEnd] = useState(false);
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-stone-400">Every architect site visit is logged with an entry photo, and closed out with an exit photo and minutes of meeting.</p>
+
+      {canLog && (
+        myOpenVisit ? (
+          <Card className="p-4 border-amber-200 bg-amber-50/40">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <div className="text-sm font-semibold text-amber-800">You're checked in — visit started {fmtTime(myOpenVisit.entryTime)} on {fmtDate(myOpenVisit.entryTime.slice(0, 10))}</div>
+                <p className="text-xs text-amber-700 mt-0.5">End the visit before you leave — exit photo and minutes of meeting are required.</p>
+              </div>
+              <button onClick={() => setShowEnd(true)} className="text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 px-4 py-2 rounded-lg shrink-0">End Visit</button>
+            </div>
+          </Card>
+        ) : (
+          <StartVisitButton onStart={onStart} />
+        )
+      )}
+
+      {sorted.length === 0 && (
+        <Card className="p-8 text-center">
+          <MapPin size={26} className="mx-auto text-stone-300 mb-2" />
+          <p className="text-sm text-stone-400">No site visits logged yet.</p>
+        </Card>
+      )}
+
+      {sorted.map(v => (
+        <Card key={v.id} className="p-4">
+          <div className="flex items-start justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-3">
+              {v.entryPhotoUrl && <img src={v.entryPhotoUrl} alt="Entry" className="w-14 h-14 rounded-lg object-cover border border-stone-200" />}
+              <div>
+                <div className="text-sm font-semibold text-stone-900">{userName(v.architectId)}</div>
+                <div className="text-xs text-stone-500">In: {fmtDate(v.entryTime.slice(0, 10))} {fmtTime(v.entryTime)}</div>
+                {v.exitTime ? (
+                  <div className="text-xs text-stone-500">Out: {fmtTime(v.exitTime)}</div>
+                ) : (
+                  <div className="text-xs text-amber-600 font-semibold">Still on site — not checked out</div>
+                )}
+              </div>
+            </div>
+            {v.exitPhotoUrl && <img src={v.exitPhotoUrl} alt="Exit" className="w-14 h-14 rounded-lg object-cover border border-stone-200" />}
+          </div>
+          {(v.momNotes || v.momAttachmentUrl) && (
+            <div className="mt-3 pt-3 border-t border-stone-100">
+              <div className="text-xs font-semibold text-stone-500 uppercase mb-1">Minutes of meeting</div>
+              {v.momNotes && <p className="text-sm text-stone-700 whitespace-pre-wrap">{v.momNotes}</p>}
+              {v.momAttachmentUrl && <a href={v.momAttachmentUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs dia-text-bronze hover:underline mt-1"><Paperclip size={11} /> View sketch/attachment</a>}
+            </div>
+          )}
+        </Card>
+      ))}
+
+      {showEnd && myOpenVisit && (
+        <Modal title="End Site Visit" onClose={() => setShowEnd(false)}>
+          <EndVisitForm onSave={(fields) => { onEnd(myOpenVisit.id, fields); setShowEnd(false); }} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function StartVisitButton({ onStart }) {
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleFile = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { setError("Please attach a photo."); return; }
+    setUploading(true);
+    setError("");
+    try {
+      const url = await uploadProofFile(file, "site-visits");
+      onStart(url);
+    } catch (err) {
+      setError(err.message || "Upload failed — please try again.");
+    }
+    setUploading(false);
+  };
+
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <div className="text-sm font-semibold text-stone-800">Arriving on site?</div>
+          <p className="text-xs text-stone-500 mt-0.5">Take an entry photo to check in and start your visit log.</p>
+        </div>
+        <label className="flex items-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg cursor-pointer shrink-0">
+          <Camera size={16} /> {uploading ? "Uploading…" : "Start Site Visit"}
+          <input type="file" accept="image/*" capture="environment" onChange={handleFile} disabled={uploading} className="hidden" />
+        </label>
+      </div>
+      {error && <p className="text-xs text-rose-600 mt-2">{error}</p>}
+    </Card>
+  );
+}
+
+function EndVisitForm({ onSave }) {
+  const [exitPhoto, setExitPhoto] = useState(null);
+  const [momNotes, setMomNotes] = useState("");
+  const [momAttachment, setMomAttachment] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleExitPhoto = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { setError("Please attach a photo."); return; }
+    setUploading(true);
+    setError("");
+    try {
+      const url = await uploadProofFile(file, "site-visits");
+      setExitPhoto(url);
+    } catch (err) {
+      setError(err.message || "Upload failed — please try again.");
+    }
+    setUploading(false);
+  };
+
+  const canSubmit = exitPhoto && momNotes.trim();
+
+  return (
+    <div>
+      <Field label="Exit photo (required)">
+        {exitPhoto ? (
+          <div className="flex items-center gap-2 text-xs text-stone-700 bg-stone-50 border border-stone-200 rounded-lg px-2.5 py-2">
+            <img src={exitPhoto} alt="" className="w-9 h-9 object-cover rounded shrink-0" />
+            <span className="truncate flex-1">Exit photo attached</span>
+            <button type="button" onClick={() => setExitPhoto(null)} className="text-stone-400 hover:text-rose-500 shrink-0"><X size={14} /></button>
+          </div>
+        ) : (
+          <label className="flex items-center gap-2 justify-center border-2 border-dashed border-stone-300 rounded-lg py-3 text-xs text-stone-500 hover:dia-border-gold-soft cursor-pointer transition-colors">
+            <Camera size={14} /> {uploading ? "Uploading…" : "Take exit photo"}
+            <input type="file" accept="image/*" capture="environment" onChange={handleExitPhoto} disabled={uploading} className="hidden" />
+          </label>
+        )}
+      </Field>
+      <Field label="Minutes of meeting (required)"><textarea className={inputCls} rows={4} value={momNotes} onChange={e => setMomNotes(e.target.value)} placeholder="What was discussed, decided, and any action items…" /></Field>
+      <ProofAttachment proof={momAttachment} onChange={setMomAttachment} pathPrefix="site-visits" />
+      {error && <p className="text-xs text-rose-600 mb-2">{error}</p>}
+      <button onClick={() => onSave({ exitPhotoUrl: exitPhoto, momNotes: momNotes.trim(), momAttachmentUrl: momAttachment?.dataUrl || null })}
+        disabled={!canSubmit}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">
+        End visit
+      </button>
+      {!canSubmit && <p className="text-[11px] text-stone-400 mt-2 text-center">Exit photo and minutes of meeting are both required to close this visit.</p>}
+    </div>
+  );
+}
+
 function PhotoForm({ onSave }) {
   const [form, setForm] = useState({ caption: "", category: PHASE_TEMPLATE[0], date: TODAY.toISOString().slice(0, 10) });
   const [url, setUrl] = useState("");
@@ -1653,6 +1867,7 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
     { key: "design", label: "Design" },
     ...(isDesigning ? [] : [{ key: "timeline", label: "Timeline" }]),
     ...(isDesigning ? [] : [{ key: "reports", label: "Site Reports" }]),
+    { key: "visits", label: "Site Visits" },
     { key: "expenses", label: "Expenses" },
     ...(isDesigning ? [] : [{ key: "photos", label: "Photos" }]),
     ...(isDesigning ? [] : [{ key: "materials", label: "Materials" }]),
@@ -1753,7 +1968,11 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
         onAddDrawing={(phaseId, name) => actions.addDrawingItem(phaseId, name)}
         onRemoveDrawing={(phaseId, drawingId) => actions.removeDrawingItem(phaseId, drawingId)} />}
       {tab === "timeline" && <TimelineTab project={project} tasks={data.tasks} onUpdateTask={actions.updateTask} canEdit={canEditTimeline} />}
-      {tab === "reports" && <ReportsTab project={project} reports={projectReports} users={data.users} canAdd={isAssignedSupervisor || isAssignedArchitect} onAdd={(rep) => actions.addSiteReport(project.id, currentUser.id, rep)} />}
+      {tab === "reports" && <ReportsTab project={project} reports={projectReports} users={data.users} currentUser={currentUser} canAdd={isAssignedSupervisor || isAssignedArchitect} onAdd={(rep) => actions.addSiteReport(project.id, currentUser.id, rep)} />}
+      {tab === "visits" && <SiteVisitsTab project={project} visits={data.siteVisits.filter(v => v.projectId === project.id)} users={data.users} currentUser={currentUser}
+        canLog={isAssignedArchitect}
+        onStart={(entryPhotoUrl) => actions.startSiteVisit(project.id, currentUser.id, entryPhotoUrl)}
+        onEnd={(visitId, fields) => actions.endSiteVisit(visitId, fields)} />}
       {tab === "expenses" && <ExpensesTab project={project} expenses={data.expenses} users={data.users} vendors={data.vendors} currentUser={currentUser}
         canApprove={isFinance} canAdd={isFinance || isAssignedSupervisor || isAssignedArchitect}
         onAdd={(exp) => actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id })}
@@ -2099,7 +2318,7 @@ function VendorForm({ vendor, onSave, onDelete }) {
 }
 
 function TeamView({ data, currentUser, actions }) {
-  const { users, projects } = data;
+  const { users, projects, siteReports } = data;
   const [editingUser, setEditingUser] = useState(null);
   const [showAddUser, setShowAddUser] = useState(false);
 
@@ -2118,6 +2337,9 @@ function TeamView({ data, currentUser, actions }) {
       : projects.filter(p => p.supervisors.includes(u.id));
     const isActive = u.active !== false;
     const roleLabel = u.role === "Supervisor" ? "Site Supervisor" : u.role === "Architect" ? (u.rank || "Architect") : u.role;
+    const missedCount = (u.role === "Supervisor" || u.role === "Architect")
+      ? assigned.reduce((sum, p) => sum + computeMissedReportSlots(p, siteReports, u.id).length, 0)
+      : 0;
     return (
       <Card key={u.id} className={`p-4 ${!isActive ? "border-amber-300 bg-amber-50/40" : ""}`}>
         <div className="flex items-start justify-between gap-2 mb-3">
@@ -2135,6 +2357,11 @@ function TeamView({ data, currentUser, actions }) {
         <div className="flex items-center gap-1.5 flex-wrap">
           <StatusPill status={isActive ? "Active" : "Pending approval"} />
           <span className="text-xs font-semibold text-stone-600">{roleLabel}</span>
+          {missedCount > 0 && (
+            <span className="text-[10px] font-semibold text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+              <AlertTriangle size={10} /> {missedCount} missed (7d)
+            </span>
+          )}
         </div>
         {isActive && (u.role === "Supervisor" || u.role === "Architect") && (
           <div className="mt-3 pt-3 border-t border-stone-100">
@@ -2407,7 +2634,50 @@ function EditUserModal({ user, isSelf, onClose, onSave, onRemove, onResetPasswor
 /* Supervisor Home (mobile-first)                                           */
 /* ---------------------------------------------------------------------- */
 
-function SupervisorHome({ data, currentUser, actions }) {
+function MissedReportsBanner({ project, missed, setView }) {
+  if (missed.length === 0) return null;
+  const shown = missed.slice(0, 5);
+  return (
+    <Card className="p-4 border-rose-200 bg-rose-50/50">
+      <div className="flex items-center gap-2 mb-2">
+        <AlertTriangle size={16} className="text-rose-600" />
+        <h3 className="text-sm font-semibold text-rose-800">{missed.length} report{missed.length !== 1 ? "s" : ""} missing</h3>
+      </div>
+      <p className="text-xs text-rose-700 mb-2">You didn't submit these on time. Please update them as soon as possible.</p>
+      <div className="space-y-1 mb-2">
+        {shown.map((m, i) => (
+          <div key={i} className="text-xs text-stone-700 bg-white/70 rounded-lg px-3 py-1.5">{m.slot} report — {fmtDate(m.date)}</div>
+        ))}
+        {missed.length > shown.length && <p className="text-[11px] text-rose-600">+{missed.length - shown.length} more</p>}
+      </div>
+      <button onClick={() => setView({ tab: "project", projectId: project.id, sub: "reports" })}
+        className="text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 px-3 py-2 rounded-lg">
+        Update now
+      </button>
+    </Card>
+  );
+}
+
+function OpenVisitBanner({ project, visit, setView }) {
+  if (!visit) return null;
+  const isYesterdayOrOlder = new Date(visit.entryTime).toDateString() !== TODAY.toDateString();
+  if (!isYesterdayOrOlder) return null;
+  return (
+    <Card className="p-4 border-rose-200 bg-rose-50/50">
+      <div className="flex items-center gap-2 mb-2">
+        <AlertTriangle size={16} className="text-rose-600" />
+        <h3 className="text-sm font-semibold text-rose-800">Site visit from {fmtDate(visit.entryTime.slice(0, 10))} isn't closed out</h3>
+      </div>
+      <p className="text-xs text-rose-700 mb-2">You checked in but never logged your exit photo and minutes of meeting. Please close it out.</p>
+      <button onClick={() => setView({ tab: "project", projectId: project.id, sub: "visits" })}
+        className="text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 px-3 py-2 rounded-lg">
+        Close it now
+      </button>
+    </Card>
+  );
+}
+
+function SupervisorHome({ data, currentUser, actions, setView }) {
   const myProjects = data.projects.filter(p => p.supervisors.includes(currentUser.id));
   const [activeProjectId, setActiveProjectId] = useState(myProjects[0]?.id || null);
   const [modal, setModal] = useState(null);
@@ -2449,6 +2719,8 @@ function SupervisorHome({ data, currentUser, actions }) {
           <ProgressBar pct={progress} />
         </div>
       </Card>
+
+      <MissedReportsBanner project={project} missed={computeMissedReportSlots(project, data.siteReports, currentUser.id)} setView={setView} />
 
       {(() => {
         const approvedMaterials = data.materialRequests.filter(m => m.projectId === project.id && m.status === "Approved");
@@ -2579,6 +2851,8 @@ function IssueForm({ onSave }) {
 
 function ArchitectHome({ data, currentUser, setView }) {
   const myProjects = data.projects.filter(p => (p.architects || []).includes(currentUser.id));
+  const myOpenVisit = data.siteVisits.find(v => v.status === "Open" && v.architectId === currentUser.id);
+  const openVisitProject = myOpenVisit ? myProjects.find(p => p.id === myOpenVisit.projectId) : null;
 
   return (
     <div className="p-4 sm:p-6 max-w-2xl mx-auto space-y-4">
@@ -2586,6 +2860,13 @@ function ArchitectHome({ data, currentUser, setView }) {
         <div className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">{currentUser.rank}</div>
         <p className="text-sm text-stone-500 mt-1">Tap a project to update its design phases and working-drawings checklist.</p>
       </Card>
+
+      {openVisitProject && <OpenVisitBanner project={openVisitProject} visit={myOpenVisit} setView={setView} />}
+
+      {myProjects.map(p => {
+        const missed = computeMissedReportSlots(p, data.siteReports, currentUser.id);
+        return missed.length > 0 ? <MissedReportsBanner key={p.id} project={p} missed={missed} setView={setView} /> : null;
+      })}
 
       {myProjects.length === 0 && (
         <Card className="p-8 text-center">
@@ -2765,6 +3046,8 @@ export default function App() {
     approveMaterialRequest: (id, approverId) => dbApproveMaterialRequest(id, approverId).then(reload),
     rejectMaterialRequest: (id, approverId, reason) => dbRejectMaterialRequest(id, approverId, reason).then(reload),
     deleteMaterialRequest: (id) => dbDeleteMaterialRequest(id).then(reload),
+    startSiteVisit: (projectId, architectId, entryPhotoUrl) => dbStartSiteVisit(projectId, architectId, entryPhotoUrl).then(reload),
+    endSiteVisit: (visitId, fields) => dbEndSiteVisit(visitId, fields).then(reload),
     addPhoto: (projectId, photo) => dbAddPhoto(projectId, photo).then(reload),
     addIssue: (projectId, supervisorId, issue) => dbAddIssue(projectId, supervisorId, issue).then(reload),
   }), [reload, data, profile]);
@@ -2844,7 +3127,7 @@ export default function App() {
         {view.tab === "expenses" && (isStaffOnly ? <ExpensesGlobal data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "vendors" && (isStaffOnly ? <VendorsView data={data} actions={actions} /> : <AccessDenied />)}
         {view.tab === "users" && (isAdmin ? <TeamView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
-        {view.tab === "sup-home" && <SupervisorHome data={data} currentUser={currentUser} actions={actions} />}
+        {view.tab === "sup-home" && <SupervisorHome data={data} currentUser={currentUser} actions={actions} setView={setView} />}
         {view.tab === "arch-home" && <ArchitectHome data={data} currentUser={currentUser} setView={setView} />}
       </div>
     </div>
