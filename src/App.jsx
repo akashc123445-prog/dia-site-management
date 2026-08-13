@@ -236,6 +236,7 @@ function LoginScreen() {
 function Sidebar({ user, view, setView, onLogout, pendingCount, mobileOpen, onCloseMobile }) {
   const adminNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { key: "updates", label: "Updates", icon: ImageIcon },
     { key: "projects", label: "Projects", icon: Building2 },
     { key: "expenses", label: "Expenses", icon: Receipt, badge: pendingCount },
     { key: "vendors", label: "Vendors", icon: Store },
@@ -1979,7 +1980,7 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
         onApprove={(id) => actions.approveExpense(id, currentUser.id)} onReject={(id, reason) => actions.rejectExpense(id, currentUser.id, reason)}
         onDelete={(id) => actions.deleteExpense(id)}
         onMarkPaid={(id, paid) => actions.markExpensePaid(id, currentUser.id, paid)} />}
-      {tab === "photos" && <PhotosTab project={project} reports={projectReports} canAdd={isAssignedSupervisor || isAssignedArchitect} onAddPhoto={(photo) => actions.addPhoto(project.id, photo)} />}
+      {tab === "photos" && <PhotosTab project={project} reports={projectReports} canAdd={isAssignedSupervisor || isAssignedArchitect} onAddPhoto={(photo) => actions.addPhoto(project.id, photo, currentUser.id)} />}
       {tab === "materials" && <MaterialsTab project={project} requests={data.materialRequests.filter(m => m.projectId === project.id)} users={data.users} currentUser={currentUser}
         isAdmin={isAdmin} canRequest={isAssignedArchitect || isAdmin}
         onAdd={(req, autoApprove) => actions.addMaterialRequest(project.id, currentUser.id, req, autoApprove)}
@@ -2205,6 +2206,57 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
 /* ---------------------------------------------------------------------- */
 /* Vendors (Admin/Accounts only)                                           */
 /* ---------------------------------------------------------------------- */
+
+function UpdatesFeed({ data, setView }) {
+  const [projectFilter, setProjectFilter] = useState("All");
+  const projectName = (id) => data.projects.find(p => p.id === id)?.name || "Unknown project";
+  const userName = (id) => data.users.find(u => u.id === id)?.name || null;
+
+  const feed = [...data.photos]
+    .filter(p => projectFilter === "All" || p.projectId === projectFilter)
+    .sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+
+  return (
+    <div className="p-4 sm:p-8">
+      <div className="max-w-lg mx-auto">
+        <select className={inputCls + " mb-5"} value={projectFilter} onChange={e => setProjectFilter(e.target.value)}>
+          <option value="All">All projects</option>
+          {data.projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+
+        {feed.length === 0 && (
+          <Card className="p-10 text-center">
+            <ImageIcon size={28} className="mx-auto text-stone-300 mb-2" />
+            <p className="text-sm text-stone-400">No site photos shared yet.</p>
+          </Card>
+        )}
+
+        <div className="space-y-5">
+          {feed.map(p => (
+            <Card key={p.id} className="overflow-hidden">
+              <button onClick={() => setView({ tab: "project", projectId: p.projectId, sub: "photos" })}
+                className="w-full flex items-center justify-between px-4 py-3 border-b border-stone-100 text-left hover:bg-stone-50 transition-colors">
+                <span className="font-display text-sm font-semibold text-stone-900 truncate">{projectName(p.projectId)}</span>
+                <ChevronRight size={14} className="text-stone-400 shrink-0" />
+              </button>
+              <div className="bg-stone-100 aspect-square flex items-center justify-center">
+                {p.url ? <img src={p.url} alt={p.caption || ""} className="w-full h-full object-cover" /> : <ImageIcon size={32} className="text-stone-300" />}
+              </div>
+              <div className="px-4 py-3">
+                {p.caption && <p className="text-sm text-stone-800">{p.caption}</p>}
+                {p.category && <span className="inline-block mt-1.5 text-xs bg-stone-100 text-stone-600 px-2 py-0.5 rounded-full font-medium">{p.category}</span>}
+                <div className="flex items-center justify-between mt-2 pt-2 border-t border-stone-50">
+                  <span className="text-xs text-stone-400">{userName(p.uploadedBy) ? `${userName(p.uploadedBy)} · ` : ""}{fmtDate(p.date)}</span>
+                  <span className="text-xs text-stone-400 font-mono">{fmtTime(p.uploadedAt)}</span>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function VendorsView({ data, actions }) {
   const [showForm, setShowForm] = useState(false);
@@ -2815,7 +2867,7 @@ function SupervisorHome({ data, currentUser, actions, setView }) {
         <ExpenseForm defaultProjectId={project.id} vendors={data.vendors} onSave={(exp) => { actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id }); setModal(null); }} />
       </Modal>}
       {modal === "photo" && <Modal title="Upload Site Photo" onClose={() => setModal(null)}>
-        <PhotoForm onSave={(p) => { actions.addPhoto(project.id, p); setModal(null); }} />
+        <PhotoForm onSave={(p) => { actions.addPhoto(project.id, p, currentUser.id); setModal(null); }} />
       </Modal>}
       {modal === "issue" && <Modal title="Report Issue" onClose={() => setModal(null)}>
         <IssueForm onSave={(iss) => { actions.addIssue(project.id, currentUser.id, iss); setModal(null); }} />
@@ -3043,7 +3095,7 @@ export default function App() {
     deleteMaterialRequest: (id) => dbDeleteMaterialRequest(id).then(reload),
     startSiteVisit: (projectId, architectId, entryPhotoUrl) => dbStartSiteVisit(projectId, architectId, entryPhotoUrl).then(reload),
     endSiteVisit: (visitId, fields) => dbEndSiteVisit(visitId, fields).then(reload),
-    addPhoto: (projectId, photo) => dbAddPhoto(projectId, photo).then(reload),
+    addPhoto: (projectId, photo, uploadedBy) => dbAddPhoto(projectId, photo, uploadedBy).then(reload),
     addIssue: (projectId, supervisorId, issue) => dbAddIssue(projectId, supervisorId, issue).then(reload),
   }), [reload, data, profile]);
 
@@ -3095,6 +3147,7 @@ export default function App() {
     projects: ["Projects", "All active and completed projects"],
     expenses: ["Expenses", "Review, filter and approve project expenses"],
     vendors: ["Vendors", "Vendor directory, materials and bank details for payment"],
+    updates: ["Updates", "Site progress photos shared by your team, as they happen"],
     users: ["Team", "Admins, accounts, architects and site supervisors"],
     "sup-home": [data.projects.find(p => p.id === view.projectId)?.name || "My Sites", "Site reporting"],
     "arch-home": [data.projects.find(p => p.id === view.projectId)?.name || "My Design Work", "Design phase reporting"],
@@ -3121,6 +3174,7 @@ export default function App() {
         {view.tab === "project" && <ProjectDetail data={data} projectId={view.projectId} sub={view.sub} setView={setView} currentUser={currentUser} actions={actions} onMenuClick={() => setMobileNavOpen(true)} />}
         {view.tab === "expenses" && (isStaffOnly ? <ExpensesGlobal data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "vendors" && (isStaffOnly ? <VendorsView data={data} actions={actions} /> : <AccessDenied />)}
+        {view.tab === "updates" && (isAdmin ? <UpdatesFeed data={data} setView={setView} /> : <AccessDenied />)}
         {view.tab === "users" && (isAdmin ? <TeamView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "sup-home" && <SupervisorHome data={data} currentUser={currentUser} actions={actions} setView={setView} />}
         {view.tab === "arch-home" && <ArchitectHome data={data} currentUser={currentUser} setView={setView} />}
