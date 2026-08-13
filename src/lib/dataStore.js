@@ -81,10 +81,17 @@ const mapIssue = (r) => ({
   description: r.description, severity: r.severity, status: r.status, submittedAt: r.submitted_at,
 });
 
+const mapMaterialRequest = (r) => ({
+  id: r.id, projectId: r.project_id, requestedBy: r.requested_by, items: r.items,
+  quantity: r.quantity, neededBy: r.needed_by, notes: r.notes, status: r.status,
+  approvedBy: r.approved_by, approvedAt: r.approved_at, rejectionReason: r.rejection_reason,
+  createdAt: r.created_at,
+});
+
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -96,9 +103,10 @@ export async function fetchAllData() {
       supabase.from("expenses").select("*").order("date", { ascending: false }),
       supabase.from("issues").select("*").order("date", { ascending: false }),
       supabase.from("vendors").select("*").order("name"),
+      supabase.from("material_requests").select("*").order("created_at", { ascending: false }),
     ]);
 
-  const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw };
+  const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw };
   for (const [key, res] of Object.entries(results)) {
     if (res.error) throw new Error(`Failed to load ${key}: ${res.error.message}`);
   }
@@ -112,6 +120,7 @@ export async function fetchAllData() {
     expenses: (expensesRaw.data || []).map(mapExpense),
     issues: (issuesRaw.data || []).map(mapIssue),
     vendors: (vendorsRaw.data || []).map(mapVendor),
+    materialRequests: (materialRequestsRaw.data || []).map(mapMaterialRequest),
   };
 }
 
@@ -377,6 +386,44 @@ export async function dbAddIssue(projectId, supervisorId, issue) {
     project_id: projectId, supervisor_id: supervisorId, date: new Date().toISOString().slice(0, 10),
     description: issue.description, severity: issue.severity, status: "Open",
   });
+  if (error) throw error;
+}
+
+/* ---- material requests -------------------------------------------------- */
+
+/* requestedByRole/isAdmin lets an Admin-created request be auto-approved
+   immediately, per the "admin can also post it directly, already approved"
+   workflow. Architect-created requests always start Pending for admin review. */
+export async function dbAddMaterialRequest(projectId, requestedBy, req, autoApprove) {
+  const payload = {
+    project_id: projectId, requested_by: requestedBy, items: req.items,
+    quantity: req.quantity || null, needed_by: req.neededBy || null, notes: req.notes || null,
+    status: autoApprove ? "Approved" : "Pending",
+  };
+  if (autoApprove) {
+    payload.approved_by = requestedBy;
+    payload.approved_at = new Date().toISOString();
+  }
+  const { error } = await supabase.from("material_requests").insert(payload);
+  if (error) throw error;
+}
+
+export async function dbApproveMaterialRequest(id, approverId) {
+  const { error } = await supabase.from("material_requests")
+    .update({ status: "Approved", approved_by: approverId, approved_at: new Date().toISOString(), rejection_reason: null })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbRejectMaterialRequest(id, approverId, reason) {
+  const { error } = await supabase.from("material_requests")
+    .update({ status: "Rejected", approved_by: approverId, approved_at: new Date().toISOString(), rejection_reason: reason })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteMaterialRequest(id) {
+  const { error } = await supabase.from("material_requests").delete().eq("id", id);
   if (error) throw error;
 }
 
