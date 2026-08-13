@@ -303,7 +303,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, mobileOpen, onCl
   );
 }
 
-function Header({ title, subtitle, notifications, onMenuClick }) {
+function Header({ title, subtitle, notifications, onMenuClick, onNotificationClick }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="flex items-center justify-between px-4 sm:px-8 py-4 sm:py-5 border-b border-stone-200 bg-white/70 backdrop-blur sticky top-0 z-20">
@@ -321,18 +321,29 @@ function Header({ title, subtitle, notifications, onMenuClick }) {
       <div className="relative shrink-0">
         <button onClick={() => setOpen(o => !o)} className="p-2 rounded-lg hover:bg-stone-100 relative">
           <Bell size={19} className="text-stone-600" />
-          {notifications.length > 0 && <span className="absolute top-1 right-1 w-2 h-2 bg-rose-600 rounded-full" />}
+          {notifications.length > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 flex items-center justify-center bg-rose-600 text-white text-[10px] font-bold rounded-full">
+              {notifications.length > 9 ? "9+" : notifications.length}
+            </span>
+          )}
         </button>
         {open && (
           <div className="absolute right-0 mt-2 w-[calc(100vw-2rem)] max-w-80 bg-white border border-stone-200 rounded-xl shadow-xl z-30 max-h-96 overflow-y-auto">
-            <div className="px-4 py-3 border-b border-stone-100 font-semibold text-sm text-stone-800">Notifications</div>
+            <div className="px-4 py-3 border-b border-stone-100 font-semibold text-sm text-stone-800 flex items-center justify-between">
+              <span>Needs your attention</span>
+              {notifications.length > 0 && <span className="text-[10px] font-bold bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded-full">{notifications.length}</span>}
+            </div>
             {notifications.length === 0 ? (
               <div className="px-4 py-6 text-center text-sm text-stone-400">You're all caught up.</div>
             ) : notifications.map((n, i) => (
-              <div key={i} className="px-4 py-3 border-b border-stone-50 last:border-0">
+              <button key={i} onClick={() => { if (n.view && onNotificationClick) { onNotificationClick(n.view); setOpen(false); } }}
+                className="w-full text-left px-4 py-3 border-b border-stone-50 last:border-0 hover:bg-stone-50 transition-colors">
                 <div className="text-sm text-stone-800">{n.text}</div>
-                <div className="text-xs text-stone-400 mt-0.5">{n.meta}</div>
-              </div>
+                <div className="text-xs text-stone-400 mt-0.5 flex items-center justify-between">
+                  <span>{n.meta}</span>
+                  {n.view && <span className="dia-text-bronze font-semibold shrink-0 ml-2">Review →</span>}
+                </div>
+              </button>
             ))}
           </div>
         )}
@@ -2786,12 +2797,19 @@ export default function App() {
         const myProjectIds = currentUser.role === "Supervisor"
           ? data.projects.filter(p => p.supervisors.includes(currentUser.id)).map(p => p.id)
           : data.projects.filter(p => (p.architects || []).includes(currentUser.id)).map(p => p.id);
-        return data.issues.filter(i => i.status === "Open" && myProjectIds.includes(i.projectId)).slice(0, 5)
-          .map(i => ({ text: "Open issue reported", meta: data.projects.find(p => p.id === i.projectId)?.name }));
+        const issueNotifs = data.issues.filter(i => i.status === "Open" && myProjectIds.includes(i.projectId)).slice(0, 5)
+          .map(i => ({ text: "Open issue reported", meta: data.projects.find(p => p.id === i.projectId)?.name, view: { tab: "project", projectId: i.projectId, sub: "overview" } }));
+        const materialNotifs = data.materialRequests.filter(m => m.status === "Approved" && myProjectIds.includes(m.projectId)).slice(0, 5)
+          .map(m => ({ text: `Material approved: ${m.items.split("\n")[0]}`, meta: data.projects.find(p => p.id === m.projectId)?.name, view: { tab: "project", projectId: m.projectId, sub: "materials" } }));
+        return [...materialNotifs, ...issueNotifs];
       })()
     : [
-        ...data.expenses.filter(e => e.status === "Pending").slice(0, 3).map(e => ({ text: `Expense awaiting approval: ${e.description}`, meta: fmtINR(e.amount) })),
-        ...data.issues.filter(i => i.status === "Open").slice(0, 3).map(i => ({ text: `Open issue reported`, meta: data.projects.find(p => p.id === i.projectId)?.name })),
+        ...data.materialRequests.filter(m => m.status === "Pending").slice(0, 5)
+          .map(m => ({ text: `Material request awaiting approval: ${m.items.split("\n")[0]}`, meta: data.projects.find(p => p.id === m.projectId)?.name, view: { tab: "project", projectId: m.projectId, sub: "materials" } })),
+        ...data.expenses.filter(e => e.status === "Pending").slice(0, 3)
+          .map(e => ({ text: `Expense awaiting approval: ${e.description}`, meta: fmtINR(e.amount), view: { tab: "project", projectId: e.projectId, sub: "expenses" } })),
+        ...data.issues.filter(i => i.status === "Open").slice(0, 3)
+          .map(i => ({ text: `Open issue reported`, meta: data.projects.find(p => p.id === i.projectId)?.name, view: { tab: "project", projectId: i.projectId, sub: "overview" } })),
       ];
 
   const titles = {
@@ -2815,10 +2833,10 @@ export default function App() {
         mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
       <div className="flex-1 min-w-0">
         {view.tab !== "project" && view.tab !== "sup-home" && view.tab !== "arch-home" && (
-          <Header title={titles[view.tab]?.[0] || ""} subtitle={titles[view.tab]?.[1]} notifications={notifications} onMenuClick={() => setMobileNavOpen(true)} />
+          <Header title={titles[view.tab]?.[0] || ""} subtitle={titles[view.tab]?.[1]} notifications={notifications} onMenuClick={() => setMobileNavOpen(true)} onNotificationClick={setView} />
         )}
-        {view.tab === "sup-home" && <Header title="My Sites" subtitle={`Welcome back, ${currentUser.name.split(" ")[0]}`} notifications={notifications} onMenuClick={() => setMobileNavOpen(true)} />}
-        {view.tab === "arch-home" && <Header title="My Design Work" subtitle={`Welcome back, ${currentUser.name.split(" ")[0]}`} notifications={notifications} onMenuClick={() => setMobileNavOpen(true)} />}
+        {view.tab === "sup-home" && <Header title="My Sites" subtitle={`Welcome back, ${currentUser.name.split(" ")[0]}`} notifications={notifications} onMenuClick={() => setMobileNavOpen(true)} onNotificationClick={setView} />}
+        {view.tab === "arch-home" && <Header title="My Design Work" subtitle={`Welcome back, ${currentUser.name.split(" ")[0]}`} notifications={notifications} onMenuClick={() => setMobileNavOpen(true)} onNotificationClick={setView} />}
 
         {view.tab === "dashboard" && (isStaffOnly ? <AdminDashboard data={data} setView={setView} /> : <AccessDenied />)}
         {view.tab === "projects" && (isStaffOnly ? <ProjectsList data={data} setView={setView} actions={actions} currentUser={currentUser} /> : <AccessDenied />)}
