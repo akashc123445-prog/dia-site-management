@@ -298,14 +298,14 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, mobileOpen, onCl
       {mobileOpen && (
         <div onClick={onCloseMobile} className="fixed inset-0 bg-black/40 z-40 sm:hidden" aria-hidden="true" />
       )}
-      <div className={`w-64 sm:w-60 dia-bg-maroon-deep h-screen flex flex-col shrink-0 fixed sm:sticky top-0 left-0 z-50 sm:z-auto transition-transform duration-200 ${mobileOpen ? "translate-x-0" : "-translate-x-full"} sm:translate-x-0`}>
-        <div className="px-5 py-6 flex items-center justify-center border-b dia-border-maroon-line relative">
+      <div className={`w-64 sm:w-60 dia-bg-maroon-deep h-[100dvh] sm:h-screen flex flex-col shrink-0 fixed sm:sticky top-0 left-0 z-50 sm:z-auto transition-transform duration-200 ${mobileOpen ? "translate-x-0" : "-translate-x-full"} sm:translate-x-0`}>
+        <div className="px-5 py-6 flex items-center justify-center border-b dia-border-maroon-line relative shrink-0">
           <img src={LOGO_FULL} alt="Dia Retail Solutions" className="h-28 object-contain" />
           <button onClick={onCloseMobile} className="sm:hidden absolute right-3 top-3 p-1.5 rounded-lg dia-text-cream-70 hover:text-white">
             <X size={18} />
           </button>
         </div>
-        <div className="px-5 pt-3 pb-1 text-center">
+        <div className="px-5 pt-3 pb-1 text-center shrink-0">
           <p className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">
             Greetings, {user.name.toUpperCase()}
           </p>
@@ -323,7 +323,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, mobileOpen, onCl
             );
           })}
         </nav>
-        <div className="px-3 py-4 border-t dia-border-maroon-line">
+        <div className="px-3 py-4 border-t dia-border-maroon-line shrink-0" style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}>
           <div className="flex items-center gap-2.5 px-2 mb-2">
             <div className="w-8 h-8 rounded-full bg-stone-700 text-white flex items-center justify-center text-xs font-semibold font-display shrink-0">
               {user.name.split(" ").map(n => n[0]).join("")}
