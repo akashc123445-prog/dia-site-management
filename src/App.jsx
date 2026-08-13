@@ -1532,7 +1532,8 @@ function ExpensesGlobal({ data, currentUser, actions }) {
             {filtered.map(e => (
               <GlobalExpenseRow key={e.id} e={e} projectName={projectName} userName={userName} currentUserId={currentUser.id}
                 onApprove={() => actions.approveExpense(e.id, currentUser.id)}
-                onReject={(reason) => actions.rejectExpense(e.id, currentUser.id, reason)} />
+                onReject={(reason) => actions.rejectExpense(e.id, currentUser.id, reason)}
+                onDelete={() => actions.deleteExpense(e.id)} />
             ))}
           </tbody>
         </table>
@@ -1542,9 +1543,10 @@ function ExpensesGlobal({ data, currentUser, actions }) {
   );
 }
 
-function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, onReject }) {
+function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, onReject, onDelete }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const isOwn = e.submittedBy === currentUserId;
   return (
     <tr className="border-b border-stone-50 hover:bg-stone-50/60 align-top">
@@ -1562,25 +1564,37 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
       <td className="py-2.5 px-4 text-right font-mono font-semibold text-stone-800 whitespace-nowrap">{fmtINR(e.amount)}</td>
       <td className="py-2.5 px-4"><StatusPill status={e.status} /></td>
       <td className="py-2.5 px-4">
-        {e.status === "Pending" && isOwn && (
-          <span className="text-[11px] text-stone-400 italic">Submitted by you — needs another approver</span>
-        )}
-        {e.status === "Pending" && !isOwn && !rejecting && (
-          <div className="flex gap-1.5">
-            <button onClick={onApprove} className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100"><Check size={14} /></button>
-            <button onClick={() => setRejecting(true)} className="p-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"><XCircle size={14} /></button>
+        {confirmingDelete ? (
+          <div className="flex gap-1.5 items-center min-w-[170px]">
+            <span className="text-[11px] text-stone-500">Delete this expense?</span>
+            <button onClick={onDelete} className="text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 px-2 py-1 rounded-md shrink-0">Delete</button>
+            <button onClick={() => setConfirmingDelete(false)} className="text-xs font-semibold text-stone-500 shrink-0">Cancel</button>
+          </div>
+        ) : (
+          <div className="flex gap-1.5 items-center">
+            {e.status === "Pending" && isOwn && (
+              <span className="text-[11px] text-stone-400 italic mr-1">Submitted by you — needs another approver</span>
+            )}
+            {e.status === "Pending" && !isOwn && !rejecting && (
+              <>
+                <button onClick={onApprove} className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100"><Check size={14} /></button>
+                <button onClick={() => setRejecting(true)} className="p-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"><XCircle size={14} /></button>
+              </>
+            )}
+            {e.status === "Pending" && !isOwn && rejecting && (
+              <div className="flex gap-1.5 items-center min-w-[200px]">
+                <input value={reason} onChange={ev => setReason(ev.target.value)} placeholder="Reason…" autoFocus
+                  onKeyDown={ev => { if (ev.key === "Enter") { onReject(reason || "Not specified"); setRejecting(false); } }}
+                  className="text-xs border border-stone-300 rounded-md px-2 py-1 w-full" />
+                <button onClick={() => { onReject(reason || "Not specified"); setRejecting(false); }} className="text-xs font-semibold text-rose-700 shrink-0">Confirm</button>
+                <button onClick={() => { setRejecting(false); setReason(""); }} className="text-xs font-semibold text-stone-400 shrink-0">Cancel</button>
+              </div>
+            )}
+            {onDelete && (
+              <button onClick={() => setConfirmingDelete(true)} title="Delete expense" className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50"><Trash2 size={14} /></button>
+            )}
           </div>
         )}
-        {e.status === "Pending" && !isOwn && rejecting && (
-          <div className="flex gap-1.5 items-center min-w-[200px]">
-            <input value={reason} onChange={ev => setReason(ev.target.value)} placeholder="Reason…" autoFocus
-              onKeyDown={ev => { if (ev.key === "Enter") { onReject(reason || "Not specified"); setRejecting(false); } }}
-              className="text-xs border border-stone-300 rounded-md px-2 py-1 w-full" />
-            <button onClick={() => { onReject(reason || "Not specified"); setRejecting(false); }} className="text-xs font-semibold text-rose-700 shrink-0">Confirm</button>
-            <button onClick={() => { setRejecting(false); setReason(""); }} className="text-xs font-semibold text-stone-400 shrink-0">Cancel</button>
-          </div>
-        )}
-        {e.status !== "Pending" && <span className="text-xs text-stone-300">—</span>}
       </td>
     </tr>
   );
