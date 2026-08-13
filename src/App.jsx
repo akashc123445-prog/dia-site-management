@@ -24,7 +24,7 @@ import {
   computeHealth, HEALTH_META, exportToExcel,
 } from "./lib/helpers";
 import {
-  fetchAllData, dbUpdateProfile, dbAddProject, dbUpdateTask,
+  fetchAllData, dbUpdateProfile, dbAddProject, dbUpdateProject, dbUpdateTask,
   dbUpdateDesignPhase, dbUpdateDrawing, dbAddDrawing, dbRemoveDrawing,
   dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbAddIssue,
   uploadProofFile, uploadSitePhoto,
@@ -1099,6 +1099,47 @@ function ExpenseForm({ onSave, defaultProjectId, projects }) {
   );
 }
 
+function EditProjectTeamForm({ project, users, onSave }) {
+  const architectOptions = users.filter(u => u.role === "Architect" && u.active !== false)
+    .sort((a, b) => ARCHITECT_RANKS.indexOf(a.rank) - ARCHITECT_RANKS.indexOf(b.rank));
+  const supervisorOptions = users.filter(u => u.role === "Supervisor" && u.active !== false);
+  const [architects, setArchitects] = useState(project.architects || []);
+  const [supervisors, setSupervisors] = useState(project.supervisors || []);
+
+  const toggleArchitect = (id) => setArchitects(a => a.includes(id) ? a.filter(x => x !== id) : [...a, id]);
+  const toggleSupervisor = (id) => setSupervisors(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+
+  return (
+    <div>
+      <Field label="Assigned architects">
+        <div className="flex flex-wrap gap-2">
+          {architectOptions.map(u => (
+            <button key={u.id} type="button" onClick={() => toggleArchitect(u.id)}
+              className={`px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors ${architects.includes(u.id) ? "bg-stone-900 text-white border-stone-900" : "bg-white text-stone-600 border-stone-200 hover:border-stone-400"}`}>
+              {u.name} <span className="opacity-60">· {u.rank?.replace(" Architect", "")}</span>
+            </button>
+          ))}
+          {architectOptions.length === 0 && <p className="text-xs text-stone-400">No architects available yet.</p>}
+        </div>
+      </Field>
+      <Field label="Assigned supervisors">
+        <div className="flex flex-wrap gap-2">
+          {supervisorOptions.map(u => (
+            <button key={u.id} type="button" onClick={() => toggleSupervisor(u.id)}
+              className={`px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors ${supervisors.includes(u.id) ? "bg-stone-900 text-white border-stone-900" : "bg-white text-stone-600 border-stone-200 hover:border-stone-400"}`}>
+              {u.name}
+            </button>
+          ))}
+          {supervisorOptions.length === 0 && <p className="text-xs text-stone-400">No supervisors available yet.</p>}
+        </div>
+      </Field>
+      <p className="text-[11px] text-stone-400 mb-3">Removing someone here removes their access to this project; it does not delete anything they already submitted.</p>
+      <button onClick={() => onSave({ architects, supervisors })}
+        className="w-full dia-btn-gold font-semibold text-sm py-2.5 rounded-lg mt-1">Save team</button>
+    </div>
+  );
+}
+
 function ProjectForm({ onSave, users, currentUser }) {
   const supervisorOptions = users.filter(u => u.role === "Supervisor" && u.active !== false);
   const architectOptions = users.filter(u => u.role === "Architect" && u.active !== false)
@@ -1283,6 +1324,7 @@ function PhotoForm({ onSave }) {
 function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) {
   const project = data.projects.find(p => p.id === projectId);
   const [tab, setTab] = useState(sub || "overview");
+  const [showEditTeam, setShowEditTeam] = useState(false);
   if (!project) return <div className="p-8">Project not found.</div>;
 
   const isAdmin = currentUser.role === "Admin";
@@ -1303,6 +1345,7 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
     );
   }
 
+  const userName = (id) => data.users.find(u => u.id === id)?.name || id;
   const projectTasks = data.tasks.filter(t => t.projectId === project.id);
   const projectReports = data.siteReports.filter(r => r.projectId === project.id);
   const projectDesignPhases = data.designPhases.filter(d => d.projectId === project.id);
@@ -1352,7 +1395,26 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions }) 
             <ProgressBar pct={progress} />
           </div>
         </div>
+        <div className="mt-4 pt-4 border-t border-stone-100 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
+          <div className="text-xs text-stone-500 space-y-1">
+            <div><span className="font-semibold text-stone-600">Architects:</span> {(project.architects || []).length ? project.architects.map(userName).join(", ") : "None assigned"}</div>
+            <div><span className="font-semibold text-stone-600">Supervisors:</span> {(project.supervisors || []).length ? project.supervisors.map(userName).join(", ") : "None assigned"}</div>
+          </div>
+          {isAdmin && (
+            <button onClick={() => setShowEditTeam(true)}
+              className="flex items-center gap-1.5 text-xs font-semibold dia-text-bronze dia-hover-bronze-dark border dia-border-gold-soft rounded-lg px-3 py-1.5 shrink-0 self-start sm:self-auto">
+              <Pencil size={12} /> Edit team
+            </button>
+          )}
+        </div>
       </Card>
+
+      {showEditTeam && (
+        <Modal title="Edit Assigned Team" onClose={() => setShowEditTeam(false)}>
+          <EditProjectTeamForm project={project} users={data.users}
+            onSave={(updates) => { actions.updateProjectTeam(project.id, updates); setShowEditTeam(false); }} />
+        </Modal>
+      )}
 
       <div className="flex gap-1 border-b border-stone-200 mb-5 overflow-x-auto">
         {tabs.map(t => (
@@ -1950,6 +2012,7 @@ export default function App() {
   const actions = useMemo(() => ({
     updateUser: (userId, updates) => dbUpdateProfile(userId, updates).then(reload),
     addProject: (proj) => dbAddProject(proj, data?.users || []).then(reload),
+    updateProjectTeam: (projectId, updates) => dbUpdateProject(projectId, updates).then(reload),
     updateTask: (taskId, updates) => dbUpdateTask(taskId, updates).then(reload),
     updateDesignPhase: (phaseId, updates) => dbUpdateDesignPhase(phaseId, updates).then(reload),
     updateDrawingItem: (phaseId, drawingId, updates, updatedBy) => dbUpdateDrawing(drawingId, updates, updatedBy || profile?.id).then(reload),
