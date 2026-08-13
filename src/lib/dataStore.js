@@ -217,6 +217,15 @@ export async function dbUpdateProject(projectId, updates) {
   if (error) throw error;
 }
 
+/* Deletes a project and, via DB cascade, everything under it: tasks, design
+   phases, drawings, site reports, photos, expenses, and issues. Uploaded
+   files in Storage (proofs / site-photos) are not removed by this — only
+   the database records — so old attachments may remain in the bucket. */
+export async function dbDeleteProject(projectId) {
+  const { error } = await supabase.from("projects").delete().eq("id", projectId);
+  if (error) throw error;
+}
+
 /* ---- construction tasks --------------------------------------------- */
 
 export async function dbUpdateTask(taskId, updates) {
