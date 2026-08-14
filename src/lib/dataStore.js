@@ -96,6 +96,9 @@ const mapMaterialRequest = (r) => ({
   id: r.id, projectId: r.project_id, requestedBy: r.requested_by, items: r.items,
   quantity: r.quantity, neededBy: r.needed_by, notes: r.notes, status: r.status,
   approvedBy: r.approved_by, approvedAt: r.approved_at, rejectionReason: r.rejection_reason,
+  vendorId: r.vendor_id, amount: r.amount === null ? null : Number(r.amount),
+  receiptPhotoUrl: r.receipt_photo_url, receivedBy: r.received_by, receivedAt: r.received_at,
+  fulfilledBy: r.fulfilled_by, fulfilledAt: r.fulfilled_at, expenseId: r.expense_id,
   createdAt: r.created_at,
 });
 
@@ -486,6 +489,56 @@ export async function dbRejectMaterialRequest(id, approverId, reason) {
 export async function dbDeleteMaterialRequest(id) {
   const { error } = await supabase.from("material_requests").delete().eq("id", id);
   if (error) throw error;
+}
+
+/* Supervisor confirms materials arrived: records the actual vendor, amount
+   paid, and a required delivery/receipt photo. Moves to "Received" — still
+   needs Admin to confirm before it becomes a real expense. */
+export async function dbMarkMaterialReceived(id, receivedBy, { vendorId, amount, receiptPhotoUrl }) {
+  const { error } = await supabase.from("material_requests").update({
+    status: "Received", received_by: receivedBy, received_at: new Date().toISOString(),
+    vendor_id: vendorId, amount, receipt_photo_url: receiptPhotoUrl,
+  }).eq("id", id);
+  if (error) throw error;
+}
+
+/* Admin confirms a received material request: creates a real expense that's
+   already Approved (skipping the normal pending-review step, since Admin is
+   the one confirming it right here), linked back to this request, and ready
+   for "Generate PO" immediately. */
+export async function dbFulfillMaterialRequest(id, fulfilledBy) {
+  const { data: req, error: reqErr } = await supabase.from("material_requests").select("*").eq("id", id).single();
+  if (reqErr) throw reqErr;
+  if (req.status !== "Received") throw new Error("This request hasn't been marked received yet.");
+  if (req.expense_id) return req.expense_id; // already fulfilled — don't double-create
+
+  let vendorName = "";
+  if (req.vendor_id) {
+    const { data: v } = await supabase.from("vendors").select("name").eq("id", req.vendor_id).maybeSingle();
+    vendorName = v?.name || "";
+  }
+
+  // Assign a PO number immediately, so "Generate PO" is a single click from here.
+  const { data: seqRow, error: seqErr } = await supabase.rpc("nextval_po_number");
+  if (seqErr) throw seqErr;
+  const poNumber = `PO-${new Date().getFullYear()}-${String(seqRow).padStart(4, "0")}`;
+
+  const { data: expenseRow, error: expErr } = await supabase.from("expenses").insert({
+    project_id: req.project_id, submitted_by: req.received_by || fulfilledBy, date: new Date().toISOString().slice(0, 10),
+    category: "Materials", description: req.items, amount: req.amount || 0,
+    payment_method: null, vendor: vendorName, vendor_id: req.vendor_id,
+    proof_url: req.receipt_photo_url, status: "Approved", approved_by: fulfilledBy,
+    po_number: poNumber, po_generated_at: new Date().toISOString(), po_generated_by: fulfilledBy,
+    notes: `Auto-generated from material request confirmed received on ${req.received_at ? req.received_at.slice(0, 10) : ""}.`,
+  }).select().single();
+  if (expErr) throw expErr;
+
+  const { error: updateErr } = await supabase.from("material_requests").update({
+    status: "Fulfilled", fulfilled_by: fulfilledBy, fulfilled_at: new Date().toISOString(), expense_id: expenseRow.id,
+  }).eq("id", id);
+  if (updateErr) throw updateErr;
+
+  return expenseRow.id;
 }
 
 /* ---- site visits (architect entry/exit log) ----------------------------- */
