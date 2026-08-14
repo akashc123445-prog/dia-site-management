@@ -2964,7 +2964,11 @@ function SupervisorHome({ data, currentUser, actions, setView }) {
                 </div>
               ))}
             </div>
-            {approvedMaterials.length > 4 && <p className="text-[11px] text-emerald-700 mt-1.5">+{approvedMaterials.length - 4} more — see Materials tab.</p>}
+            {approvedMaterials.length > 4 && <p className="text-[11px] text-emerald-700 mt-1.5 mb-2">+{approvedMaterials.length - 4} more</p>}
+            <button onClick={() => setView({ tab: "project", projectId: project.id, sub: "materials" })}
+              className="mt-3 w-full text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-2 rounded-lg">
+              Confirm materials received →
+            </button>
           </Card>
         );
       })()}
@@ -2976,6 +2980,7 @@ function SupervisorHome({ data, currentUser, actions, setView }) {
           {actionBtn(Receipt, "Add Expense", () => setModal("expense"))}
           {actionBtn(Camera, "Upload Photos", () => setModal("photo"))}
           {actionBtn(AlertTriangle, "Report Issue", () => setModal("issue"), "bg-white border border-rose-200 text-rose-700")}
+          {actionBtn(Store, "Materials", () => setView({ tab: "project", projectId: project.id, sub: "materials" }))}
         </div>
       </div>
 
