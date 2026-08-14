@@ -26,12 +26,13 @@ import {
 import {
   fetchAllData, dbUpdateProfile, dbRemoveUser, dbAdminCreateUser, dbAdminResetPassword, dbAddProject, dbUpdateProject, dbDeleteProject, dbUpdateTask,
   dbUpdateDesignPhase, dbUpdateDrawing, dbAddDrawing, dbRemoveDrawing,
-  dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbMarkExpensePaid, dbAddIssue,
+  dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbMarkExpensePaid, dbGeneratePO, dbAddIssue,
   dbAddVendor, dbUpdateVendor, dbDeleteVendor,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
   dbStartSiteVisit, dbEndSiteVisit,
   uploadProofFile, uploadSitePhoto,
 } from "./lib/dataStore";
+import { generatePOPdf } from "./lib/generatePO";
 
 /* ---------------------------------------------------------------------- */
 /* Small UI primitives                                                      */
@@ -261,6 +262,7 @@ function LoginScreen() {
           </button>
         </div>
         <p className="text-center text-stone-500 text-xs mt-5">New accounts are reviewed and activated by an admin before first sign-in.</p>
+        <p className="text-center text-white/30 text-[11px] mt-3">© Designed and developed by Kash.d Studios</p>
       </div>
     </div>
   );
@@ -588,6 +590,11 @@ function ProjectsList({ data, setView, actions, currentUser }) {
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">{p.type}</span>
                       <span className={`text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${isDesigningCard ? "bg-sky-50 text-sky-700" : "bg-stone-100 text-stone-600"}`}>{p.contractType}</span>
+                      {p.estimatedCost > 0 && spend.approved > p.estimatedCost && (
+                        <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 flex items-center gap-1">
+                          <AlertTriangle size={9} /> Over budget
+                        </span>
+                      )}
                     </div>
                     <h3 className="font-display text-base font-semibold text-stone-900 mt-0.5">{p.name}</h3>
                   </div>
@@ -631,27 +638,35 @@ function CostDashboard({ project, expenses }) {
   const actualProfit = project.contractValue - spend.approved;
   const estMargin = project.contractValue ? (projectedProfit / project.contractValue) * 100 : 0;
   const actMargin = project.contractValue ? (actualProfit / project.contractValue) * 100 : 0;
+  const overBudget = project.estimatedCost > 0 && spend.approved > project.estimatedCost;
+  const overAmount = spend.approved - project.estimatedCost;
 
   const items = [
-    ["Contract Value", fmtINR(project.contractValue)],
-    ["Estimated Cost", fmtINR(project.estimatedCost)],
-    ["Actual Cost (Approved)", fmtINR(spend.approved)],
-    ["Pending Expenses", fmtINR(spend.pending)],
-    ["Remaining Est. Budget", fmtINR(remainingBudget)],
-    ["Projected Profit", fmtINR(projectedProfit)],
-    ["Actual Profit (to date)", fmtINR(actualProfit)],
-    ["Estimated Margin", estMargin.toFixed(1) + "%"],
-    ["Actual Margin (to date)", actMargin.toFixed(1) + "%"],
+    ["Contract Value", fmtINR(project.contractValue), false],
+    ["Estimated Cost", fmtINR(project.estimatedCost), false],
+    ["Actual Cost (Approved)", fmtINR(spend.approved), overBudget],
+    ["Pending Expenses", fmtINR(spend.pending), false],
+    ["Remaining Est. Budget", fmtINR(remainingBudget), remainingBudget < 0],
+    ["Projected Profit", fmtINR(projectedProfit), false],
+    ["Actual Profit (to date)", fmtINR(actualProfit), actualProfit < 0],
+    ["Estimated Margin", estMargin.toFixed(1) + "%", false],
+    ["Actual Margin (to date)", actMargin.toFixed(1) + "%", actMargin < 0],
   ];
 
   return (
     <Card className="p-5">
       <h3 className="font-display text-base font-semibold text-stone-900 mb-4">Project Cost Dashboard</h3>
+      {overBudget && (
+        <div className="flex items-center gap-2 bg-rose-50 border border-rose-200 text-rose-700 text-sm font-semibold rounded-lg px-3 py-2.5 mb-4">
+          <AlertTriangle size={15} className="shrink-0" />
+          Approved expenses have gone {fmtINR(overAmount)} over the estimated cost.
+        </div>
+      )}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-        {items.map(([label, val]) => (
+        {items.map(([label, val, warn]) => (
           <div key={label}>
             <div className="text-[11px] text-stone-500 font-semibold uppercase tracking-wide">{label}</div>
-            <div className="text-lg font-mono font-semibold text-stone-900 mt-0.5">{val}</div>
+            <div className={`text-lg font-mono font-semibold mt-0.5 ${warn ? "text-rose-600" : "text-stone-900"}`}>{val}</div>
           </div>
         ))}
       </div>
@@ -1094,7 +1109,7 @@ function SiteReportForm({ onSave, reportType }) {
   );
 }
 
-function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete, onMarkPaid }) {
+function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO }) {
   const [showModal, setShowModal] = useState(false);
   const list = expenses
     .filter(e => e.projectId === project.id)
@@ -1132,7 +1147,8 @@ function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprov
           </thead>
           <tbody>
             {list.map(e => (
-              <ExpenseRow key={e.id} e={e} userName={userName} canApprove={canApprove} currentUserId={currentUser.id} onApprove={onApprove} onReject={onReject} onDelete={onDelete} onMarkPaid={onMarkPaid} />
+              <ExpenseRow key={e.id} e={e} userName={userName} canApprove={canApprove} currentUserId={currentUser.id} onApprove={onApprove} onReject={onReject} onDelete={onDelete} onMarkPaid={onMarkPaid} onGeneratePO={onGeneratePO}
+                onDownloadPO={() => generatePOPdf({ expense: e, vendor: vendors.find(v => v.id === e.vendorId), project, generatedByName: userName(e.poGeneratedBy) })} />
             ))}
           </tbody>
         </table>
@@ -1145,7 +1161,7 @@ function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprov
   );
 }
 
-function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onReject, onDelete, onMarkPaid }) {
+function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO, onDownloadPO }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -1164,10 +1180,11 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
       </td>
       <td className="py-2.5 pr-3 text-stone-500">
         {e.vendor}
-        {(e.totalInvoiceValue != null || e.proofUrl) && (
+        {(e.totalInvoiceValue != null || e.proofUrl || e.poNumber) && (
           <div className="text-[10px] text-stone-400 mt-0.5 space-y-0.5">
             {e.totalInvoiceValue != null && <div>Invoice {fmtINR(e.totalInvoiceValue)} · Paid {fmtINR(e.advancePaid)} · Due <b className="text-stone-600">{fmtINR(pending)}</b></div>}
             {e.proofUrl && <a href={e.proofUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 dia-text-bronze hover:underline"><Paperclip size={10} /> Attachment</a>}
+            {e.poNumber && <div className="font-mono font-semibold dia-text-bronze flex items-center gap-2">{e.poNumber}{onDownloadPO && <button onClick={onDownloadPO} className="text-stone-400 hover:dia-text-bronze" title="Download PO PDF"><Download size={11} /></button>}</div>}
           </div>
         )}
       </td>
@@ -1210,6 +1227,12 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
                 <button onClick={() => onMarkPaid(e.id, !e.paid)}
                   className={`text-[11px] font-semibold px-2 py-1 rounded-md ${e.paid ? "text-stone-500 border border-stone-200 hover:bg-stone-50" : "text-white bg-amber-600 hover:bg-amber-700"}`}>
                   {e.paid ? "Mark unpaid" : "Mark paid"}
+                </button>
+              )}
+              {onGeneratePO && !e.poNumber && (
+                <button onClick={() => onGeneratePO(e.id)} disabled={!e.vendorId} title={!e.vendorId ? "Link a vendor to this expense first" : "Generate PO"}
+                  className="text-[11px] font-semibold text-white bg-stone-800 hover:bg-stone-900 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded-md">
+                  Generate PO
                 </button>
               )}
               {onDelete && (
@@ -2023,7 +2046,8 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
         onAdd={(exp) => actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id })}
         onApprove={(id) => actions.approveExpense(id, currentUser.id)} onReject={(id, reason) => actions.rejectExpense(id, currentUser.id, reason)}
         onDelete={(id) => actions.deleteExpense(id)}
-        onMarkPaid={(id, paid) => actions.markExpensePaid(id, currentUser.id, paid)} />}
+        onMarkPaid={(id, paid) => actions.markExpensePaid(id, currentUser.id, paid)}
+        onGeneratePO={(id) => actions.generatePO(id, currentUser.id)} />}
       {tab === "photos" && <PhotosTab project={project} reports={projectReports} canAdd={isAssignedSupervisor || isAssignedArchitect} onAddPhoto={(photo) => actions.addPhoto(project.id, photo, currentUser.id)} />}
       {tab === "materials" && <MaterialsTab project={project} requests={data.materialRequests.filter(m => m.projectId === project.id)} users={data.users} currentUser={currentUser}
         isAdmin={isAdmin} canRequest={isAssignedArchitect || isAdmin}
@@ -2154,7 +2178,9 @@ function ExpensesGlobal({ data, currentUser, actions }) {
                 onApprove={() => actions.approveExpense(e.id, currentUser.id)}
                 onReject={(reason) => actions.rejectExpense(e.id, currentUser.id, reason)}
                 onDelete={() => actions.deleteExpense(e.id)}
-                onMarkPaid={(paid) => actions.markExpensePaid(e.id, currentUser.id, paid)} />
+                onMarkPaid={(paid) => actions.markExpensePaid(e.id, currentUser.id, paid)}
+                onGeneratePO={() => actions.generatePO(e.id, currentUser.id)}
+                onDownloadPO={() => generatePOPdf({ expense: e, vendor: vendors.find(v => v.id === e.vendorId), project: projects.find(p => p.id === e.projectId), generatedByName: userName(e.poGeneratedBy) })} />
             ))}
           </tbody>
         </table>
@@ -2164,7 +2190,7 @@ function ExpensesGlobal({ data, currentUser, actions }) {
   );
 }
 
-function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, onReject, onDelete, onMarkPaid }) {
+function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO, onDownloadPO }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -2183,10 +2209,11 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
       </td>
       <td className="py-2.5 px-4 text-stone-500 max-w-[180px]">
         {e.vendor}
-        {(e.totalInvoiceValue != null || e.proofUrl) && (
+        {(e.totalInvoiceValue != null || e.proofUrl || e.poNumber) && (
           <div className="text-[10px] text-stone-400 mt-0.5 space-y-0.5">
             {e.totalInvoiceValue != null && <div>Invoice {fmtINR(e.totalInvoiceValue)} · Due <b className="text-stone-600">{fmtINR(e.totalInvoiceValue - e.advancePaid)}</b></div>}
             {e.proofUrl && <a href={e.proofUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 dia-text-bronze hover:underline"><Paperclip size={10} /> Attachment</a>}
+            {e.poNumber && <div className="font-mono font-semibold dia-text-bronze flex items-center gap-2">{e.poNumber}{onDownloadPO && <button onClick={onDownloadPO} className="text-stone-400 hover:dia-text-bronze" title="Download PO PDF"><Download size={11} /></button>}</div>}
           </div>
         )}
       </td>
@@ -2231,6 +2258,12 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
               <button onClick={() => onMarkPaid(!e.paid)}
                 className={`text-[11px] font-semibold px-2 py-1 rounded-md ${e.paid ? "text-stone-500 border border-stone-200 hover:bg-stone-50" : "text-white bg-amber-600 hover:bg-amber-700"}`}>
                 {e.paid ? "Mark unpaid" : "Mark paid"}
+              </button>
+            )}
+            {onGeneratePO && !e.poNumber && (
+              <button onClick={onGeneratePO} disabled={!e.vendorId} title={!e.vendorId ? "Link a vendor to this expense first" : "Generate PO"}
+                className="text-[11px] font-semibold text-white bg-stone-800 hover:bg-stone-900 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded-md">
+                Generate PO
               </button>
             )}
             {onDelete && (
@@ -2342,6 +2375,8 @@ function VendorsView({ data, actions }) {
             <div className="mt-3 pt-3 border-t border-stone-100 space-y-1.5 text-xs text-stone-500">
               {v.gstNumber && <div><span className="text-stone-400">GST:</span> {v.gstNumber}</div>}
               {v.address && <div className="flex items-start gap-1"><MapPin size={11} className="mt-0.5 shrink-0" /> {v.address}</div>}
+              {v.phone && <div>{v.phone}</div>}
+              {v.email && <div>{v.email}</div>}
               {v.bankAccountNumber ? (
                 <div className="font-mono text-[11px] text-stone-500 pt-1">
                   {v.bankAccountName && <div>{v.bankAccountName}</div>}
@@ -2375,7 +2410,8 @@ function VendorsView({ data, actions }) {
 function VendorForm({ vendor, onSave, onDelete }) {
   const [form, setForm] = useState({
     name: vendor?.name || "", material: vendor?.material || "", gstNumber: vendor?.gstNumber || "",
-    address: vendor?.address || "", bankAccountName: vendor?.bankAccountName || "",
+    address: vendor?.address || "", phone: vendor?.phone || "", email: vendor?.email || "",
+    bankAccountName: vendor?.bankAccountName || "",
     bankAccountNumber: vendor?.bankAccountNumber || "", bankIfsc: vendor?.bankIfsc || "", bankName: vendor?.bankName || "",
   });
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -2387,6 +2423,10 @@ function VendorForm({ vendor, onSave, onDelete }) {
       <Field label="Material / service supplied"><input className={inputCls} value={form.material} onChange={set("material")} placeholder="e.g. Marble & stone" /></Field>
       <Field label="GST number"><input className={inputCls} value={form.gstNumber} onChange={set("gstNumber")} /></Field>
       <Field label="Address"><textarea className={inputCls} rows={2} value={form.address} onChange={set("address")} /></Field>
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Phone"><input className={inputCls} value={form.phone} onChange={set("phone")} /></Field>
+        <Field label="Email"><input type="email" className={inputCls} value={form.email} onChange={set("email")} /></Field>
+      </div>
       <div className="pt-1 pb-2 text-xs font-semibold text-stone-500 uppercase tracking-wide">Bank details</div>
       <Field label="Account holder name"><input className={inputCls} value={form.bankAccountName} onChange={set("bankAccountName")} /></Field>
       <div className="grid sm:grid-cols-2 gap-x-4">
@@ -3099,13 +3139,22 @@ export default function App() {
       setSession(s);
       if (s) loadProfileAndData(s.user.id); else setLoading(false);
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
+    // Supabase fires this on more than just sign-in/out — it also fires
+    // silently on token refresh (roughly hourly, and sometimes when the
+    // browser tab regains focus). Only a real sign-in should reload all data
+    // and reset the current screen; a background token refresh must not
+    // interrupt whatever the person is doing (e.g. mid-upload on a form).
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, s) => {
       setSession(s);
-      if (s) {
-        loadProfileAndData(s.user.id);
-      } else {
+      if (event === "SIGNED_OUT" || !s) {
         setProfile(null); setData(null); setLoading(false);
+        return;
       }
+      if (event === "SIGNED_IN") {
+        loadProfileAndData(s.user.id);
+      }
+      // TOKEN_REFRESHED / USER_UPDATED / etc: session is kept current above,
+      // but we deliberately don't touch `data` or `view` here.
     });
     return () => subscription.unsubscribe();
   }, [loadProfileAndData]);
@@ -3136,6 +3185,7 @@ export default function App() {
     rejectExpense: (id, approverId, reason) => dbRejectExpense(id, approverId, reason).then(reload),
     deleteExpense: (id) => dbDeleteExpense(id).then(reload),
     markExpensePaid: (id, userId, paid) => dbMarkExpensePaid(id, userId, paid).then(reload),
+    generatePO: (id, userId) => dbGeneratePO(id, userId).then(reload),
     addVendor: (v) => dbAddVendor(v).then(reload),
     updateVendor: (id, v) => dbUpdateVendor(id, v).then(reload),
     deleteVendor: (id) => dbDeleteVendor(id).then(reload),
@@ -3184,6 +3234,8 @@ export default function App() {
         return [...materialNotifs, ...issueNotifs];
       })()
     : [
+        ...data.projects.filter(p => p.estimatedCost > 0 && computeProjectSpend(data.expenses, p.id).approved > p.estimatedCost)
+          .map(p => ({ text: `${p.name} is over its estimated cost`, meta: fmtINR(computeProjectSpend(data.expenses, p.id).approved - p.estimatedCost) + " over", view: { tab: "project", projectId: p.id, sub: "overview" } })),
         ...data.materialRequests.filter(m => m.status === "Pending").slice(0, 5)
           .map(m => ({ text: `Material request awaiting approval: ${m.items.split("\n")[0]}`, meta: data.projects.find(p => p.id === m.projectId)?.name, view: { tab: "project", projectId: m.projectId, sub: "materials" } })),
         ...data.expenses.filter(e => e.status === "Pending").slice(0, 3)
@@ -3228,6 +3280,7 @@ export default function App() {
         {view.tab === "users" && (isAdmin ? <TeamView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "sup-home" && <SupervisorHome data={data} currentUser={currentUser} actions={actions} setView={setView} />}
         {view.tab === "arch-home" && <ArchitectHome data={data} currentUser={currentUser} setView={setView} />}
+        <p className="text-center text-[11px] text-stone-300 py-4">© Designed and developed by Kash.d Studios</p>
       </div>
     </div>
   );
