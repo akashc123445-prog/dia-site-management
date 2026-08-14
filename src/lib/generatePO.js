@@ -1,231 +1,280 @@
 import { jsPDF } from "jspdf";
-import { DIA, COMPANY_INFO, LOGO_MARK } from "./constants";
-import { fmtINR, fmtDate } from "./helpers";
+import { DIA, COMPANY_INFO, PO_CONTACT, PO_TERMS, LOGO_MARK_MAROON } from "./constants";
+import { fmtDate } from "./helpers";
 
-/* Builds and downloads a Purchase Order PDF for a single expense, matching
-   the layout: black "PURCHASE ORDER" header block with PO number, Vendor /
-   Buyer info columns, a line-item table, totals box, payment terms, and a
-   signature line. Since expenses in this app are single lump-sum entries
-   (not itemized), the item table shows one line built from the expense's
-   description and amount. */
+/* jsPDF's built-in fonts (Helvetica etc.) don't include the ₹ glyph — it
+   renders as a broken character. "Rs." is the safe, universally-supported
+   substitute for anything drawn onto the PDF itself. This is separate from
+   fmtINR (used everywhere else in the app, which renders fine with ₹ since
+   the browser uses proper system fonts there). */
+const rs = (n) => "Rs. " + Math.round(n || 0).toLocaleString("en-IN");
+
+/* Builds and downloads an A5 Purchase Order PDF for a single expense,
+   matching the supplied template layout. Since expenses in this app are
+   single lump-sum entries (not itemized), the item table shows one line
+   built from the expense's description and amount. */
 export function generatePOPdf({ expense, vendor, project, generatedByName }) {
-  const doc = new jsPDF({ unit: "pt", format: "a4" });
-  const pageW = doc.internal.pageSize.getWidth();
-  const margin = 40;
+  const doc = new jsPDF({ unit: "pt", format: "a5" });
+  const pageW = doc.internal.pageSize.getWidth();   // ~420pt
+  const pageH = doc.internal.pageSize.getHeight();  // ~595pt
+  const margin = 28;
   const contentW = pageW - margin * 2;
 
-  const maroon = hexToRgb(DIA.maroon);
-  const gold = hexToRgb(DIA.gold);
   const ink = [40, 35, 32];
-  const grey = [110, 105, 100];
-  const line = [210, 205, 198];
+  const grey = [120, 114, 108];
+  const line = [212, 207, 200];
 
   let y = margin;
 
-  /* ---- header: logo + company block, black PO box ---- */
+  /* ---- header row: logo + company block (left) beside PO box + number (right) ---- */
+  const logoSize = 32;
   try {
-    doc.addImage(LOGO_MARK, "PNG", margin, y, 40, 32);
+    doc.addImage(LOGO_MARK_MAROON, "PNG", margin, y, logoSize, logoSize);
   } catch { /* logo optional if it fails to decode */ }
 
+  const textX = margin + logoSize + 8;
   doc.setTextColor(...ink);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(16);
-  doc.text(COMPANY_INFO.name, margin + 50, y + 14);
+  doc.setFontSize(11.5);
+  doc.text(COMPANY_INFO.name, textX, y + 10);
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(8);
+  doc.setFontSize(6);
   doc.setTextColor(...grey);
-  doc.text(COMPANY_INFO.tagline, margin + 50, y + 26);
-  doc.setFontSize(9);
-  doc.text(`Phone: ${COMPANY_INFO.phone}`, margin + 50, y + 40);
-  doc.text(`Email: ${COMPANY_INFO.email}`, margin + 50, y + 52);
-  doc.text(`Web: ${COMPANY_INFO.website}`, margin + 50, y + 64);
+  doc.text(COMPANY_INFO.tagline, textX, y + 18);
+  doc.setFontSize(6.8);
+  doc.text(`Phone: ${COMPANY_INFO.phone}`, textX, y + 27);
+  doc.text(`Email: ${COMPANY_INFO.email}`, textX, y + 35);
+  doc.text(`Web: ${COMPANY_INFO.website}`, textX, y + 43);
 
-  const poBoxW = 170, poBoxH = 34;
+  const poBoxW = 140, poBoxH = 24;
   const poBoxX = pageW - margin - poBoxW;
   doc.setFillColor(20, 18, 17);
   doc.rect(poBoxX, y, poBoxW, poBoxH, "F");
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(15);
-  doc.text("PURCHASE ORDER", poBoxX + poBoxW / 2, y + poBoxH / 2 + 5, { align: "center" });
+  doc.setFontSize(10.5);
+  doc.text("PURCHASE ORDER", poBoxX + poBoxW / 2, y + poBoxH / 2 + 3.5, { align: "center" });
 
   doc.setTextColor(...ink);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  doc.text(`NO.  ${expense.poNumber}`, poBoxX, y + poBoxH + 20);
+  doc.setFontSize(9);
+  doc.text(`NO.  ${expense.poNumber}`, poBoxX, y + poBoxH + 15);
 
-  y += 80;
+  y = Math.max(y + logoSize, y + poBoxH + 15) + 12;
+
   doc.setDrawColor(...ink);
-  doc.setLineWidth(1.2);
+  doc.setLineWidth(1);
   doc.line(margin, y, pageW - margin, y);
+  y += 13;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.5);
+  doc.setTextColor(...ink);
+  doc.text(`Date of Issue: ${fmtDate((expense.poGeneratedAt || new Date().toISOString()).slice(0, 10))}`, pageW - margin, y, { align: "right" });
   y += 18;
 
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
-  doc.text(`Date of Issue:  ${fmtDate((expense.poGeneratedAt || new Date().toISOString()).slice(0, 10))}`, pageW - margin, y, { align: "right" });
-  y += 22;
-
   /* ---- vendor / buyer columns ---- */
-  const colW = contentW / 2 - 10;
-  const vendorX = margin, buyerX = margin + colW + 20;
-  const colTop = y;
+  const colW = contentW / 2 - 8;
+  const vendorX = margin, buyerX = margin + colW + 16;
 
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
+  doc.setFontSize(9);
   doc.text("Vendor Information:", vendorX, y);
   doc.text("Buyer Information:", buyerX, y);
-  underline(doc, vendorX, y + 2, 130);
-  underline(doc, buyerX, y + 2, 120);
-  y += 16;
+  underline(doc, vendorX, y + 3, 96);
+  underline(doc, buyerX, y + 3, 90);
+  y += 13;
 
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(9);
+  doc.setFontSize(7.6);
   let vy = y, by = y;
   vy = wrapLine(doc, `Vendor Name: ${vendor?.name || "—"}`, vendorX, vy, colW);
-  vy = wrapLine(doc, `Vendor Address: ${vendor?.address || "—"}`, vendorX, vy, colW);
+  vy = wrapLine(doc, `Address: ${vendor?.address || "—"}`, vendorX, vy, colW);
   vy = wrapLine(doc, `Phone/Email: ${[vendor?.phone, vendor?.email].filter(Boolean).join(" / ") || "—"}`, vendorX, vy, colW);
   if (vendor?.gstNumber) vy = wrapLine(doc, `GSTIN: ${vendor.gstNumber}`, vendorX, vy, colW);
 
   by = wrapLine(doc, `Buyer Name: ${COMPANY_INFO.name}`, buyerX, by, colW);
-  by = wrapLine(doc, `Buyer Address: ${project?.location || "—"}`, buyerX, by, colW);
+  by = wrapLine(doc, `Site Address: ${project?.location || "—"}`, buyerX, by, colW);
   by = wrapLine(doc, `Phone/Email: ${COMPANY_INFO.phone} / ${COMPANY_INFO.email}`, buyerX, by, colW);
 
-  y = Math.max(vy, by) + 14;
+  y = Math.max(vy, by) + 10;
 
   /* ---- item table ---- */
   const tableTop = y;
   const cols = [
-    { label: "Item Description", w: contentW * 0.5 },
-    { label: "Pieces", w: contentW * 0.12 },
-    { label: "Price", w: contentW * 0.18 },
-    { label: "Amount", w: contentW * 0.20 },
+    { label: "Item Description", w: contentW * 0.46 },
+    { label: "Pieces", w: contentW * 0.13 },
+    { label: "Price", w: contentW * 0.19 },
+    { label: "Amount", w: contentW * 0.22 },
   ];
-  let cx = margin;
-  const headH = 22, rowH = 26;
+  const headH = 18, rowH = 20;
+
   doc.setDrawColor(...line);
   doc.setFillColor(245, 243, 240);
   doc.rect(margin, y, contentW, headH, "F");
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
+  doc.setFontSize(7.8);
   doc.setTextColor(...ink);
+  let cx = margin;
   cols.forEach(c => {
-    doc.text(c.label, c.label === "Item Description" ? cx + 6 : cx + c.w - 6, y + 14, { align: c.label === "Item Description" ? "left" : "right" });
+    const isDesc = c.label === "Item Description";
+    doc.text(c.label, isDesc ? cx + 5 : cx + c.w - 5, y + 12, { align: isDesc ? "left" : "right" });
     cx += c.w;
   });
   y += headH;
 
-  const itemRows = [
-    [expense.description || "—", "1", fmtINR(expense.amount), fmtINR(expense.amount)],
-  ];
+  const itemRows = [[expense.description || "—", "1", rs(expense.amount), rs(expense.amount)]];
   doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.6);
   itemRows.forEach(row => {
     cx = margin;
     row.forEach((val, i) => {
-      const align = i === 0 ? "left" : "right";
-      const tx = i === 0 ? cx + 6 : cx + cols[i].w - 6;
-      doc.text(String(val), tx, y + 17, { align, maxWidth: cols[i].w - 10 });
+      const isDesc = i === 0;
+      doc.text(String(val), isDesc ? cx + 5 : cx + cols[i].w - 5, y + 13, { align: isDesc ? "left" : "right", maxWidth: cols[i].w - 8 });
       cx += cols[i].w;
     });
     y += rowH;
   });
-  // a couple of empty rows for the printed look, matching the sample template
-  for (let i = 0; i < 2; i++) y += rowH;
+  for (let i = 0; i < 2; i++) y += rowH; // blank rows for the printed-form look
 
   cx = margin;
+  doc.setDrawColor(...line);
   cols.forEach(c => { doc.line(cx, tableTop, cx, y); cx += c.w; });
   doc.line(cx, tableTop, cx, y);
   doc.line(margin, tableTop, pageW - margin, tableTop);
   doc.line(margin, y, pageW - margin, y);
   for (let ry = tableTop + headH; ry <= y; ry += rowH) doc.line(margin, ry, pageW - margin, ry);
 
-  y += 20;
+  y += 16;
 
   /* ---- payment terms (left) + totals (right) ---- */
-  const totalsW = 200, totalsX = pageW - margin - totalsW;
+  const totalsW = 168, totalsX = pageW - margin - totalsW;
   const totalsRows = [
-    ["Subtotal", fmtINR(expense.amount)],
+    ["Subtotal", rs(expense.amount)],
     ["Taxes", "—"],
     ["Shipping", "—"],
-    ["Total Amount", fmtINR(expense.totalInvoiceValue ?? expense.amount)],
+    ["Total Amount", rs(expense.totalInvoiceValue ?? expense.amount)],
   ];
   let ty = y;
-  doc.setFontSize(9);
   totalsRows.forEach(([label, val], i) => {
-    const rh = 20;
-    if (i === totalsRows.length - 1) { doc.setFont("helvetica", "bold"); doc.setFontSize(10); } else { doc.setFont("helvetica", "normal"); doc.setFontSize(9); }
-    doc.rect(totalsX, ty, totalsW * 0.55, rh);
-    doc.rect(totalsX + totalsW * 0.55, ty, totalsW * 0.45, rh);
-    doc.text(label, totalsX + 6, ty + 14);
-    doc.text(val, totalsX + totalsW - 6, ty + 14, { align: "right" });
+    const rh = 17;
+    const isLast = i === totalsRows.length - 1;
+    doc.setFont("helvetica", isLast ? "bold" : "normal");
+    doc.setFontSize(isLast ? 8.3 : 7.6);
+    doc.setDrawColor(...line);
+    doc.rect(totalsX, ty, totalsW * 0.5, rh);
+    doc.rect(totalsX + totalsW * 0.5, ty, totalsW * 0.5, rh);
+    doc.setTextColor(...ink);
+    doc.text(label, totalsX + 5, ty + 12);
+    doc.text(val, totalsX + totalsW - 5, ty + 12, { align: "right" });
     ty += rh;
   });
 
+  const termsW = totalsX - margin - 14;
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
-  doc.text("Payment Terms:", margin, y);
-  underline(doc, margin, y + 2, 110);
-  doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  let py = y + 16;
-  py = wrapLine(doc, `Payment Method: ${expense.paymentMethod || "—"}`, margin, py, totalsX - margin - 20);
-  py = wrapLine(doc, `Payment Due Date: __________________`, margin, py, totalsX - margin - 20);
-  py = wrapLine(doc, `Terms and Conditions: __________________`, margin, py, totalsX - margin - 20);
+  doc.text("Payment Terms:", margin, y);
+  underline(doc, margin, y + 3, 82);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.6);
+  let py = y + 13;
+  py = wrapLine(doc, `Payment Method: ${expense.paymentMethod || "—"}`, margin, py, termsW);
+  py = wrapLine(doc, `Payment Due Date: ________________`, margin, py, termsW);
+  py = wrapLine(doc, `Terms & Conditions: ________________`, margin, py, termsW);
 
-  y = Math.max(ty, py) + 24;
+  y = Math.max(ty, py) + 20;
 
-  /* ---- signature + notes ---- */
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
-  doc.text("Authorized Signature:", margin, y);
-  doc.line(margin + 110, y, margin + 260, y);
-  if (generatedByName) {
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    doc.setTextColor(...grey);
-    doc.text(generatedByName, margin + 110, y + 12);
-  }
-
-  const notesX = margin + 300;
+  /* ---- notes (full width) ---- */
   doc.setTextColor(...ink);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
-  doc.text("Notes:", notesX, y);
-  underline(doc, notesX, y + 2, 40);
+  doc.setFontSize(9);
+  doc.text("Notes:", margin, y);
+  underline(doc, margin, y + 3, 34);
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(8.5);
+  doc.setFontSize(7.3);
   let noteText = expense.notes || "";
   if (expense.totalInvoiceValue != null) {
-    noteText += `${noteText ? "  " : ""}Vendor invoice total: ${fmtINR(expense.totalInvoiceValue)}; advance already paid: ${fmtINR(expense.advancePaid)}.`;
+    noteText += `${noteText ? "  " : ""}Vendor invoice total: ${rs(expense.totalInvoiceValue)}; advance already paid: ${rs(expense.advancePaid)}.`;
   }
-  wrapLine(doc, noteText || "—", notesX, y + 16, pageW - margin - notesX);
+  const noteEndY = wrapLine(doc, noteText || "—", margin, y + 12, contentW);
 
-  /* ---- footer ---- */
-  const footY = doc.internal.pageSize.getHeight() - 30;
+  y = noteEndY + 16;
+
+  /* ---- signature ---- */
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.text("Authorized Signature:", margin, y);
+  doc.setDrawColor(...ink);
+  doc.line(margin + 95, y, margin + 220, y);
+  if (generatedByName) {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(...grey);
+    doc.text(generatedByName, margin + 95, y + 11);
+  }
+
+  /* ---- footer (page 1) ---- */
+  const footY = pageH - 24;
   doc.setDrawColor(...line);
   doc.line(margin, footY - 10, pageW - margin, footY - 10);
   doc.setFont("helvetica", "italic");
-  doc.setFontSize(8);
+  doc.setFontSize(7);
   doc.setTextColor(...grey);
   doc.text("E & OE (Errors and Omissions Excepted)", pageW / 2, footY, { align: "center" });
 
-  doc.save(`${expense.poNumber}.pdf`);
-}
+  /* ---- page 2: Comments or Special Instructions ---- */
+  doc.addPage("a5", "portrait");
+  let y2 = margin;
 
-function hexToRgb(hex) {
-  const n = parseInt(hex.replace("#", ""), 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  doc.setFillColor(230, 227, 222);
+  doc.rect(margin, y2, contentW, 20, "F");
+  doc.setTextColor(...ink);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9.5);
+  doc.text("Comments or Special Instructions", margin + 6, y2 + 14);
+  y2 += 28;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7);
+  const romanNumerals = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii", "xiii", "xiv", "xv", "xvi"];
+  PO_TERMS.forEach((term, idx) => {
+    const label = `${romanNumerals[idx] || idx + 1}) `;
+    const labelW = doc.getTextWidth(label);
+    const lines = doc.splitTextToSize(term, contentW - labelW - 4);
+    doc.setTextColor(...ink);
+    doc.text(label, margin, y2);
+    doc.text(lines, margin + labelW, y2);
+    y2 += lines.length * 8.5 + 4;
+  });
+
+  y2 += 6;
+  doc.setDrawColor(...ink);
+  doc.setLineWidth(0.75);
+  doc.line(margin, y2, pageW - margin, y2);
+  y2 += 16;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.5);
+  doc.setTextColor(...ink);
+  doc.text("If you have any questions about this purchase order, please contact:", pageW / 2, y2, { align: "center" });
+  y2 += 13;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8);
+  doc.text(`${PO_CONTACT.name}  |  ${PO_CONTACT.phone}  |  ${PO_CONTACT.email}`, pageW / 2, y2, { align: "center" });
+
+  doc.save(`${expense.poNumber}.pdf`);
 }
 
 function underline(doc, x, y, w) {
   doc.setDrawColor(200, 195, 188);
   doc.setLineWidth(0.5);
-  doc.line(x, y + 6, x + w, y + 6);
+  doc.line(x, y + 5, x + w, y + 5);
 }
 
-/* Simple word-wrap helper: writes text at (x, y), wrapping to maxWidth,
-   returns the y position after the last line so callers can chain fields. */
+/* Word-wrap helper: writes text at (x, y) wrapped to maxWidth, returns the
+   y position after the last line so callers can chain fields underneath. */
 function wrapLine(doc, text, x, y, maxWidth) {
   const lines = doc.splitTextToSize(text, maxWidth);
-  doc.text(lines, x, y + 10);
-  return y + 10 + (lines.length - 1) * 11 + 10;
+  doc.text(lines, x, y + 8);
+  return y + 8 + (lines.length - 1) * 9.5 + 8;
 }
