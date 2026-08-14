@@ -1642,7 +1642,7 @@ function MaterialRequestRow({ r, userName, vendors, isAdmin, isAssignedSuperviso
       {showReceiveForm && (
         <div className="mt-3 pt-3 border-t border-stone-100">
           <ReceiveMaterialForm vendors={vendors}
-            onSave={(fields) => { onMarkReceived(r.id, fields); setShowReceiveForm(false); }}
+            onSave={async (fields) => { await onMarkReceived(r.id, fields); setShowReceiveForm(false); }}
             onCancel={() => setShowReceiveForm(false)} />
         </div>
       )}
@@ -1654,7 +1654,20 @@ function ReceiveMaterialForm({ vendors, onSave, onCancel }) {
   const [vendorId, setVendorId] = useState("");
   const [amount, setAmount] = useState("");
   const [proof, setProof] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const canSubmit = vendorId && amount && proof;
+
+  const handleSave = async () => {
+    setError("");
+    setBusy(true);
+    try {
+      await onSave({ vendorId, amount: Number(amount), receiptPhotoUrl: proof?.dataUrl });
+    } catch (err) {
+      setError(err.message || "Something went wrong — please try again.");
+      setBusy(false);
+    }
+  };
 
   return (
     <div>
@@ -1666,9 +1679,10 @@ function ReceiveMaterialForm({ vendors, onSave, onCancel }) {
       </Field>
       <Field label="Amount paid (₹)"><input type="number" className={inputCls} value={amount} onChange={e => setAmount(e.target.value)} /></Field>
       <ProofAttachment proof={proof} onChange={setProof} required pathPrefix="materials" />
+      {error && <p className="text-xs text-rose-600 mb-2">{error}</p>}
       <div className="flex gap-2 mt-1">
-        <button onClick={() => onSave({ vendorId, amount: Number(amount), receiptPhotoUrl: proof?.dataUrl })} disabled={!canSubmit}
-          className="flex-1 dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2 rounded-lg">Confirm received</button>
+        <button onClick={handleSave} disabled={!canSubmit || busy}
+          className="flex-1 dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2 rounded-lg">{busy ? "Saving…" : "Confirm received"}</button>
         <button onClick={onCancel} className="flex-1 text-sm font-semibold text-stone-600 border border-stone-200 rounded-lg">Cancel</button>
       </div>
       {!canSubmit && <p className="text-[11px] text-stone-400 mt-2 text-center">Vendor, amount, and a delivery photo are all required.</p>}
