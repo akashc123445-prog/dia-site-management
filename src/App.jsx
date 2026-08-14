@@ -1155,7 +1155,7 @@ function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprov
         {list.length === 0 && <p className="text-sm text-stone-400 py-6 text-center">No expenses recorded for this project yet.</p>}
       </div>
       {showModal && <Modal title="Add Expense" onClose={() => setShowModal(false)}>
-        <ExpenseForm vendors={vendors} onSave={(exp) => { onAdd(exp); setShowModal(false); }} />
+        <ExpenseForm defaultProjectId={project.id} vendors={vendors} onSave={(exp) => { onAdd(exp); setShowModal(false); }} />
       </Modal>}
     </div>
   );
