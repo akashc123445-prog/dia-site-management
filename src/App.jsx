@@ -2112,7 +2112,7 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
         onGeneratePO={(id) => actions.generatePO(id, currentUser.id)} />}
       {tab === "photos" && <PhotosTab project={project} reports={projectReports} canAdd={isAssignedSupervisor || isAssignedArchitect} onAddPhoto={(photo) => actions.addPhoto(project.id, photo, currentUser.id)} />}
       {tab === "materials" && <MaterialsTab project={project} requests={data.materialRequests.filter(m => m.projectId === project.id)} users={data.users} vendors={data.vendors} currentUser={currentUser}
-        isAdmin={isAdmin} canRequest={isAssignedArchitect || isAdmin} isAssignedSupervisor={isAssignedSupervisor}
+        isAdmin={isFinance} canRequest={isAssignedArchitect || isAdmin} isAssignedSupervisor={isAssignedSupervisor}
         onAdd={(req, autoApprove) => actions.addMaterialRequest(project.id, currentUser.id, req, autoApprove)}
         onApprove={(id) => actions.approveMaterialRequest(id, currentUser.id)}
         onReject={(id, reason) => actions.rejectMaterialRequest(id, currentUser.id, reason)}
@@ -3309,6 +3309,8 @@ export default function App() {
           .map(p => ({ text: `${p.name} is over its estimated cost`, meta: fmtINR(computeProjectSpend(data.expenses, p.id).approved - p.estimatedCost) + " over", view: { tab: "project", projectId: p.id, sub: "overview" } })),
         ...data.materialRequests.filter(m => m.status === "Pending").slice(0, 5)
           .map(m => ({ text: `Material request awaiting approval: ${m.items.split("\n")[0]}`, meta: data.projects.find(p => p.id === m.projectId)?.name, view: { tab: "project", projectId: m.projectId, sub: "materials" } })),
+        ...data.materialRequests.filter(m => m.status === "Received").slice(0, 5)
+          .map(m => ({ text: `Materials received, ready to log as expense: ${m.items.split("\n")[0]}`, meta: data.projects.find(p => p.id === m.projectId)?.name, view: { tab: "project", projectId: m.projectId, sub: "materials" } })),
         ...data.expenses.filter(e => e.status === "Pending").slice(0, 3)
           .map(e => ({ text: `Expense awaiting approval: ${e.description}`, meta: fmtINR(e.amount), view: { tab: "project", projectId: e.projectId, sub: "expenses" } })),
         ...data.issues.filter(i => i.status === "Open").slice(0, 3)
