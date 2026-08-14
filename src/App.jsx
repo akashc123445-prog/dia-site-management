@@ -29,6 +29,7 @@ import {
   dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbMarkExpensePaid, dbGeneratePO, dbAddIssue,
   dbAddVendor, dbUpdateVendor, dbDeleteVendor,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
+  dbMarkMaterialReceived, dbFulfillMaterialRequest,
   dbStartSiteVisit, dbEndSiteVisit,
   uploadProofFile, uploadSitePhoto,
 } from "./lib/dataStore";
@@ -1514,12 +1515,12 @@ function PhotosTab({ project, reports, onAddPhoto, canAdd }) {
   );
 }
 
-function MaterialsTab({ project, requests, users, currentUser, isAdmin, canRequest, onAdd, onApprove, onReject, onDelete }) {
+function MaterialsTab({ project, requests, users, vendors, currentUser, isAdmin, canRequest, isAssignedSupervisor, onAdd, onApprove, onReject, onDelete, onMarkReceived, onFulfill, onGeneratePO }) {
   const [showModal, setShowModal] = useState(false);
   const userName = (id) => users.find(u => u.id === id)?.name || id;
   const sorted = [...requests].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  const pending = sorted.filter(r => r.status === "Pending");
-  const rest = sorted.filter(r => r.status !== "Pending");
+  const active = sorted.filter(r => r.status === "Pending" || r.status === "Approved" || r.status === "Received");
+  const done = sorted.filter(r => r.status === "Fulfilled" || r.status === "Rejected");
 
   return (
     <div className="space-y-4">
@@ -1534,20 +1535,19 @@ function MaterialsTab({ project, requests, users, currentUser, isAdmin, canReque
         </Card>
       )}
 
-      {pending.length > 0 && (
-        <div>
-          <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2">Awaiting approval</div>
-          <div className="space-y-2">
-            {pending.map(r => <MaterialRequestRow key={r.id} r={r} userName={userName} isAdmin={isAdmin} onApprove={onApprove} onReject={onReject} onDelete={onDelete} />)}
-          </div>
+      {active.length > 0 && (
+        <div className="space-y-2">
+          {active.map(r => <MaterialRequestRow key={r.id} r={r} userName={userName} vendors={vendors} isAdmin={isAdmin} isAssignedSupervisor={isAssignedSupervisor}
+            onApprove={onApprove} onReject={onReject} onDelete={onDelete} onMarkReceived={onMarkReceived} onFulfill={onFulfill} onGeneratePO={onGeneratePO} />)}
         </div>
       )}
 
-      {rest.length > 0 && (
+      {done.length > 0 && (
         <div>
-          {pending.length > 0 && <div className="text-xs font-semibold text-stone-500 uppercase tracking-wide mb-2 mt-4">Earlier requests</div>}
+          {active.length > 0 && <div className="text-xs font-semibold text-stone-500 uppercase tracking-wide mb-2 mt-4">Earlier requests</div>}
           <div className="space-y-2">
-            {rest.map(r => <MaterialRequestRow key={r.id} r={r} userName={userName} isAdmin={isAdmin} onApprove={onApprove} onReject={onReject} onDelete={onDelete} />)}
+            {done.map(r => <MaterialRequestRow key={r.id} r={r} userName={userName} vendors={vendors} isAdmin={isAdmin} isAssignedSupervisor={isAssignedSupervisor}
+              onApprove={onApprove} onReject={onReject} onDelete={onDelete} onMarkReceived={onMarkReceived} onFulfill={onFulfill} onGeneratePO={onGeneratePO} />)}
           </div>
         </div>
       )}
@@ -1559,11 +1559,17 @@ function MaterialsTab({ project, requests, users, currentUser, isAdmin, canReque
   );
 }
 
-function MaterialRequestRow({ r, userName, isAdmin, onApprove, onReject, onDelete }) {
+function MaterialRequestRow({ r, userName, vendors, isAdmin, isAssignedSupervisor, onApprove, onReject, onDelete, onMarkReceived, onFulfill, onGeneratePO }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const statusColor = r.status === "Approved" ? "border-emerald-200 bg-emerald-50/40" : r.status === "Rejected" ? "border-rose-200 bg-rose-50/30" : "border-amber-200 bg-amber-50/30";
+  const [showReceiveForm, setShowReceiveForm] = useState(false);
+  const statusColor = r.status === "Approved" ? "border-emerald-200 bg-emerald-50/40"
+    : r.status === "Rejected" ? "border-rose-200 bg-rose-50/30"
+    : r.status === "Received" ? "border-sky-200 bg-sky-50/40"
+    : r.status === "Fulfilled" ? "border-stone-200 bg-stone-50"
+    : "border-amber-200 bg-amber-50/30";
+  const vendor = vendors?.find(v => v.id === r.vendorId);
 
   return (
     <Card className={`p-4 ${statusColor}`}>
@@ -1580,11 +1586,34 @@ function MaterialRequestRow({ r, userName, isAdmin, onApprove, onReject, onDelet
           </div>
           {r.notes && <p className="text-xs text-stone-500 mt-1">{r.notes}</p>}
           {r.status === "Rejected" && r.rejectionReason && <p className="text-xs text-rose-600 mt-1">Reason: {r.rejectionReason}</p>}
-          {r.status === "Approved" && <p className="text-xs text-emerald-700 font-semibold mt-1">Approved — site supervisor can proceed to procure/receive this.</p>}
+          {r.status === "Approved" && <p className="text-xs text-emerald-700 font-semibold mt-1">Approved — site supervisor can confirm once received.</p>}
+          {(r.status === "Received" || r.status === "Fulfilled") && (
+            <div className="text-xs text-stone-600 mt-1.5 bg-white/70 rounded-lg px-2.5 py-1.5 space-y-0.5">
+              <div>Received by {userName(r.receivedBy)} · {r.receivedAt && fmtDate(r.receivedAt.slice(0, 10))}</div>
+              <div>Vendor: {vendor?.name || "—"} · Amount: {fmtINR(r.amount)}</div>
+              {r.receiptPhotoUrl && <a href={r.receiptPhotoUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 dia-text-bronze hover:underline"><Paperclip size={10} /> Delivery photo</a>}
+              {r.status === "Fulfilled" && <div className="text-emerald-700 font-semibold">Expense logged (pre-approved) — PO can be generated.</div>}
+            </div>
+          )}
         </div>
-        {isAdmin && (
-          <div className="flex gap-1.5 items-center shrink-0">
-            {confirmingDelete ? (
+        <div className="flex gap-1.5 items-center shrink-0 flex-wrap">
+          {r.status === "Approved" && isAssignedSupervisor && !showReceiveForm && (
+            <button onClick={() => setShowReceiveForm(true)} className="text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 px-3 py-1.5 rounded-lg">
+              Confirm Received
+            </button>
+          )}
+          {r.status === "Received" && isAdmin && (
+            <button onClick={() => onFulfill(r.id)} className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-lg">
+              Confirm &amp; Log Expense
+            </button>
+          )}
+          {r.status === "Fulfilled" && isAdmin && onGeneratePO && (
+            <button onClick={() => onGeneratePO(r.expenseId)} className="text-xs font-semibold text-white bg-stone-800 hover:bg-stone-900 px-3 py-1.5 rounded-lg">
+              Generate PO
+            </button>
+          )}
+          {isAdmin && (
+            confirmingDelete ? (
               <>
                 <span className="text-[11px] text-stone-500">Delete?</span>
                 <button onClick={() => onDelete(r.id)} className="text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 px-2 py-1 rounded-md">Delete</button>
@@ -1606,11 +1635,44 @@ function MaterialRequestRow({ r, userName, isAdmin, onApprove, onReject, onDelet
                 )}
                 <button onClick={() => setConfirmingDelete(true)} title="Delete request" className="p-1.5 rounded-lg text-stone-400 hover:text-rose-600 hover:bg-rose-50"><Trash2 size={14} /></button>
               </>
-            )}
-          </div>
-        )}
+            )
+          )}
+        </div>
       </div>
+      {showReceiveForm && (
+        <div className="mt-3 pt-3 border-t border-stone-100">
+          <ReceiveMaterialForm vendors={vendors}
+            onSave={(fields) => { onMarkReceived(r.id, fields); setShowReceiveForm(false); }}
+            onCancel={() => setShowReceiveForm(false)} />
+        </div>
+      )}
     </Card>
+  );
+}
+
+function ReceiveMaterialForm({ vendors, onSave, onCancel }) {
+  const [vendorId, setVendorId] = useState("");
+  const [amount, setAmount] = useState("");
+  const [proof, setProof] = useState(null);
+  const canSubmit = vendorId && amount && proof;
+
+  return (
+    <div>
+      <Field label="Vendor">
+        <select className={inputCls} value={vendorId} onChange={e => setVendorId(e.target.value)}>
+          <option value="">Select a vendor…</option>
+          {(vendors || []).map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+        </select>
+      </Field>
+      <Field label="Amount paid (₹)"><input type="number" className={inputCls} value={amount} onChange={e => setAmount(e.target.value)} /></Field>
+      <ProofAttachment proof={proof} onChange={setProof} required pathPrefix="materials" />
+      <div className="flex gap-2 mt-1">
+        <button onClick={() => onSave({ vendorId, amount: Number(amount), receiptPhotoUrl: proof?.dataUrl })} disabled={!canSubmit}
+          className="flex-1 dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2 rounded-lg">Confirm received</button>
+        <button onClick={onCancel} className="flex-1 text-sm font-semibold text-stone-600 border border-stone-200 rounded-lg">Cancel</button>
+      </div>
+      {!canSubmit && <p className="text-[11px] text-stone-400 mt-2 text-center">Vendor, amount, and a delivery photo are all required.</p>}
+    </div>
   );
 }
 
@@ -2049,12 +2111,19 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
         onMarkPaid={(id, paid) => actions.markExpensePaid(id, currentUser.id, paid)}
         onGeneratePO={(id) => actions.generatePO(id, currentUser.id)} />}
       {tab === "photos" && <PhotosTab project={project} reports={projectReports} canAdd={isAssignedSupervisor || isAssignedArchitect} onAddPhoto={(photo) => actions.addPhoto(project.id, photo, currentUser.id)} />}
-      {tab === "materials" && <MaterialsTab project={project} requests={data.materialRequests.filter(m => m.projectId === project.id)} users={data.users} currentUser={currentUser}
-        isAdmin={isAdmin} canRequest={isAssignedArchitect || isAdmin}
+      {tab === "materials" && <MaterialsTab project={project} requests={data.materialRequests.filter(m => m.projectId === project.id)} users={data.users} vendors={data.vendors} currentUser={currentUser}
+        isAdmin={isAdmin} canRequest={isAssignedArchitect || isAdmin} isAssignedSupervisor={isAssignedSupervisor}
         onAdd={(req, autoApprove) => actions.addMaterialRequest(project.id, currentUser.id, req, autoApprove)}
         onApprove={(id) => actions.approveMaterialRequest(id, currentUser.id)}
         onReject={(id, reason) => actions.rejectMaterialRequest(id, currentUser.id, reason)}
-        onDelete={(id) => actions.deleteMaterialRequest(id)} />}
+        onDelete={(id) => actions.deleteMaterialRequest(id)}
+        onMarkReceived={(id, fields) => actions.markMaterialReceived(id, currentUser.id, fields)}
+        onFulfill={(id) => actions.fulfillMaterialRequest(id, currentUser.id)}
+        onGeneratePO={(expenseId) => {
+          const exp = data.expenses.find(e => e.id === expenseId);
+          if (!exp) return;
+          generatePOPdf({ expense: exp, vendor: data.vendors.find(v => v.id === exp.vendorId), project, generatedByName: currentUser.name });
+        }} />}
     </div>
   );
 }
@@ -3193,6 +3262,8 @@ export default function App() {
     approveMaterialRequest: (id, approverId) => dbApproveMaterialRequest(id, approverId).then(reload),
     rejectMaterialRequest: (id, approverId, reason) => dbRejectMaterialRequest(id, approverId, reason).then(reload),
     deleteMaterialRequest: (id) => dbDeleteMaterialRequest(id).then(reload),
+    markMaterialReceived: (id, receivedBy, fields) => dbMarkMaterialReceived(id, receivedBy, fields).then(reload),
+    fulfillMaterialRequest: (id, fulfilledBy) => dbFulfillMaterialRequest(id, fulfilledBy).then(reload),
     startSiteVisit: (projectId, architectId, entryPhotoUrl) => dbStartSiteVisit(projectId, architectId, entryPhotoUrl).then(reload),
     endSiteVisit: (visitId, fields) => dbEndSiteVisit(visitId, fields).then(reload),
     addPhoto: (projectId, photo, uploadedBy) => dbAddPhoto(projectId, photo, uploadedBy).then(reload),
