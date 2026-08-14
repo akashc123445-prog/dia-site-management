@@ -76,10 +76,13 @@ const mapExpense = (r) => ({
   paid: r.paid, paidAt: r.paid_at, paidBy: r.paid_by,
   invoiceNo: r.invoice_no, status: r.status, approvedBy: r.approved_by,
   rejectionReason: r.rejection_reason, submittedAt: r.submitted_at,
+  poNumber: r.po_number, poGeneratedAt: r.po_generated_at, poGeneratedBy: r.po_generated_by,
+  notes: r.notes,
 });
 
 const mapVendor = (r) => ({
   id: r.id, name: r.name, material: r.material, gstNumber: r.gst_number, address: r.address,
+  phone: r.phone, email: r.email,
   bankAccountName: r.bank_account_name, bankAccountNumber: r.bank_account_number,
   bankIfsc: r.bank_ifsc, bankName: r.bank_name, createdAt: r.created_at,
 });
@@ -360,7 +363,7 @@ export async function dbAddExpense(exp) {
     total_invoice_value: exp.totalInvoiceValue === "" || exp.totalInvoiceValue === undefined ? null : exp.totalInvoiceValue,
     advance_paid: exp.advancePaid || 0,
     proof_url: exp.proofUrl,
-    invoice_no: exp.invoiceNo, status: "Pending",
+    invoice_no: exp.invoiceNo, notes: exp.notes || null, status: "Pending",
   });
   if (error) throw error;
 }
@@ -389,11 +392,33 @@ export async function dbMarkExpensePaid(id, paidBy, paid) {
   if (error) throw error;
 }
 
+/* Assigns a sequential PO number (e.g. PO-2026-0007) the first time it's
+   called for an expense, and returns the full expense row so the PDF can be
+   built immediately from it. Calling again on an expense that already has a
+   PO number just returns the existing one rather than issuing a new one. */
+export async function dbGeneratePO(expenseId, generatedBy) {
+  const { data: existing, error: fetchErr } = await supabase.from("expenses").select("*").eq("id", expenseId).single();
+  if (fetchErr) throw fetchErr;
+  if (existing.po_number) return mapExpense(existing);
+
+  const { data: seqRow, error: seqErr } = await supabase.rpc("nextval_po_number");
+  if (seqErr) throw seqErr;
+  const year = new Date().getFullYear();
+  const poNumber = `PO-${year}-${String(seqRow).padStart(4, "0")}`;
+
+  const { data: updated, error: updateErr } = await supabase.from("expenses").update({
+    po_number: poNumber, po_generated_at: new Date().toISOString(), po_generated_by: generatedBy,
+  }).eq("id", expenseId).select().single();
+  if (updateErr) throw updateErr;
+  return mapExpense(updated);
+}
+
 /* ---- vendors ------------------------------------------------------------ */
 
 export async function dbAddVendor(v) {
   const { error } = await supabase.from("vendors").insert({
     name: v.name, material: v.material, gst_number: v.gstNumber, address: v.address,
+    phone: v.phone, email: v.email,
     bank_account_name: v.bankAccountName, bank_account_number: v.bankAccountNumber,
     bank_ifsc: v.bankIfsc, bank_name: v.bankName,
   });
@@ -403,6 +428,7 @@ export async function dbAddVendor(v) {
 export async function dbUpdateVendor(id, v) {
   const { error } = await supabase.from("vendors").update({
     name: v.name, material: v.material, gst_number: v.gstNumber, address: v.address,
+    phone: v.phone, email: v.email,
     bank_account_name: v.bankAccountName, bank_account_number: v.bankAccountNumber,
     bank_ifsc: v.bankIfsc, bank_name: v.bankName,
   }).eq("id", id);

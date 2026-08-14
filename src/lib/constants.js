@@ -65,6 +65,16 @@ const DIA = {
   bronze: "#8B6A46",
 };
 
+/* Used on generated PDFs (Purchase Orders, etc). Placeholder phone/website —
+   update these with your real details whenever convenient. */
+const COMPANY_INFO = {
+  name: "DIA RETAIL SOLUTIONS",
+  tagline: "ARCHITECTURE · INTERIOR DESIGN · RETAIL SOLUTIONS",
+  phone: "+91-XXXXXXXXXX",
+  email: "info@dia.com",
+  website: "www.dia.com",
+};
+
 const FONT_STYLE = `
   @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,500&family=EB+Garamond:wght@500;600&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
   .font-display { font-family: 'Cormorant Garamond', serif; }
@@ -116,5 +126,5 @@ const LOGO_FULL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAARgAAAFxCAYAAAC
 export {
   PHASE_TEMPLATE, EXPENSE_CATEGORIES, PAYMENT_METHODS, PROJECT_STATUSES, PROJECT_TYPES,
   ARCHITECT_RANKS, DESIGN_PHASES, DESIGN_PHASES_DESIGNING, CONTRACT_TYPES, DRAWING_CHECKLIST_TEMPLATE, DRAWING_STATUSES,
-  TODAY, DIA, FONT_STYLE, LOGO_MARK, LOGO_FULL,
+  TODAY, DIA, COMPANY_INFO, FONT_STYLE, LOGO_MARK, LOGO_FULL,
 };
