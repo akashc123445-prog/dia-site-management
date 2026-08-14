@@ -1,5 +1,5 @@
 import { jsPDF } from "jspdf";
-import { DIA, COMPANY_INFO, PO_CONTACT, PO_TERMS, LOGO_MARK_MAROON } from "./constants";
+import { DIA, COMPANY_INFO, PO_CONTACT, PO_TERMS, LOGO_FULL_MAROON } from "./constants";
 import { fmtDate } from "./helpers";
 
 /* jsPDF's built-in fonts (Helvetica etc.) don't include the ₹ glyph — it
@@ -26,29 +26,27 @@ export function generatePOPdf({ expense, vendor, project, generatedByName }) {
 
   let y = margin;
 
-  /* ---- header row: logo + company block (left) beside PO box + number (right) ---- */
-  const logoSize = 32;
+  /* ---- header row: logo (left) beside PO box + number (right) ---- */
+  const logoAspect = 1792 / 2364; // full logo card is portrait
+  const logoH = 46, logoW = logoH * logoAspect;
   try {
-    doc.addImage(LOGO_MARK_MAROON, "PNG", margin, y, logoSize, logoSize);
+    doc.addImage(LOGO_FULL_MAROON, "PNG", margin, y, logoW, logoH);
   } catch { /* logo optional if it fails to decode */ }
 
-  const textX = margin + logoSize + 8;
-  doc.setTextColor(...ink);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11.5);
-  doc.text(COMPANY_INFO.name, textX, y + 10);
+  const textX = margin + logoW + 10;
+  doc.setTextColor(...grey);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(6);
-  doc.setTextColor(...grey);
-  doc.text(COMPANY_INFO.tagline, textX, y + 18);
+  doc.text(COMPANY_INFO.tagline, textX, y + 10);
   doc.setFontSize(6.8);
-  doc.text(`Phone: ${COMPANY_INFO.phone}`, textX, y + 27);
-  doc.text(`Email: ${COMPANY_INFO.email}`, textX, y + 35);
-  doc.text(`Web: ${COMPANY_INFO.website}`, textX, y + 43);
+  doc.text(`Phone: ${COMPANY_INFO.phone}`, textX, y + 20);
+  doc.text(`Email: ${COMPANY_INFO.email}`, textX, y + 29);
+  if (COMPANY_INFO.website) doc.text(`Web: ${COMPANY_INFO.website}`, textX, y + 38);
 
   const poBoxW = 140, poBoxH = 24;
   const poBoxX = pageW - margin - poBoxW;
-  doc.setFillColor(20, 18, 17);
+  const maroonRgb = hexToRgb(DIA.maroon);
+  doc.setFillColor(...maroonRgb);
   doc.rect(poBoxX, y, poBoxW, poBoxH, "F");
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
@@ -60,7 +58,7 @@ export function generatePOPdf({ expense, vendor, project, generatedByName }) {
   doc.setFontSize(9);
   doc.text(`NO.  ${expense.poNumber}`, poBoxX, y + poBoxH + 15);
 
-  y = Math.max(y + logoSize, y + poBoxH + 15) + 12;
+  y = Math.max(y + logoH, y + poBoxH + 15) + 12;
 
   doc.setDrawColor(...ink);
   doc.setLineWidth(1);
@@ -263,6 +261,11 @@ export function generatePOPdf({ expense, vendor, project, generatedByName }) {
   doc.text(`${PO_CONTACT.name}  |  ${PO_CONTACT.phone}  |  ${PO_CONTACT.email}`, pageW / 2, y2, { align: "center" });
 
   doc.save(`${expense.poNumber}.pdf`);
+}
+
+function hexToRgb(hex) {
+  const n = parseInt(hex.replace("#", ""), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
 function underline(doc, x, y, w) {
