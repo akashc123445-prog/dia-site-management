@@ -4,6 +4,14 @@ import { VitePWA } from "vite-plugin-pwa";
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  // The management app is served at /portal/ — the site root is the public
+  // marketing site (a separate static index.html + images/fonts, copied in
+  // during the build — see the "build" script in package.json).
+  base: "/portal/",
+  build: {
+    outDir: "dist/portal",
+    emptyOutDir: true,
+  },
   plugins: [
     react(),
     VitePWA({
@@ -17,7 +25,8 @@ export default defineConfig({
         background_color: "#FBF7EE",
         display: "standalone",
         orientation: "portrait-primary",
-        start_url: "/",
+        start_url: "/portal/",
+        scope: "/portal/",
         icons: [
           { src: "icons/icon-192.png", sizes: "192x192", type: "image/png" },
           { src: "icons/icon-512.png", sizes: "512x512", type: "image/png" },
