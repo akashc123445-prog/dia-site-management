@@ -8,7 +8,8 @@ import {
   Camera, ClipboardList, AlertTriangle, Calendar, MapPin, ChevronRight,
   ChevronLeft, Download, Search, ArrowLeft, Image as ImageIcon, IndianRupee,
   TrendingUp, Clock, CheckCircle2, XCircle, Filter, FileSpreadsheet, Eye, EyeOff, Pencil,
-  PenTool, ListChecks, Paperclip, FileText, AlertCircle, Trash2, Store, Landmark, Upload
+  PenTool, ListChecks, Paperclip, FileText, AlertCircle, Trash2, Store, Landmark, Upload,
+  ChevronDown, Copy
 } from "lucide-react";
 
 import { supabase } from "./lib/supabaseClient";
@@ -28,12 +29,20 @@ import {
   dbUpdateDesignPhase, dbUpdateDrawing, dbAddDrawing, dbRemoveDrawing,
   dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbMarkExpensePaid, dbGeneratePO, dbAddIssue,
   dbAddVendor, dbUpdateVendor, dbDeleteVendor,
+  dbAddQuotation, dbUpdateQuotation, dbUpdateQuotationStatus, dbDeleteQuotation, dbDuplicateQuotation,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
   dbMarkMaterialReceived, dbFulfillMaterialRequest,
   dbStartSiteVisit, dbEndSiteVisit,
-  uploadProofFile, uploadSitePhoto,
+  uploadProofFile, uploadSitePhoto, uploadSignature,
 } from "./lib/dataStore";
 import { generatePOPdf } from "./lib/generatePO";
+import { generateQuotationPdf } from "./lib/generateQuotation";
+import { generateWorkQuotePdf, workQuoteTotals, lineTotal } from "./lib/generateWorkQuote";
+import {
+  QUOTATION_STATUSES, QUOTATION_SERVICE_LINES, QUOTATION_SCOPE_TEMPLATE, QUOTATION_PAYMENT_TEMPLATE,
+  QUOTATION_SIGNATORY, WORK_QUOTE_TERMS, WORK_QUOTE_UNITS,
+  blankQuotation, blankWorkQuote, computeStageAmounts, amountInWords,
+} from "./lib/quotationDefaults";
 
 /* ---------------------------------------------------------------------- */
 /* Small UI primitives                                                      */
@@ -279,6 +288,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, mobileOpen, onCl
     { key: "updates", label: "Updates", icon: ImageIcon },
     { key: "projects", label: "Projects", icon: Building2 },
     { key: "expenses", label: "Expenses", icon: Receipt, badge: pendingCount },
+    { key: "quotations", label: "Quotations", icon: FileText },
     { key: "vendors", label: "Vendors", icon: Store },
     { key: "users", label: "Team", icon: Users },
   ];
@@ -286,6 +296,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, mobileOpen, onCl
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { key: "projects", label: "Projects", icon: Building2 },
     { key: "expenses", label: "Expenses", icon: Receipt, badge: pendingCount },
+    { key: "quotations", label: "Quotations", icon: FileText },
     { key: "vendors", label: "Vendors", icon: Store },
   ];
   const supNav = [
@@ -541,6 +552,8 @@ function AdminDashboard({ data, setView }) {
 function ProjectsList({ data, setView, actions, currentUser }) {
   const { projects, tasks, expenses, siteReports, users } = data;
   const [statusFilter, setStatusFilter] = useState("All");
+  const [typeFilter, setTypeFilter] = useState("All");
+  const [newMenu, setNewMenu] = useState(false);
   const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
   const canAdd = currentUser?.role === "Admin";
@@ -2542,6 +2555,876 @@ function VendorForm({ vendor, onSave, onDelete }) {
   );
 }
 
+/* ---------------------------------------------------------------------- */
+/* Quotations — design proposals for Admin & Accounts                       */
+/* ---------------------------------------------------------------------- */
+
+/* Collapsible section wrapper used throughout the quotation editor. The
+   editor is long by nature (a proposal is a six-page document), so each
+   block collapses to keep the fields someone actually changes on a normal
+   quotation — client, area, rate — visible without scrolling. */
+function QSection({ title, subtitle, badge, children, defaultOpen = true }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <Card className="overflow-hidden">
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between gap-3 px-4 sm:px-5 py-3.5 text-left hover:bg-stone-50/70 transition-colors">
+        <div className="min-w-0">
+          <h3 className="font-display text-base font-semibold text-stone-900 flex items-center gap-2">
+            {title}
+            {badge}
+          </h3>
+          {subtitle && <p className="text-xs text-stone-400 mt-0.5">{subtitle}</p>}
+        </div>
+        <ChevronDown size={17} className={`text-stone-400 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && <div className="px-4 sm:px-5 pb-5 pt-1 border-t border-stone-100">{children}</div>}
+    </Card>
+  );
+}
+
+/* Edits a string[] as one-item-per-line text. Far faster to work through
+   than a stack of individual inputs, and it pastes cleanly out of Word. */
+function ListEditor({ value, onChange, rows = 4, placeholder }) {
+  return (
+    <textarea rows={rows} placeholder={placeholder} className={`${inputCls} leading-relaxed`}
+      value={(value || []).join("\n")}
+      onChange={e => onChange(e.target.value.split("\n"))} />
+  );
+}
+
+const cleanList = (arr) => (arr || []).map(s => String(s).trim()).filter(Boolean);
+
+function QuotationsView({ data, currentUser, actions, setView }) {
+  const [editing, setEditing] = useState(null);   // quotation object, or "new"
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const quotations = data.quotations || [];
+  const isAdmin = currentUser.role === "Admin";
+
+  const filtered = quotations.filter(q => {
+    if (statusFilter !== "All" && q.status !== statusFilter) return false;
+    if (typeFilter !== "All" && (q.docType || "proposal") !== typeFilter) return false;
+    if (!query.trim()) return true;
+    const hay = `${q.quotationNo} ${q.clientName} ${q.projectTitle} ${q.location}`.toLowerCase();
+    return hay.includes(query.trim().toLowerCase());
+  });
+
+  const sumBy = (status) => quotations.filter(q => q.status === status).reduce((s, q) => s + (q.totalFee || 0), 0);
+
+  /* The signature someone used most recently, offered as a one-click reuse so
+     it doesn't have to be uploaded again on every quotation. */
+  const lastSignature = quotations.find(q => q.signatureUrl)?.signatureUrl || "";
+
+  if (editing) {
+    const isNew = editing === "new-proposal" || editing === "new-itemised";
+    const docType = isNew
+      ? (editing === "new-itemised" ? "itemised" : "proposal")
+      : (editing.docType || "proposal");
+
+    const handleSave = async (payload) => {
+      setBusy(true);
+      try {
+        if (isNew) await actions.addQuotation(payload);
+        else await actions.updateQuotation(editing.id, payload);
+        setEditing(null);
+      } catch (err) {
+        alert(err.message || "Could not save the quotation.");
+      }
+      setBusy(false);
+    };
+
+    const shared = {
+      key: isNew ? editing : editing.id,
+      quotation: isNew ? null : editing,
+      data, currentUser, lastSignature, saving: busy,
+      onCancel: () => setEditing(null),
+      onSave: handleSave,
+    };
+    return docType === "itemised" ? <WorkQuoteEditor {...shared} /> : <QuotationEditor {...shared} />;
+  }
+
+  return (
+    <div className="p-4 sm:p-8 space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <KPI label="Quotations" value={quotations.length} sub="all time" icon={FileText} />
+        <KPI label="Drafts" value={quotations.filter(q => q.status === "Draft").length} sub="not yet sent" icon={Pencil} />
+        <KPI label="Sent — value" value={fmtINR(sumBy("Sent"))} sub="awaiting client decision" icon={Clock} />
+        <KPI label="Accepted — value" value={fmtINR(sumBy("Accepted"))} sub="confirmed fee" icon={CheckCircle2} />
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="relative flex-1">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search client, project or quotation number"
+            className={`${inputCls} pl-9`} />
+        </div>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className={`${inputCls} sm:w-36`}>
+          {["All", ...QUOTATION_STATUSES].map(s => <option key={s}>{s}</option>)}
+        </select>
+        <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className={`${inputCls} sm:w-44`}>
+          <option value="All">Both document types</option>
+          <option value="proposal">Design proposals</option>
+          <option value="itemised">Work quotations</option>
+        </select>
+        <div className="relative shrink-0">
+          <button onClick={() => setNewMenu(o => !o)}
+            className="w-full flex items-center justify-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg">
+            <Plus size={16} /> New Quotation
+          </button>
+          {newMenu && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setNewMenu(false)} />
+              <div className="absolute right-0 mt-2 w-72 bg-white border border-stone-200 rounded-xl shadow-xl z-20 py-1">
+                <button onClick={() => { setEditing("new-proposal"); setNewMenu(false); }}
+                  className="w-full text-left px-4 py-3 hover:bg-stone-50">
+                  <div className="text-sm font-semibold text-stone-800">Design proposal</div>
+                  <div className="text-xs text-stone-500 mt-0.5">Multi-page proposal with scope, stages and a milestone payment schedule</div>
+                </button>
+                <button onClick={() => { setEditing("new-itemised"); setNewMenu(false); }}
+                  className="w-full text-left px-4 py-3 hover:bg-stone-50 border-t border-stone-100">
+                  <div className="text-sm font-semibold text-stone-800">Work quotation</div>
+                  <div className="text-xs text-stone-500 mt-0.5">Single-page itemised rates for execution and fabrication work</div>
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {filtered.length === 0 && (
+        <Card className="p-10 text-center">
+          <FileText size={26} className="mx-auto text-stone-300 mb-2" />
+          <p className="text-sm text-stone-400">
+            {quotations.length === 0
+              ? "No quotations yet. Create a design proposal or an itemised work quotation and the client-ready PDF is generated for you."
+              : "No quotations match this filter."}
+          </p>
+        </Card>
+      )}
+
+      <div className="space-y-3">
+        {filtered.map(q => (
+          <QuotationRow key={q.id} q={q} isAdmin={isAdmin}
+            projectName={data.projects.find(p => p.id === q.projectId)?.name}
+            onEdit={() => setEditing(q)}
+            onStatus={(s) => actions.updateQuotationStatus(q.id, s)}
+            onDuplicate={() => actions.duplicateQuotation(q)}
+            onDelete={() => setConfirmDelete(q)} />
+        ))}
+      </div>
+
+      {confirmDelete && (
+        <Modal title="Delete quotation" onClose={() => setConfirmDelete(null)}>
+          <p className="text-sm text-stone-600">
+            Delete <span className="font-semibold">{confirmDelete.quotationNo}</span> for {confirmDelete.clientName}? The
+            commercial record is removed permanently and the number is not reissued.
+          </p>
+          <div className="flex gap-2 mt-5">
+            <button onClick={() => setConfirmDelete(null)} className="flex-1 border border-stone-300 text-stone-700 py-2.5 rounded-lg text-sm font-semibold">Keep it</button>
+            <button onClick={() => { actions.deleteQuotation(confirmDelete.id); setConfirmDelete(null); }}
+              className="flex-1 bg-rose-600 hover:bg-rose-700 text-white py-2.5 rounded-lg text-sm font-semibold">Delete</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+const QUOTE_STATUS_STYLES = {
+  Draft: "bg-stone-100 text-stone-600",
+  Sent: "bg-amber-50 text-amber-700",
+  Accepted: "bg-emerald-50 text-emerald-700",
+  Declined: "bg-rose-50 text-rose-700",
+  Revised: "bg-sky-50 text-sky-700",
+};
+
+/* One row renders either document type — the only difference is which
+   generator produces the PDF and what the summary line says. */
+function quotationPdf(q, mode) {
+  return (q.docType || "proposal") === "itemised"
+    ? generateWorkQuotePdf(q, mode)
+    : generateQuotationPdf(q, mode);
+}
+
+function QuotationRow({ q, projectName, isAdmin, onEdit, onStatus, onDuplicate, onDelete }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const isItemised = (q.docType || "proposal") === "itemised";
+  return (
+    <Card className="p-4">
+      <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono text-[11px] text-stone-500">{q.quotationNo}</span>
+            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${isItemised ? "dia-bg-cream-soft dia-text-bronze" : "bg-stone-100 text-stone-600"}`}>
+              {isItemised ? "Work quotation" : "Design proposal"}
+            </span>
+            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${QUOTE_STATUS_STYLES[q.status] || "bg-stone-100 text-stone-600"}`}>{q.status}</span>
+            {projectName && <span className="text-[10px] dia-text-bronze font-medium">· linked to {projectName}</span>}
+          </div>
+          <h3 className="font-display text-lg font-semibold text-stone-900 mt-1 truncate">{q.clientName}</h3>
+          <p className="text-xs text-stone-500 mt-0.5 truncate">
+            {[q.projectTitle, q.location].filter(Boolean).join(" · ")}
+          </p>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs text-stone-500">
+            <span>{fmtDate(q.date)}</span>
+            {isItemised
+              ? <span>{(q.lineItems || []).length} line{(q.lineItems || []).length !== 1 ? "s" : ""} of work</span>
+              : <>
+                  {q.area > 0 && <span>{Number(q.area).toLocaleString("en-IN")} sq.ft.</span>}
+                  {q.feeMode === "rate" && q.ratePerSqft > 0 && <span>{fmtINR(q.ratePerSqft)}/sq.ft.</span>}
+                </>}
+            {q.signatoryName && <span>Signed by {q.signatoryName}</span>}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="text-right mr-1">
+            <div className="font-display text-xl font-semibold text-stone-900">{fmtINR(q.totalFee)}</div>
+            <div className="text-[10px] text-stone-400">excl. GST</div>
+          </div>
+          <button onClick={() => quotationPdf(q, "save")} title="Download PDF"
+            className="p-2 rounded-lg border border-stone-200 text-stone-600 hover:dia-text-bronze hover:dia-border-gold">
+            <Download size={15} />
+          </button>
+          <button onClick={onEdit} title="Edit"
+            className="p-2 rounded-lg border border-stone-200 text-stone-600 hover:dia-text-bronze hover:dia-border-gold">
+            <Pencil size={15} />
+          </button>
+          <div className="relative">
+            <button onClick={() => setMenuOpen(o => !o)}
+              className="p-2 rounded-lg border border-stone-200 text-stone-600 hover:dia-text-bronze hover:dia-border-gold">
+              <ChevronDown size={15} />
+            </button>
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
+                <div className="absolute right-0 mt-2 w-52 bg-white border border-stone-200 rounded-xl shadow-xl z-20 py-1">
+                  <button onClick={() => { const url = quotationPdf(q, "preview"); if (url) window.open(url, "_blank"); setMenuOpen(false); }}
+                    className="w-full text-left px-4 py-2 text-sm text-stone-700 hover:bg-stone-50 flex items-center gap-2">
+                    <Eye size={14} /> Preview PDF
+                  </button>
+                  <button onClick={() => { onDuplicate(); setMenuOpen(false); }}
+                    className="w-full text-left px-4 py-2 text-sm text-stone-700 hover:bg-stone-50 flex items-center gap-2">
+                    <Copy size={14} /> Duplicate as revision
+                  </button>
+                  <div className="border-t border-stone-100 my-1" />
+                  <div className="px-4 py-1 text-[10px] uppercase tracking-wide text-stone-400 font-semibold">Mark as</div>
+                  {QUOTATION_STATUSES.filter(s => s !== q.status).map(s => (
+                    <button key={s} onClick={() => { onStatus(s); setMenuOpen(false); }}
+                      className="w-full text-left px-4 py-2 text-sm text-stone-700 hover:bg-stone-50">{s}</button>
+                  ))}
+                  {isAdmin && (
+                    <>
+                      <div className="border-t border-stone-100 my-1" />
+                      <button onClick={() => { onDelete(); setMenuOpen(false); }}
+                        className="w-full text-left px-4 py-2 text-sm text-rose-600 hover:bg-rose-50 flex items-center gap-2">
+                        <Trash2 size={14} /> Delete
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function QuotationEditor({ quotation, data, currentUser, onSave, onCancel, saving, lastSignature }) {
+  const [form, setForm] = useState(() => quotation ? { ...quotation } : blankQuotation(null));
+  const set = (patch) => setForm(f => ({ ...f, ...patch }));
+
+  /* Fee is derived from area x rate unless the person switches to a lump sum,
+     in which case they type the figure directly. */
+  const computedTotal = form.feeMode === "rate"
+    ? Math.round((Number(form.area) || 0) * (Number(form.ratePerSqft) || 0))
+    : Math.round(Number(form.totalFee) || 0);
+
+  const stageAmounts = computeStageAmounts(computedTotal, form.paymentStages || []);
+  const pctTotal = (form.paymentStages || []).reduce((s, st) => s + (Number(st.percentage) || 0), 0);
+  const pctValid = Math.abs(pctTotal - 100) < 0.01;
+
+  const errors = [];
+  if (!String(form.clientName || "").trim()) errors.push("Client name is required.");
+  if (computedTotal <= 0) errors.push("The professional fee must be greater than zero.");
+  if (!pctValid) errors.push(`Payment stages add up to ${pctTotal}% — they must total 100%.`);
+
+  const payload = () => ({
+    ...form,
+    totalFee: computedTotal,
+    introParas: cleanList(form.introParas),
+    milestoneNotes: cleanList(form.milestoneNotes),
+    revisionPolicy: cleanList(form.revisionPolicy),
+    closingParas: cleanList(form.closingParas),
+    paymentTerms: cleanList(form.paymentTerms),
+    scopeStages: (form.scopeStages || [])
+      .filter(s => String(s.title || "").trim())
+      .map(s => ({ ...s, items: cleanList(s.items) })),
+    paymentStages: (form.paymentStages || []).filter(s => String(s.stage || "").trim()),
+  });
+
+  const applyProject = (projectId) => {
+    const p = data.projects.find(x => x.id === projectId);
+    if (!p) { set({ projectId: null }); return; }
+    set({
+      projectId: p.id,
+      clientName: form.clientName || p.client,
+      projectTitle: form.projectTitle || p.name,
+      location: form.location || p.location,
+      clientAddress: form.clientAddress || p.location,
+      area: Number(form.area) > 0 ? form.area : p.area,
+    });
+  };
+
+  const preview = () => {
+    const url = generateQuotationPdf({ ...payload(), quotationNo: form.quotationNo || "DRAFT" }, "preview");
+    if (url) window.open(url, "_blank");
+  };
+
+  return (
+    <div className="p-4 sm:p-8 pb-32 space-y-4">
+      <button onClick={onCancel} className="flex items-center gap-1.5 text-sm dia-text-bronze font-medium">
+        <ArrowLeft size={15} /> Back to quotations
+      </button>
+
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2">
+        <div>
+          <h2 className="font-display text-2xl font-semibold text-stone-900">
+            {quotation ? "Edit quotation" : "New quotation"}
+          </h2>
+          <p className="text-sm text-stone-500 mt-0.5">
+            {quotation
+              ? <>Quotation <span className="font-mono text-xs">{quotation.quotationNo}</span> · last updated {fmtDate(quotation.updatedAt)}</>
+              : "The number is assigned automatically when you save."}
+          </p>
+        </div>
+        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full self-start ${QUOTE_STATUS_STYLES[form.status]}`}>{form.status}</span>
+      </div>
+
+      <QSection title="Client & project" subtitle="Everything printed at the top of the covering letter">
+        <div className="grid sm:grid-cols-2 gap-x-4">
+          <Field label="Link to an existing project (optional)">
+            <select className={inputCls} value={form.projectId || ""} onChange={e => applyProject(e.target.value)}>
+              <option value="">Not linked — standalone quotation</option>
+              {data.projects.map(p => <option key={p.id} value={p.id}>{p.name} — {p.client}</option>)}
+            </select>
+          </Field>
+          <Field label="Status">
+            <select className={inputCls} value={form.status} onChange={e => set({ status: e.target.value })}>
+              {QUOTATION_STATUSES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="Client name *">
+            <input className={inputCls} value={form.clientName} onChange={e => set({ clientName: e.target.value })}
+              placeholder="BMR Aabharan Jewellery" />
+          </Field>
+          <Field label="Project / store name">
+            <input className={inputCls} value={form.projectTitle} onChange={e => set({ projectTitle: e.target.value })}
+              placeholder="Jewellery Store" />
+          </Field>
+          <Field label="Client address (one line per row)">
+            <textarea rows={3} className={inputCls} value={form.clientAddress || ""}
+              onChange={e => set({ clientAddress: e.target.value })} placeholder={"Ongole\nAndhra Pradesh"} />
+          </Field>
+          <div>
+            <Field label="Site location">
+              <input className={inputCls} value={form.location} onChange={e => set({ location: e.target.value })}
+                placeholder="Ongole, Andhra Pradesh" />
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Issued from">
+                <input className={inputCls} value={form.city} onChange={e => set({ city: e.target.value })} />
+              </Field>
+              <Field label="Date">
+                <input type="date" className={inputCls} value={form.date} onChange={e => set({ date: e.target.value })} />
+              </Field>
+            </div>
+          </div>
+          <div className="sm:col-span-2">
+            <Field label="Services offered">
+              <select className={inputCls} value={form.serviceLine} onChange={e => set({ serviceLine: e.target.value })}>
+                {QUOTATION_SERVICE_LINES.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </Field>
+            <Field label="Subject line (leave blank to build it automatically)">
+              <input className={inputCls} value={form.subject || ""} onChange={e => set({ subject: e.target.value })}
+                placeholder={`Proposal for ${form.serviceLine} Services for the Proposed ${form.projectTitle || "Jewellery Store"} at ${form.location || "…"}.`} />
+            </Field>
+          </div>
+        </div>
+      </QSection>
+
+      <QSection title="Area & professional fee"
+        subtitle="Rate per sq.ft. or a flat lump sum — the schedule below follows automatically">
+        <div className="grid sm:grid-cols-2 gap-x-4">
+          <Field label="Total built-up area (sq.ft.)">
+            <input type="number" className={inputCls} value={form.area}
+              onChange={e => set({ area: e.target.value })} placeholder="5577" />
+          </Field>
+          <Field label="Floors covered">
+            <input className={inputCls} value={form.floors || ""} onChange={e => set({ floors: e.target.value })}
+              placeholder="Ground Floor + First Floor + Second Floor" />
+          </Field>
+          <Field label="How is the fee calculated?">
+            <div className="flex gap-2">
+              {[["rate", "Rate per sq.ft."], ["lumpsum", "Lump sum"]].map(([val, label]) => (
+                <button key={val} type="button" onClick={() => set({ feeMode: val, totalFee: computedTotal })}
+                  className={`flex-1 py-2 rounded-lg text-sm font-semibold border transition-colors ${
+                    form.feeMode === val ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </Field>
+          {form.feeMode === "rate" ? (
+            <Field label="Design cost per sq.ft. (₹)">
+              <input type="number" className={inputCls} value={form.ratePerSqft}
+                onChange={e => set({ ratePerSqft: e.target.value })} placeholder="250" />
+            </Field>
+          ) : (
+            <Field label="Total professional fee (₹)">
+              <input type="number" className={inputCls} value={form.totalFee}
+                onChange={e => set({ totalFee: e.target.value })} placeholder="1394250" />
+            </Field>
+          )}
+        </div>
+
+        <div className="dia-bg-cream-soft rounded-xl p-4 mt-1">
+          <div className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">Total professional fee</div>
+          <div className="font-display text-3xl font-semibold text-stone-900 mt-1">{fmtINR(computedTotal)}</div>
+          <div className="text-xs text-stone-600 mt-1 italic">{amountInWords(computedTotal)}</div>
+          {form.feeMode === "rate" && Number(form.area) > 0 && Number(form.ratePerSqft) > 0 && (
+            <div className="text-[11px] text-stone-500 mt-2">
+              {Number(form.area).toLocaleString("en-IN")} sq.ft. × {fmtINR(form.ratePerSqft)} per sq.ft.
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4">
+          <Field label="GST note printed under the fee">
+            <input className={inputCls} value={form.gstNote || ""} onChange={e => set({ gstNote: e.target.value })} />
+          </Field>
+        </div>
+      </QSection>
+
+      <QSection title="Payment schedule"
+        badge={<span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${pctValid ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>{pctTotal}%</span>}
+        subtitle="Percentages must total 100 — amounts are calculated as you type">
+        <div className="space-y-2">
+          {(form.paymentStages || []).map((st, i) => (
+            <div key={i} className="grid grid-cols-12 gap-2 items-start">
+              <input className={`${inputCls} col-span-4 sm:col-span-2`} value={st.stage}
+                onChange={e => { const next = [...form.paymentStages]; next[i] = { ...st, stage: e.target.value }; set({ paymentStages: next }); }} />
+              <textarea rows={2} className={`${inputCls} col-span-8 sm:col-span-5`} value={st.milestone}
+                onChange={e => { const next = [...form.paymentStages]; next[i] = { ...st, milestone: e.target.value }; set({ paymentStages: next }); }} />
+              <div className="col-span-4 sm:col-span-2 relative">
+                <input type="number" className={`${inputCls} pr-6`} value={st.percentage}
+                  onChange={e => { const next = [...form.paymentStages]; next[i] = { ...st, percentage: Number(e.target.value) }; set({ paymentStages: next }); }} />
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-stone-400">%</span>
+              </div>
+              <div className="col-span-6 sm:col-span-2 text-sm font-semibold text-stone-800 py-2 text-right tabular-nums">
+                {fmtINR(stageAmounts[i])}
+              </div>
+              <button type="button" onClick={() => set({ paymentStages: form.paymentStages.filter((_, x) => x !== i) })}
+                className="col-span-2 sm:col-span-1 text-stone-300 hover:text-rose-600 py-2.5 flex justify-center">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-2 mt-3">
+          <button type="button"
+            onClick={() => set({ paymentStages: [...(form.paymentStages || []), { stage: `STAGE ${String((form.paymentStages?.length || 0) + 1).padStart(2, "0")}`, milestone: "", percentage: 0 }] })}
+            className="flex items-center gap-1.5 text-sm dia-text-bronze font-semibold">
+            <Plus size={14} /> Add stage
+          </button>
+          <button type="button" onClick={() => set({ paymentStages: QUOTATION_PAYMENT_TEMPLATE })}
+            className="text-sm text-stone-500 hover:text-stone-800">Reset to standard schedule</button>
+        </div>
+        {!pctValid && (
+          <p className="text-xs text-rose-600 mt-3 flex items-center gap-1.5">
+            <AlertCircle size={13} /> Adjust the percentages so they total exactly 100%.
+          </p>
+        )}
+      </QSection>
+
+      <QSection title="Scope of professional services" subtitle="Stages and deliverables printed on pages 2–3" defaultOpen={false}>
+        <div className="space-y-4">
+          {(form.scopeStages || []).map((stage, i) => (
+            <div key={i} className="border border-stone-200 rounded-xl p-3.5">
+              <div className="flex items-center gap-2 mb-2">
+                <input className={`${inputCls} font-semibold`} value={stage.title}
+                  onChange={e => { const next = [...form.scopeStages]; next[i] = { ...stage, title: e.target.value }; set({ scopeStages: next }); }} />
+                <button type="button" onClick={() => set({ scopeStages: form.scopeStages.filter((_, x) => x !== i) })}
+                  className="text-stone-300 hover:text-rose-600 shrink-0"><Trash2 size={15} /></button>
+              </div>
+              <input className={`${inputCls} mb-2`} placeholder="Optional lead-in line, e.g. Preparation of planning layouts including:"
+                value={stage.intro || ""}
+                onChange={e => { const next = [...form.scopeStages]; next[i] = { ...stage, intro: e.target.value }; set({ scopeStages: next }); }} />
+              <ListEditor rows={Math.min(12, Math.max(4, (stage.items || []).length))} value={stage.items}
+                placeholder="One deliverable per line"
+                onChange={items => { const next = [...form.scopeStages]; next[i] = { ...stage, items }; set({ scopeStages: next }); }} />
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-3 mt-3">
+          <button type="button"
+            onClick={() => set({ scopeStages: [...(form.scopeStages || []), { title: `Stage ${String((form.scopeStages?.length || 0) + 1).padStart(2, "0")} — `, intro: "", items: [] }] })}
+            className="flex items-center gap-1.5 text-sm dia-text-bronze font-semibold">
+            <Plus size={14} /> Add stage
+          </button>
+          <button type="button" onClick={() => set({ scopeStages: QUOTATION_SCOPE_TEMPLATE })}
+            className="text-sm text-stone-500 hover:text-stone-800">Reset to standard scope</button>
+        </div>
+      </QSection>
+
+      <QSection title="Covering letter & terms" subtitle="Use {{client}}, {{location}} and {{service}} to fill details in automatically" defaultOpen={false}>
+        <Field label="Opening paragraphs (one paragraph per line)">
+          <ListEditor rows={6} value={form.introParas} onChange={v => set({ introParas: v })} />
+        </Field>
+        <Field label="Project milestones — each stage begins only after…">
+          <ListEditor rows={3} value={form.milestoneNotes} onChange={v => set({ milestoneNotes: v })} />
+        </Field>
+        <Field label="Revision policy">
+          <ListEditor rows={3} value={form.revisionPolicy} onChange={v => set({ revisionPolicy: v })} />
+        </Field>
+        <Field label="Terms of payment">
+          <ListEditor rows={7} value={form.paymentTerms} onChange={v => set({ paymentTerms: v })} />
+        </Field>
+        <Field label="Closing paragraphs">
+          <ListEditor rows={5} value={form.closingParas} onChange={v => set({ closingParas: v })} />
+        </Field>
+        <Field label="Internal notes (never printed)">
+          <textarea rows={2} className={inputCls} value={form.notes || ""} onChange={e => set({ notes: e.target.value })}
+            placeholder="e.g. quoted at a reduced rate, client to confirm the second floor" />
+        </Field>
+      </QSection>
+
+      <QSection title="Sign-off & bank details" defaultOpen={false}>
+        <SignatoryFields form={form} set={set} currentUser={currentUser} lastSignature={lastSignature} />
+        <div className="grid sm:grid-cols-2 gap-x-4 pt-2 mt-2 border-t border-stone-100">
+          {[["accountName", "Account name"], ["bankName", "Bank"], ["branch", "Branch"], ["accountNumber", "Current account no."], ["ifsc", "IFSC"]].map(([key, label]) => (
+            <Field key={key} label={label}>
+              <input className={inputCls} value={form.bank?.[key] || ""}
+                onChange={e => set({ bank: { ...form.bank, [key]: e.target.value } })} />
+            </Field>
+          ))}
+        </div>
+      </QSection>
+
+      {/* sticky action bar so Save/Preview are always in reach on a long form */}
+      <div className="fixed bottom-0 left-0 right-0 sm:left-60 bg-white/95 backdrop-blur border-t border-stone-200 px-4 sm:px-8 py-3 z-30"
+        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            {errors.length > 0 ? (
+              <p className="text-xs text-rose-600 flex items-center gap-1.5 truncate"><AlertCircle size={13} className="shrink-0" /> {errors[0]}</p>
+            ) : (
+              <p className="text-xs text-stone-500 truncate">
+                <span className="font-semibold text-stone-800">{fmtINR(computedTotal)}</span> across {(form.paymentStages || []).length} stages · ready to send
+              </p>
+            )}
+          </div>
+          <button onClick={onCancel} className="px-4 py-2.5 rounded-lg text-sm font-semibold text-stone-600 hover:bg-stone-100">Cancel</button>
+          <button onClick={preview} disabled={errors.length > 0}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40">
+            <Eye size={15} /> <span className="hidden sm:inline">Preview</span>
+          </button>
+          <button onClick={() => onSave(payload())} disabled={errors.length > 0 || saving}
+            className="flex items-center gap-1.5 dia-btn-gold px-5 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+            <Check size={15} /> {saving ? "Saving…" : quotation ? "Save changes" : "Create quotation"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Shared sign-off block: an optional signature image, plus the name and
+   designation of whoever is signing. Used by both quotation types — the
+   person signing is not always the same architect, so it is typed per
+   document rather than fixed in the template. */
+function SignatoryFields({ form, set, currentUser, lastSignature }) {
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+
+  const pickFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { setError("Pick an image file — a transparent PNG works best."); return; }
+    setUploading(true); setError("");
+    try {
+      const url = await uploadSignature(file);
+      set({ signatureUrl: url });
+    } catch (err) {
+      setError(err.message || "That image wouldn't upload.");
+    }
+    setUploading(false);
+  };
+
+  return (
+    <>
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Signed by (name)">
+          <input className={inputCls} value={form.signatoryName || ""}
+            onChange={e => set({ signatoryName: e.target.value })} placeholder="Mayuk A" />
+        </Field>
+        <Field label="Designation">
+          <input className={inputCls} value={form.signatoryTitle || ""}
+            onChange={e => set({ signatoryTitle: e.target.value })} placeholder="Principal Architect" />
+        </Field>
+      </div>
+      <div className="flex flex-wrap gap-2 -mt-1 mb-3">
+        <button type="button" onClick={() => set({ signatoryName: currentUser.name, signatoryTitle: currentUser.rank || currentUser.role })}
+          className="text-xs dia-text-bronze font-semibold">Use my name</button>
+        {QUOTATION_SIGNATORY.name !== form.signatoryName && (
+          <button type="button" onClick={() => set({ signatoryName: QUOTATION_SIGNATORY.name, signatoryTitle: QUOTATION_SIGNATORY.title })}
+            className="text-xs text-stone-500 hover:text-stone-800">Use {QUOTATION_SIGNATORY.name}</button>
+        )}
+      </div>
+
+      <Field label="Signature image (optional)">
+        {form.signatureUrl ? (
+          <div className="flex items-center gap-3">
+            <img src={form.signatureUrl} alt="Signature" className="h-12 object-contain bg-white border border-stone-200 rounded-lg px-2" />
+            <button type="button" onClick={() => set({ signatureUrl: "" })}
+              className="text-xs text-rose-600 font-semibold">Remove</button>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="inline-flex items-center gap-2 border border-dashed border-stone-300 rounded-lg px-4 py-2.5 text-sm text-stone-600 cursor-pointer hover:dia-border-gold hover:dia-text-bronze">
+              <Upload size={15} /> {uploading ? "Uploading…" : "Upload signature"}
+              <input type="file" accept="image/*" hidden onChange={pickFile} disabled={uploading} />
+            </label>
+            {lastSignature && (
+              <button type="button" onClick={() => set({ signatureUrl: lastSignature })}
+                className="text-xs dia-text-bronze font-semibold">Reuse last signature</button>
+            )}
+          </div>
+        )}
+        {error && <p className="text-xs text-rose-600 mt-1.5">{error}</p>}
+      </Field>
+    </>
+  );
+}
+
+/* Itemised work quotation: the line-item document for execution work, as
+   opposed to the multi-page design proposal. */
+function WorkQuoteEditor({ quotation, data, currentUser, onSave, onCancel, saving, lastSignature }) {
+  const [form, setForm] = useState(() => quotation ? { ...quotation } : blankWorkQuote(null));
+  const set = (patch) => setForm(f => ({ ...f, ...patch }));
+
+  const items = form.lineItems || [];
+  const setItem = (i, patch) => {
+    const next = [...items];
+    next[i] = { ...next[i], ...patch };
+    set({ lineItems: next });
+  };
+  const totals = workQuoteTotals(form);
+
+  const errors = [];
+  if (!String(form.clientName || "").trim()) errors.push("Client name is required.");
+  if (!items.some(it => String(it.description || "").trim())) errors.push("Add at least one line of work.");
+  if (totals.grand <= 0) errors.push("The quotation total must be greater than zero.");
+
+  const payload = () => ({
+    ...form,
+    docType: "itemised",
+    lineItems: items.filter(it => String(it.description || "").trim())
+      .map(it => ({ description: it.description, qty: Number(it.qty) || 0, unit: it.unit || "", rate: Number(it.rate) || 0 })),
+    workTerms: cleanList(form.workTerms),
+    discount: Number(form.discount) || 0,
+    totalFee: totals.grand,
+  });
+
+  const applyProject = (projectId) => {
+    const p = data.projects.find(x => x.id === projectId);
+    if (!p) { set({ projectId: null }); return; }
+    set({
+      projectId: p.id,
+      clientName: form.clientName || p.client,
+      projectTitle: form.projectTitle || p.name,
+      location: form.location || p.location,
+      clientAddress: form.clientAddress || p.location,
+    });
+  };
+
+  const preview = () => {
+    const url = generateWorkQuotePdf({ ...payload(), quotationNo: form.quotationNo || "DRAFT" }, "preview");
+    if (url) window.open(url, "_blank");
+  };
+
+  return (
+    <div className="p-4 sm:p-8 pb-32 space-y-4">
+      <button onClick={onCancel} className="flex items-center gap-1.5 text-sm dia-text-bronze font-medium">
+        <ArrowLeft size={15} /> Back to quotations
+      </button>
+
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2">
+        <div>
+          <h2 className="font-display text-2xl font-semibold text-stone-900">
+            {quotation ? "Edit work quotation" : "New work quotation"}
+          </h2>
+          <p className="text-sm text-stone-500 mt-0.5">
+            {quotation
+              ? <>Quotation <span className="font-mono text-xs">{quotation.quotationNo}</span> · last updated {fmtDate(quotation.updatedAt)}</>
+              : "Itemised rates for execution work. The number is assigned when you save."}
+          </p>
+        </div>
+        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full self-start ${QUOTE_STATUS_STYLES[form.status]}`}>{form.status}</span>
+      </div>
+
+      <QSection title="Client & work">
+        <div className="grid sm:grid-cols-2 gap-x-4">
+          <Field label="Link to an existing project (optional)">
+            <select className={inputCls} value={form.projectId || ""} onChange={e => applyProject(e.target.value)}>
+              <option value="">Not linked — standalone quotation</option>
+              {data.projects.map(p => <option key={p.id} value={p.id}>{p.name} — {p.client}</option>)}
+            </select>
+          </Field>
+          <Field label="Status">
+            <select className={inputCls} value={form.status} onChange={e => set({ status: e.target.value })}>
+              {QUOTATION_STATUSES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="Client name *">
+            <input className={inputCls} value={form.clientName} onChange={e => set({ clientName: e.target.value })} />
+          </Field>
+          <Field label="Project / work type">
+            <input className={inputCls} value={form.projectTitle} onChange={e => set({ projectTitle: e.target.value })}
+              placeholder="Interior fit-out works" />
+          </Field>
+          <Field label="Client address">
+            <textarea rows={2} className={inputCls} value={form.clientAddress || ""}
+              onChange={e => set({ clientAddress: e.target.value })} />
+          </Field>
+          <div>
+            <Field label="Mobile">
+              <input className={inputCls} value={form.mobile || ""} onChange={e => set({ mobile: e.target.value })} />
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Site location">
+                <input className={inputCls} value={form.location || ""} onChange={e => set({ location: e.target.value })} />
+              </Field>
+              <Field label="Date">
+                <input type="date" className={inputCls} value={form.date} onChange={e => set({ date: e.target.value })} />
+              </Field>
+            </div>
+          </div>
+        </div>
+      </QSection>
+
+      <QSection title="Schedule of work"
+        badge={<span className="text-[10px] font-semibold px-2 py-0.5 rounded-full dia-bg-cream-soft dia-text-bronze">{fmtINR(totals.grand)}</span>}
+        subtitle="Amounts calculate as you type">
+        <div className="hidden sm:grid grid-cols-12 gap-2 px-1 pb-1.5 text-[10px] uppercase tracking-wide text-stone-400 font-semibold">
+          <div className="col-span-5">Description of work</div>
+          <div className="col-span-2">Quantity</div>
+          <div className="col-span-1">Unit</div>
+          <div className="col-span-2">Rate (₹)</div>
+          <div className="col-span-2 text-right">Amount</div>
+        </div>
+        <div className="space-y-2">
+          {items.map((it, i) => (
+            <div key={i} className="grid grid-cols-12 gap-2 items-start">
+              <textarea rows={2} className={`${inputCls} col-span-12 sm:col-span-5`} placeholder="Description of work"
+                value={it.description || ""} onChange={e => setItem(i, { description: e.target.value })} />
+              <input type="number" className={`${inputCls} col-span-3 sm:col-span-2`} placeholder="Qty"
+                value={it.qty ?? ""} onChange={e => setItem(i, { qty: e.target.value })} />
+              <input list="wq-units" className={`${inputCls} col-span-3 sm:col-span-1`} placeholder="Unit"
+                value={it.unit || ""} onChange={e => setItem(i, { unit: e.target.value })} />
+              <input type="number" className={`${inputCls} col-span-4 sm:col-span-2`} placeholder="Rate"
+                value={it.rate ?? ""} onChange={e => setItem(i, { rate: e.target.value })} />
+              <div className="col-span-2 sm:col-span-1 text-sm font-semibold text-stone-800 py-2 text-right tabular-nums">
+                {fmtINR(lineTotal(it))}
+              </div>
+              <button type="button" onClick={() => set({ lineItems: items.filter((_, x) => x !== i) })}
+                className="col-span-12 sm:col-span-1 text-stone-300 hover:text-rose-600 py-1 sm:py-2.5 flex sm:justify-center">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <datalist id="wq-units">{WORK_QUOTE_UNITS.map(u => <option key={u} value={u} />)}</datalist>
+        <button type="button" onClick={() => set({ lineItems: [...items, { description: "", qty: 0, unit: "Sq.ft", rate: 0 }] })}
+          className="flex items-center gap-1.5 text-sm dia-text-bronze font-semibold mt-3">
+          <Plus size={14} /> Add a line
+        </button>
+
+        <div className="dia-bg-cream-soft rounded-xl p-4 mt-4 space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-stone-600">Total amount</span>
+            <span className="font-semibold text-stone-900">{fmtINR(totals.subtotal)}</span>
+          </div>
+          <div className="flex items-center justify-between text-sm gap-3">
+            <span className="text-stone-600 shrink-0">Less: discount</span>
+            <input type="number" className={`${inputCls} max-w-[160px] text-right`} value={form.discount ?? ""}
+              onChange={e => set({ discount: e.target.value })} placeholder="0" />
+          </div>
+          <div className="flex items-center justify-between pt-2 border-t dia-border-gold-soft">
+            <span className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">
+              {totals.discount > 0 ? "Grand total" : "Total payable"}
+            </span>
+            <span className="font-display text-2xl font-semibold text-stone-900">{fmtINR(totals.grand)}</span>
+          </div>
+          <p className="text-xs text-stone-600 italic">{amountInWords(totals.grand)}</p>
+        </div>
+      </QSection>
+
+      <QSection title="Terms & conditions" defaultOpen={false}>
+        <Field label="Opening line">
+          <input className={inputCls} value={form.salutation || ""} onChange={e => set({ salutation: e.target.value })} />
+        </Field>
+        <Field label="Terms (one per line)">
+          <ListEditor rows={7} value={form.workTerms} onChange={v => set({ workTerms: v })} />
+        </Field>
+        <button type="button" onClick={() => set({ workTerms: WORK_QUOTE_TERMS })}
+          className="text-sm text-stone-500 hover:text-stone-800">Reset to standard terms</button>
+        <div className="mt-4">
+          <Field label="Internal notes (never printed)">
+            <textarea rows={2} className={inputCls} value={form.notes || ""} onChange={e => set({ notes: e.target.value })} />
+          </Field>
+        </div>
+      </QSection>
+
+      <QSection title="Signature" subtitle="Who is signing this quotation">
+        <SignatoryFields form={form} set={set} currentUser={currentUser} lastSignature={lastSignature} />
+      </QSection>
+
+      <div className="fixed bottom-0 left-0 right-0 sm:left-60 bg-white/95 backdrop-blur border-t border-stone-200 px-4 sm:px-8 py-3 z-30"
+        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            {errors.length > 0 ? (
+              <p className="text-xs text-rose-600 flex items-center gap-1.5 truncate"><AlertCircle size={13} className="shrink-0" /> {errors[0]}</p>
+            ) : (
+              <p className="text-xs text-stone-500 truncate">
+                <span className="font-semibold text-stone-800">{fmtINR(totals.grand)}</span> across {items.filter(i => i.description).length} lines · ready to send
+              </p>
+            )}
+          </div>
+          <button onClick={onCancel} className="px-4 py-2.5 rounded-lg text-sm font-semibold text-stone-600 hover:bg-stone-100">Cancel</button>
+          <button onClick={preview} disabled={errors.length > 0}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40">
+            <Eye size={15} /> <span className="hidden sm:inline">Preview</span>
+          </button>
+          <button onClick={() => onSave(payload())} disabled={errors.length > 0 || saving}
+            className="flex items-center gap-1.5 dia-btn-gold px-5 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+            <Check size={15} /> {saving ? "Saving…" : quotation ? "Save changes" : "Create quotation"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TeamView({ data, currentUser, actions }) {
   const { users, projects, siteReports } = data;
   const [editingUser, setEditingUser] = useState(null);
@@ -3274,6 +4157,11 @@ export default function App() {
     deleteExpense: (id) => dbDeleteExpense(id).then(reload),
     markExpensePaid: (id, userId, paid) => dbMarkExpensePaid(id, userId, paid).then(reload),
     generatePO: (id, userId) => dbGeneratePO(id, userId).then(reload),
+    addQuotation: (q) => dbAddQuotation(q, profile?.id).then(reload),
+    updateQuotation: (id, q) => dbUpdateQuotation(id, q).then(reload),
+    updateQuotationStatus: (id, status) => dbUpdateQuotationStatus(id, status).then(reload),
+    duplicateQuotation: (q) => dbDuplicateQuotation(q, profile?.id).then(reload),
+    deleteQuotation: (id) => dbDeleteQuotation(id).then(reload),
     addVendor: (v) => dbAddVendor(v).then(reload),
     updateVendor: (id, v) => dbUpdateVendor(id, v).then(reload),
     deleteVendor: (id) => dbDeleteVendor(id).then(reload),
@@ -3340,6 +4228,7 @@ export default function App() {
     dashboard: ["Company Dashboard", "Real-time visibility across every project"],
     projects: ["Projects", "All active and completed projects"],
     expenses: ["Expenses", "Review, filter and approve project expenses"],
+    quotations: ["Quotations", "Design proposals, fee schedules and client-ready PDFs"],
     vendors: ["Vendors", "Vendor directory, materials and bank details for payment"],
     updates: ["Updates", "Site progress photos shared by your team, as they happen"],
     users: ["Team", "Admins, accounts, architects and site supervisors"],
@@ -3367,6 +4256,7 @@ export default function App() {
         {view.tab === "projects" && (isStaffOnly ? <ProjectsList data={data} setView={setView} actions={actions} currentUser={currentUser} /> : <AccessDenied />)}
         {view.tab === "project" && <ProjectDetail data={data} projectId={view.projectId} sub={view.sub} setView={setView} currentUser={currentUser} actions={actions} onMenuClick={() => setMobileNavOpen(true)} />}
         {view.tab === "expenses" && (isStaffOnly ? <ExpensesGlobal data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
+        {view.tab === "quotations" && (isStaffOnly ? <QuotationsView data={data} currentUser={currentUser} actions={actions} setView={setView} /> : <AccessDenied />)}
         {view.tab === "vendors" && (isStaffOnly ? <VendorsView data={data} actions={actions} /> : <AccessDenied />)}
         {view.tab === "updates" && (isAdmin ? <UpdatesFeed data={data} setView={setView} /> : <AccessDenied />)}
         {view.tab === "users" && (isAdmin ? <TeamView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}

@@ -87,6 +87,25 @@ const mapVendor = (r) => ({
   bankIfsc: r.bank_ifsc, bankName: r.bank_name, createdAt: r.created_at,
 });
 
+const mapQuotation = (r) => ({
+  id: r.id, quotationNo: r.quotation_no, projectId: r.project_id,
+  clientName: r.client_name, clientAddress: r.client_address, projectTitle: r.project_title,
+  location: r.location, city: r.city, date: r.date, subject: r.subject,
+  serviceLine: r.service_line, area: Number(r.area) || 0, floors: r.floors,
+  feeMode: r.fee_mode || "rate", ratePerSqft: Number(r.rate_per_sqft) || 0,
+  totalFee: Number(r.total_fee) || 0, gstNote: r.gst_note,
+  introParas: r.intro_paras || [], scopeStages: r.scope_stages || [],
+  paymentStages: r.payment_stages || [], milestoneNotes: r.milestone_notes || [],
+  revisionPolicy: r.revision_policy || [], closingParas: r.closing_paras || [],
+  paymentTerms: r.payment_terms || [],
+  signatoryName: r.signatory_name, signatoryTitle: r.signatory_title, signatureUrl: r.signature_url || "",
+  bank: r.bank || {},
+  docType: r.doc_type || "proposal", mobile: r.mobile, salutation: r.salutation,
+  lineItems: r.line_items || [], discount: Number(r.discount) || 0, workTerms: r.work_terms || [],
+  status: r.status, notes: r.notes, createdBy: r.created_by,
+  createdAt: r.created_at, updatedAt: r.updated_at,
+});
+
 const mapIssue = (r) => ({
   id: r.id, projectId: r.project_id, supervisorId: r.supervisor_id, date: r.date,
   description: r.description, severity: r.severity, status: r.status, submittedAt: r.submitted_at,
@@ -105,7 +124,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -119,11 +138,22 @@ export async function fetchAllData() {
       supabase.from("vendors").select("*").order("name"),
       supabase.from("material_requests").select("*").order("created_at", { ascending: false }),
       supabase.from("site_visits").select("*").order("entry_time", { ascending: false }),
+      // Quotations are Admin/Accounts-only at the RLS level, so this comes back
+      // empty (not an error) for architects and supervisors.
+      supabase.from("quotations").select("*").order("created_at", { ascending: false }),
     ]);
 
   const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw };
   for (const [key, res] of Object.entries(results)) {
     if (res.error) throw new Error(`Failed to load ${key}: ${res.error.message}`);
+  }
+
+  // Quotations load fail-soft on purpose: if the quotations migration hasn't
+  // been applied to this Supabase project yet, the rest of the workspace must
+  // still open normally rather than dropping everyone onto the error screen.
+  if (quotationsRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("Quotations unavailable:", quotationsRaw.error.message);
   }
 
   return {
@@ -138,6 +168,7 @@ export async function fetchAllData() {
     vendors: (vendorsRaw.data || []).map(mapVendor),
     materialRequests: (materialRequestsRaw.data || []).map(mapMaterialRequest),
     siteVisits: (siteVisitsRaw.data || []).map(mapSiteVisit),
+    quotations: (quotationsRaw.data || []).map(mapQuotation),
   };
 }
 
@@ -443,6 +474,97 @@ export async function dbDeleteVendor(id) {
   if (error) throw error;
 }
 
+/* ---- quotations --------------------------------------------------------- */
+
+/* Quotation numbers run on a Postgres sequence (like PO numbers) rather than
+   counting existing rows, so two people creating a quotation at the same
+   moment can never land on the same number. Format: DIA/QT/2026-27/0007,
+   where the year part is the Indian financial year the quotation falls in. */
+function financialYearLabel(dateStr) {
+  const d = dateStr ? new Date(dateStr) : new Date();
+  const y = d.getFullYear();
+  const startYear = d.getMonth() >= 3 ? y : y - 1; // FY starts 1 April
+  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
+}
+
+export async function nextQuotationNumber(dateStr, docType) {
+  const { data: seq, error } = await supabase.rpc("nextval_quotation_number");
+  if (error) throw error;
+  // Design proposals and itemised work quotes share one sequence but carry
+  // different prefixes, so a number is never ambiguous on a client's desk.
+  const prefix = docType === "itemised" ? "DIA/QTN" : "DIA/QT";
+  return `${prefix}/${financialYearLabel(dateStr)}/${String(seq).padStart(4, "0")}`;
+}
+
+const quotationPayload = (q) => ({
+  project_id: q.projectId || null,
+  client_name: q.clientName,
+  client_address: q.clientAddress,
+  project_title: q.projectTitle,
+  location: q.location,
+  city: q.city,
+  date: q.date,
+  subject: q.subject,
+  service_line: q.serviceLine,
+  area: Number(q.area) || 0,
+  floors: q.floors,
+  fee_mode: q.feeMode,
+  rate_per_sqft: Number(q.ratePerSqft) || 0,
+  total_fee: Number(q.totalFee) || 0,
+  gst_note: q.gstNote,
+  intro_paras: q.introParas || [],
+  scope_stages: q.scopeStages || [],
+  payment_stages: q.paymentStages || [],
+  milestone_notes: q.milestoneNotes || [],
+  revision_policy: q.revisionPolicy || [],
+  closing_paras: q.closingParas || [],
+  payment_terms: q.paymentTerms || [],
+  signatory_name: q.signatoryName,
+  signatory_title: q.signatoryTitle,
+  signature_url: q.signatureUrl || null,
+  bank: q.bank || {},
+  doc_type: q.docType || "proposal",
+  mobile: q.mobile,
+  salutation: q.salutation,
+  line_items: q.lineItems || [],
+  discount: Number(q.discount) || 0,
+  work_terms: q.workTerms || [],
+  status: q.status || "Draft",
+  notes: q.notes,
+});
+
+export async function dbAddQuotation(q, createdBy) {
+  const quotationNo = q.quotationNo || (await nextQuotationNumber(q.date, q.docType));
+  const { data, error } = await supabase.from("quotations")
+    .insert({ ...quotationPayload(q), quotation_no: quotationNo, created_by: createdBy })
+    .select().single();
+  if (error) throw error;
+  return mapQuotation(data);
+}
+
+export async function dbUpdateQuotation(id, q) {
+  const { data, error } = await supabase.from("quotations")
+    .update(quotationPayload(q)).eq("id", id).select().single();
+  if (error) throw error;
+  return mapQuotation(data);
+}
+
+export async function dbUpdateQuotationStatus(id, status) {
+  const { error } = await supabase.from("quotations").update({ status }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteQuotation(id) {
+  const { error } = await supabase.from("quotations").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/* Creates a fresh quotation (new number, Draft status) from an existing one —
+   the usual way a revised price goes out to the same client. */
+export async function dbDuplicateQuotation(source, createdBy) {
+  return dbAddQuotation({ ...source, quotationNo: "", status: "Draft" }, createdBy);
+}
+
 /* ---- issues ------------------------------------------------------------ */
 
 export async function dbAddIssue(projectId, supervisorId, issue) {
@@ -573,3 +695,4 @@ export async function uploadFile(bucket, file, pathPrefix) {
 
 export const uploadProofFile = (file, pathPrefix) => uploadFile(PROOF_BUCKET, file, pathPrefix);
 export const uploadSitePhoto = (file, pathPrefix) => uploadFile(SITE_PHOTOS_BUCKET, file, pathPrefix);
+export const uploadSignature = (file) => uploadFile(PROOF_BUCKET, file, "signatures");
