@@ -476,6 +476,14 @@
   @media (prefers-reduced-motion: reduce){
     .hero-eyebrow, .hero h1, .hero-sub, .hero-actions{ transition:none; }
   }
+  /* On narrow phones the heading can wrap to 5-6 lines and, since the hero
+     content is bottom-anchored, grow tall enough to collide with the fixed
+     transparent nav bar above it. Give it more room and a smaller ceiling. */
+  @media (max-width:520px){
+    .hero{ min-height:760px; }
+    .hero h1{ font-size:clamp(32px, 9vw, 40px); line-height:1.12; }
+    .hero-content{ padding:0 24px 64px; }
+  }
 
   .btn{
     display:inline-flex;
