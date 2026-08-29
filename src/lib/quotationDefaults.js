@@ -284,3 +284,117 @@ export function blankWorkQuote(project) {
     bank: QUOTATION_BANK,
   };
 }
+
+/* ---- Bill of Quantities ------------------------------------------------ */
+
+/* Material specifications printed at the head of every BOQ. Edited per
+   document, but these are the standard brands and grades. */
+export const BOQ_MATERIAL_SPECS = [
+  "PLYWOOD - Rs.125 range will be used (Preferably - Green Ecotech BWP)",
+  "LAMINATES - Rs.2750 range will be used.",
+  "ACRYLIC LAMINATES - Rs.3750 range will be used.",
+  "INNER LAMINATES - Rs.575 range will be used.",
+  "VENEER - Rs.110 range will be used.",
+  "HARDWARE - Hettich or Equivalent will be used.",
+  "MDF - GREEN PANEL HDHMR",
+  "WIRES - Finolex or Equivalent will be used.",
+  "CORIAN - Tristone, Himacs or Equivalent will be used.",
+  "PU FINISH - ICA",
+  "POLYCOAT FINISH - ICA",
+  "WATER BASE FINISH - ASIAN ROYALE PAINT",
+];
+
+/* Work that sits outside the quoted scope. Printed after the grand total. */
+export const BOQ_EXCLUSIONS = [
+  "Generator and its structure.",
+  "Site demolishment if any.",
+  "Plumbing & toilet renovation if any.",
+  "IT requirements.",
+  "Exterior branding & its framework.",
+  "Display mannequins and stock trays are not included.",
+  "Any left out quotation will be added once the work has been completed.",
+  "The quantity may vary according to the site conditions, so the given quotation is tentative (contingency 10%).",
+  "Any changes in the drawing/design might incur changes in the quotation.",
+];
+
+export const BOQ_PAYMENT_TEMPLATE = [
+  { stage: "1", milestone: "Design finalization and advance", percentage: 50 },
+  { stage: "2", milestone: "Completion of base carcass", percentage: 30 },
+  { stage: "3", milestone: "False ceiling completion", percentage: 15 },
+  { stage: "4", milestone: "Project completion", percentage: 5 },
+];
+
+export const BOQ_UNITS = ["Sq.ft.", "Rft", "Nos.", "LS", "S.ft.", "Kg", "Set", "Job"];
+
+export const BOQ_EXTRA_CHARGE_LABEL =
+  "Transportation, handling charges, deep cleaning, misc. charges";
+export const BOQ_EXTRA_CHARGE_PCT = 2.5;
+
+/* Section letters run A, B, C … and are assigned automatically as sections
+   are added or removed, so they always read in order on the printed BOQ. */
+export const sectionCode = (index) => {
+  let n = index, code = "";
+  do { code = String.fromCharCode(65 + (n % 26)) + code; n = Math.floor(n / 26) - 1; } while (n >= 0);
+  return code;
+};
+
+/* A BOQ line's quantity is usually length x height; where a dimension isn't
+   meaningful (a logo, a light fitting) the quantity is typed directly. */
+export function boqItemQty(item) {
+  const l = Number(item.length) || 0;
+  const h = Number(item.height) || 0;
+  if (l > 0 && h > 0) return Math.round(l * h * 100) / 100;
+  return Number(item.qty) || 0;
+}
+
+export function boqItemAmount(item) {
+  return Math.round(boqItemQty(item) * (Number(item.rate) || 0));
+}
+
+export function boqSectionTotal(section) {
+  return (section.items || []).reduce((s, it) => s + boqItemAmount(it), 0);
+}
+
+export function boqTotals(q) {
+  const sections = q.boqSections || [];
+  const subtotal = sections.reduce((s, sec) => s + boqSectionTotal(sec), 0);
+  const pct = Number(q.extraChargePct) || 0;
+  const extra = Math.round((subtotal * pct) / 100);
+  return { subtotal, extra, grand: subtotal + extra };
+}
+
+export function blankBOQ(project) {
+  return {
+    docType: "boq",
+    quotationNo: "",
+    projectId: project?.id || null,
+    clientName: project?.client || "",
+    clientAddress: project?.location || "",
+    mobile: "",
+    projectTitle: project?.name || "",
+    location: project?.location || "",
+    city: "Bengaluru",
+    date: new Date().toISOString().slice(0, 10),
+    materialSpecs: BOQ_MATERIAL_SPECS,
+    boqSections: [
+      { group: "Ground Floor", title: "Showroom Area", note: "", items: [{ particulars: "", description: "", length: 0, height: 0, qty: 0, unit: "Sq.ft.", rate: 0, remarks: "" }] },
+    ],
+    extraChargeLabel: BOQ_EXTRA_CHARGE_LABEL,
+    extraChargePct: BOQ_EXTRA_CHARGE_PCT,
+    exclusions: BOQ_EXCLUSIONS,
+    paymentStages: BOQ_PAYMENT_TEMPLATE,
+    signatoryName: "",
+    signatoryTitle: "",
+    signatureUrl: "",
+    status: "Draft",
+    notes: "",
+    totalFee: 0,
+    /* unused by this document type, kept so one row shape covers all three */
+    serviceLine: QUOTATION_SERVICE_LINES[0],
+    area: 0, floors: "", feeMode: "lumpsum", ratePerSqft: 0, gstNote: "",
+    introParas: [], scopeStages: [], milestoneNotes: [], revisionPolicy: [],
+    closingParas: [], paymentTerms: [], lineItems: [], discount: 0, workTerms: [],
+    salutation: "",
+    bank: QUOTATION_BANK,
+  };
+}

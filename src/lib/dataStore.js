@@ -87,6 +87,12 @@ const mapVendor = (r) => ({
   bankIfsc: r.bank_ifsc, bankName: r.bank_name, createdAt: r.created_at,
 });
 
+const mapBoqLibraryItem = (r) => ({
+  id: r.id, particulars: r.particulars, description: r.description,
+  unit: r.unit, rate: Number(r.rate) || 0, category: r.category,
+  timesUsed: r.times_used || 0, createdAt: r.created_at,
+});
+
 const mapQuotation = (r) => ({
   id: r.id, quotationNo: r.quotation_no, projectId: r.project_id,
   clientName: r.client_name, clientAddress: r.client_address, projectTitle: r.project_title,
@@ -102,6 +108,9 @@ const mapQuotation = (r) => ({
   bank: r.bank || {},
   docType: r.doc_type || "proposal", mobile: r.mobile, salutation: r.salutation,
   lineItems: r.line_items || [], discount: Number(r.discount) || 0, workTerms: r.work_terms || [],
+  materialSpecs: r.material_specs || [], boqSections: r.boq_sections || [],
+  exclusions: r.exclusions || [], extraChargeLabel: r.extra_charge_label,
+  extraChargePct: Number(r.extra_charge_pct) || 0,
   status: r.status, notes: r.notes, createdBy: r.created_by,
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
@@ -124,7 +133,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -141,6 +150,7 @@ export async function fetchAllData() {
       // Quotations are Admin/Accounts-only at the RLS level, so this comes back
       // empty (not an error) for architects and supervisors.
       supabase.from("quotations").select("*").order("created_at", { ascending: false }),
+      supabase.from("boq_library").select("*").order("times_used", { ascending: false }),
     ]);
 
   const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw };
@@ -154,6 +164,10 @@ export async function fetchAllData() {
   if (quotationsRaw.error) {
     // eslint-disable-next-line no-console
     console.warn("Quotations unavailable:", quotationsRaw.error.message);
+  }
+  if (boqLibraryRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("BOQ library unavailable:", boqLibraryRaw.error.message);
   }
 
   return {
@@ -169,6 +183,7 @@ export async function fetchAllData() {
     materialRequests: (materialRequestsRaw.data || []).map(mapMaterialRequest),
     siteVisits: (siteVisitsRaw.data || []).map(mapSiteVisit),
     quotations: (quotationsRaw.data || []).map(mapQuotation),
+    boqLibrary: (boqLibraryRaw.data || []).map(mapBoqLibraryItem),
   };
 }
 
@@ -492,7 +507,7 @@ export async function nextQuotationNumber(dateStr, docType) {
   if (error) throw error;
   // Design proposals and itemised work quotes share one sequence but carry
   // different prefixes, so a number is never ambiguous on a client's desk.
-  const prefix = docType === "itemised" ? "DIA/QTN" : "DIA/QT";
+  const prefix = docType === "itemised" ? "DIA/QTN" : docType === "boq" ? "DIA/BOQ" : "DIA/QT";
   return `${prefix}/${financialYearLabel(dateStr)}/${String(seq).padStart(4, "0")}`;
 }
 
@@ -529,6 +544,11 @@ const quotationPayload = (q) => ({
   line_items: q.lineItems || [],
   discount: Number(q.discount) || 0,
   work_terms: q.workTerms || [],
+  material_specs: q.materialSpecs || [],
+  boq_sections: q.boqSections || [],
+  exclusions: q.exclusions || [],
+  extra_charge_label: q.extraChargeLabel,
+  extra_charge_pct: Number(q.extraChargePct) || 0,
   status: q.status || "Draft",
   notes: q.notes,
 });
@@ -563,6 +583,43 @@ export async function dbDeleteQuotation(id) {
    the usual way a revised price goes out to the same client. */
 export async function dbDuplicateQuotation(source, createdBy) {
   return dbAddQuotation({ ...source, quotationNo: "", status: "Draft" }, createdBy);
+}
+
+/* ---- BOQ item library --------------------------------------------------- */
+
+/* Standard line items reused across projects. Saving from a BOQ row means the
+   long specification text is typed once and picked thereafter. */
+export async function dbAddBoqLibraryItem(item, createdBy) {
+  const { data, error } = await supabase.from("boq_library").insert({
+    particulars: item.particulars, description: item.description || "",
+    unit: item.unit || "Sq.ft.", rate: Number(item.rate) || 0,
+    category: item.category || null, created_by: createdBy,
+  }).select().single();
+  if (error) throw error;
+  return mapBoqLibraryItem(data);
+}
+
+export async function dbUpdateBoqLibraryItem(id, item) {
+  const { error } = await supabase.from("boq_library").update({
+    particulars: item.particulars, description: item.description || "",
+    unit: item.unit || "Sq.ft.", rate: Number(item.rate) || 0,
+    category: item.category || null,
+  }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteBoqLibraryItem(id) {
+  const { error } = await supabase.from("boq_library").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/* Bumps the usage counter so the most-used items float to the top of the
+   picker. Deliberately fire-and-forget: a failed counter update must never
+   interrupt someone building a BOQ. */
+export async function dbTouchBoqLibraryItem(id, timesUsed) {
+  try {
+    await supabase.from("boq_library").update({ times_used: (timesUsed || 0) + 1 }).eq("id", id);
+  } catch { /* counter is a nicety, not data */ }
 }
 
 /* ---- issues ------------------------------------------------------------ */
