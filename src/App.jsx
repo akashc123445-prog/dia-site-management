@@ -30,6 +30,7 @@ import {
   dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbMarkExpensePaid, dbGeneratePO, dbAddIssue,
   dbAddVendor, dbUpdateVendor, dbDeleteVendor,
   dbAddQuotation, dbUpdateQuotation, dbUpdateQuotationStatus, dbDeleteQuotation, dbDuplicateQuotation,
+  dbAddBoqLibraryItem, dbUpdateBoqLibraryItem, dbDeleteBoqLibraryItem, dbTouchBoqLibraryItem,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
   dbMarkMaterialReceived, dbFulfillMaterialRequest,
   dbStartSiteVisit, dbEndSiteVisit,
@@ -38,10 +39,14 @@ import {
 import { generatePOPdf } from "./lib/generatePO";
 import { generateQuotationPdf } from "./lib/generateQuotation";
 import { generateWorkQuotePdf, workQuoteTotals, lineTotal } from "./lib/generateWorkQuote";
+import { generateBOQPdf } from "./lib/generateBOQ";
+import { exportBOQExcel } from "./lib/exportBOQExcel";
 import {
   QUOTATION_STATUSES, QUOTATION_SERVICE_LINES, QUOTATION_SCOPE_TEMPLATE, QUOTATION_PAYMENT_TEMPLATE,
   QUOTATION_SIGNATORY, WORK_QUOTE_TERMS, WORK_QUOTE_UNITS,
-  blankQuotation, blankWorkQuote, computeStageAmounts, amountInWords,
+  BOQ_MATERIAL_SPECS, BOQ_EXCLUSIONS, BOQ_PAYMENT_TEMPLATE, BOQ_UNITS,
+  blankQuotation, blankWorkQuote, blankBOQ, computeStageAmounts, amountInWords,
+  boqItemQty, boqItemAmount, boqSectionTotal, boqTotals, sectionCode,
 } from "./lib/quotationDefaults";
 
 /* ---------------------------------------------------------------------- */
@@ -2620,10 +2625,8 @@ function QuotationsView({ data, currentUser, actions, setView }) {
   const lastSignature = quotations.find(q => q.signatureUrl)?.signatureUrl || "";
 
   if (editing) {
-    const isNew = editing === "new-proposal" || editing === "new-itemised";
-    const docType = isNew
-      ? (editing === "new-itemised" ? "itemised" : "proposal")
-      : (editing.docType || "proposal");
+    const isNew = typeof editing === "string" && editing.startsWith("new-");
+    const docType = isNew ? editing.replace("new-", "") : (editing.docType || "proposal");
 
     const handleSave = async (payload) => {
       setBusy(true);
@@ -2640,11 +2643,13 @@ function QuotationsView({ data, currentUser, actions, setView }) {
     const shared = {
       key: isNew ? editing : editing.id,
       quotation: isNew ? null : editing,
-      data, currentUser, lastSignature, saving: busy,
+      data, currentUser, lastSignature, saving: busy, actions,
       onCancel: () => setEditing(null),
       onSave: handleSave,
     };
-    return docType === "itemised" ? <WorkQuoteEditor {...shared} /> : <QuotationEditor {...shared} />;
+    if (docType === "boq") return <BOQEditor {...shared} />;
+    if (docType === "itemised") return <WorkQuoteEditor {...shared} />;
+    return <QuotationEditor {...shared} />;
   }
 
   return (
@@ -2669,6 +2674,7 @@ function QuotationsView({ data, currentUser, actions, setView }) {
           <option value="All">Both document types</option>
           <option value="proposal">Design proposals</option>
           <option value="itemised">Work quotations</option>
+          <option value="boq">Bills of quantities</option>
         </select>
         <div className="relative shrink-0">
           <button onClick={() => setNewMenu(o => !o)}
@@ -2688,6 +2694,11 @@ function QuotationsView({ data, currentUser, actions, setView }) {
                   className="w-full text-left px-4 py-3 hover:bg-stone-50 border-t border-stone-100">
                   <div className="text-sm font-semibold text-stone-800">Work quotation</div>
                   <div className="text-xs text-stone-500 mt-0.5">Single-page itemised rates for execution and fabrication work</div>
+                </button>
+                <button onClick={() => { setEditing("new-boq"); setNewMenu(false); }}
+                  className="w-full text-left px-4 py-3 hover:bg-stone-50 border-t border-stone-100">
+                  <div className="text-sm font-semibold text-stone-800">Bill of quantities</div>
+                  <div className="text-xs text-stone-500 mt-0.5">Full priced schedule of works for turnkey execution, with Excel export</div>
                 </button>
               </div>
             </>
@@ -2745,22 +2756,27 @@ const QUOTE_STATUS_STYLES = {
 /* One row renders either document type — the only difference is which
    generator produces the PDF and what the summary line says. */
 function quotationPdf(q, mode) {
-  return (q.docType || "proposal") === "itemised"
-    ? generateWorkQuotePdf(q, mode)
-    : generateQuotationPdf(q, mode);
+  const t = q.docType || "proposal";
+  if (t === "boq") return generateBOQPdf(q, mode);
+  if (t === "itemised") return generateWorkQuotePdf(q, mode);
+  return generateQuotationPdf(q, mode);
 }
+
+const DOC_TYPE_LABEL = { proposal: "Design proposal", itemised: "Work quotation", boq: "Bill of quantities" };
 
 function QuotationRow({ q, projectName, isAdmin, onEdit, onStatus, onDuplicate, onDelete }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const isItemised = (q.docType || "proposal") === "itemised";
+  const docType = q.docType || "proposal";
+  const isItemised = docType === "itemised";
+  const isBoq = docType === "boq";
   return (
     <Card className="p-4">
       <div className="flex flex-col sm:flex-row sm:items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-mono text-[11px] text-stone-500">{q.quotationNo}</span>
-            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${isItemised ? "dia-bg-cream-soft dia-text-bronze" : "bg-stone-100 text-stone-600"}`}>
-              {isItemised ? "Work quotation" : "Design proposal"}
+            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${docType === "proposal" ? "bg-stone-100 text-stone-600" : "dia-bg-cream-soft dia-text-bronze"}`}>
+              {DOC_TYPE_LABEL[docType]}
             </span>
             <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${QUOTE_STATUS_STYLES[q.status] || "bg-stone-100 text-stone-600"}`}>{q.status}</span>
             {projectName && <span className="text-[10px] dia-text-bronze font-medium">· linked to {projectName}</span>}
@@ -2771,7 +2787,9 @@ function QuotationRow({ q, projectName, isAdmin, onEdit, onStatus, onDuplicate, 
           </p>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-xs text-stone-500">
             <span>{fmtDate(q.date)}</span>
-            {isItemised
+            {isBoq
+              ? <span>{(q.boqSections || []).length} section{(q.boqSections || []).length !== 1 ? "s" : ""}</span>
+              : isItemised
               ? <span>{(q.lineItems || []).length} line{(q.lineItems || []).length !== 1 ? "s" : ""} of work</span>
               : <>
                   {q.area > 0 && <span>{Number(q.area).toLocaleString("en-IN")} sq.ft.</span>}
@@ -2807,6 +2825,12 @@ function QuotationRow({ q, projectName, isAdmin, onEdit, onStatus, onDuplicate, 
                     className="w-full text-left px-4 py-2 text-sm text-stone-700 hover:bg-stone-50 flex items-center gap-2">
                     <Eye size={14} /> Preview PDF
                   </button>
+                  {isBoq && (
+                    <button onClick={() => { exportBOQExcel(q); setMenuOpen(false); }}
+                      className="w-full text-left px-4 py-2 text-sm text-stone-700 hover:bg-stone-50 flex items-center gap-2">
+                      <FileSpreadsheet size={14} /> Download as Excel
+                    </button>
+                  )}
                   <button onClick={() => { onDuplicate(); setMenuOpen(false); }}
                     className="w-full text-left px-4 py-2 text-sm text-stone-700 hover:bg-stone-50 flex items-center gap-2">
                     <Copy size={14} /> Duplicate as revision
@@ -3418,6 +3442,439 @@ function WorkQuoteEditor({ quotation, data, currentUser, onSave, onCancel, savin
           <button onClick={() => onSave(payload())} disabled={errors.length > 0 || saving}
             className="flex items-center gap-1.5 dia-btn-gold px-5 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
             <Check size={15} /> {saving ? "Saving…" : quotation ? "Save changes" : "Create quotation"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* Picker for the reusable BOQ item library. Items float to the top by how
+   often they've been used, so the partitions and wall units you quote on
+   every job are always the first thing you see. */
+function BoqLibraryPicker({ library, onPick, onClose, onSaveItem, actions }) {
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState("All");
+
+  const categories = ["All", ...Array.from(new Set(library.map(i => i.category).filter(Boolean))).sort()];
+  const filtered = library.filter(i => {
+    if (category !== "All" && i.category !== category) return false;
+    if (!query.trim()) return true;
+    return `${i.particulars} ${i.description} ${i.category || ""}`.toLowerCase().includes(query.trim().toLowerCase());
+  });
+
+  return (
+    <Modal title="Add from item library" onClose={onClose} wide>
+      <div className="flex flex-col sm:flex-row gap-2 mb-3">
+        <div className="relative flex-1">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+          <input autoFocus value={query} onChange={e => setQuery(e.target.value)}
+            placeholder="Search particulars or description" className={`${inputCls} pl-9`} />
+        </div>
+        <select value={category} onChange={e => setCategory(e.target.value)} className={`${inputCls} sm:w-44`}>
+          {categories.map(c => <option key={c}>{c}</option>)}
+        </select>
+      </div>
+
+      {library.length === 0 && (
+        <p className="text-sm text-stone-400 text-center py-8">
+          The library is empty. Build a line in the BOQ, then use "Save to library" on that row.
+        </p>
+      )}
+
+      <div className="space-y-2 max-h-[55vh] overflow-y-auto">
+        {filtered.map(item => (
+          <button key={item.id} type="button"
+            onClick={() => { onPick(item); actions.touchBoqLibraryItem(item.id, item.timesUsed); }}
+            className="w-full text-left border border-stone-200 rounded-xl p-3 hover:dia-border-gold hover:bg-stone-50 transition-colors">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-stone-800">{item.particulars}</div>
+                <div className="text-xs text-stone-500 mt-0.5 line-clamp-2">{item.description}</div>
+              </div>
+              <div className="text-right shrink-0">
+                <div className="text-sm font-semibold text-stone-900">{fmtINR(item.rate)}</div>
+                <div className="text-[10px] text-stone-400">per {item.unit}</div>
+              </div>
+            </div>
+            {item.category && <span className="inline-block mt-2 text-[10px] dia-bg-cream-soft dia-text-bronze font-semibold px-2 py-0.5 rounded-full">{item.category}</span>}
+          </button>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+/* Bill of Quantities: sections of priced line items, used when a client moves
+   past design into turnkey execution. */
+function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, lastSignature, actions }) {
+  const [form, setForm] = useState(() => quotation ? { ...quotation } : blankBOQ(null));
+  const [picker, setPicker] = useState(null);        // { sectionIndex }
+  const [savedToLibrary, setSavedToLibrary] = useState({});
+  const set = (patch) => setForm(f => ({ ...f, ...patch }));
+
+  const sections = form.boqSections || [];
+  const library = data.boqLibrary || [];
+  const totals = boqTotals(form);
+
+  const setSection = (si, patch) => {
+    const next = [...sections];
+    next[si] = { ...next[si], ...patch };
+    set({ boqSections: next });
+  };
+  const setItem = (si, ii, patch) => {
+    const next = [...sections];
+    const items = [...(next[si].items || [])];
+    items[ii] = { ...items[ii], ...patch };
+    next[si] = { ...next[si], items };
+    set({ boqSections: next });
+  };
+  const addItem = (si, seed) => {
+    const next = [...sections];
+    next[si] = {
+      ...next[si],
+      items: [...(next[si].items || []), seed || { particulars: "", description: "", length: 0, height: 0, qty: 0, unit: "Sq.ft.", rate: 0, remarks: "" }],
+    };
+    set({ boqSections: next });
+  };
+  const removeItem = (si, ii) => {
+    const next = [...sections];
+    next[si] = { ...next[si], items: next[si].items.filter((_, x) => x !== ii) };
+    set({ boqSections: next });
+  };
+
+  const errors = [];
+  if (!String(form.clientName || "").trim()) errors.push("Client name is required.");
+  if (!sections.some(s => (s.items || []).some(i => String(i.particulars || "").trim()))) errors.push("Add at least one line item.");
+  if (totals.grand <= 0) errors.push("The BOQ total must be greater than zero.");
+  const pctTotal = (form.paymentStages || []).reduce((s, st) => s + (Number(st.percentage) || 0), 0);
+  if (Math.abs(pctTotal - 100) > 0.01) errors.push(`Payment stages add up to ${pctTotal}% — they must total 100%.`);
+
+  const payload = () => ({
+    ...form,
+    docType: "boq",
+    materialSpecs: cleanList(form.materialSpecs),
+    exclusions: cleanList(form.exclusions),
+    boqSections: sections
+      .filter(s => String(s.title || "").trim() || (s.items || []).length)
+      .map(s => ({
+        group: s.group || "", title: s.title || "", note: s.note || "",
+        items: (s.items || [])
+          .filter(i => String(i.particulars || "").trim() || String(i.description || "").trim())
+          .map(i => ({
+            particulars: i.particulars || "", description: i.description || "",
+            length: Number(i.length) || 0, height: Number(i.height) || 0,
+            qty: Number(i.qty) || 0, unit: i.unit || "", rate: Number(i.rate) || 0,
+            remarks: i.remarks || "",
+          })),
+      })),
+    totalFee: totals.grand,
+  });
+
+  const applyProject = (projectId) => {
+    const p = data.projects.find(x => x.id === projectId);
+    if (!p) { set({ projectId: null }); return; }
+    set({
+      projectId: p.id,
+      clientName: form.clientName || p.client,
+      projectTitle: form.projectTitle || p.name,
+      location: form.location || p.location,
+      clientAddress: form.clientAddress || p.location,
+    });
+  };
+
+  const saveRowToLibrary = async (si, ii) => {
+    const item = sections[si].items[ii];
+    if (!String(item.particulars || "").trim()) return;
+    try {
+      await actions.addBoqLibraryItem({
+        particulars: item.particulars, description: item.description,
+        unit: item.unit, rate: item.rate, category: sections[si].title || null,
+      });
+      setSavedToLibrary(m => ({ ...m, [`${si}-${ii}`]: true }));
+    } catch (err) {
+      alert(err.message || "Could not save that item to the library.");
+    }
+  };
+
+  const preview = () => {
+    const url = generateBOQPdf({ ...payload(), quotationNo: form.quotationNo || "DRAFT" }, "preview");
+    if (url) window.open(url, "_blank");
+  };
+
+  return (
+    <div className="p-4 sm:p-8 pb-32 space-y-4">
+      <button onClick={onCancel} className="flex items-center gap-1.5 text-sm dia-text-bronze font-medium">
+        <ArrowLeft size={15} /> Back to quotations
+      </button>
+
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2">
+        <div>
+          <h2 className="font-display text-2xl font-semibold text-stone-900">
+            {quotation ? "Edit bill of quantities" : "New bill of quantities"}
+          </h2>
+          <p className="text-sm text-stone-500 mt-0.5">
+            {quotation
+              ? <>BOQ <span className="font-mono text-xs">{quotation.quotationNo}</span> · last updated {fmtDate(quotation.updatedAt)}</>
+              : "Priced schedule of works for turnkey execution."}
+          </p>
+        </div>
+        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full self-start ${QUOTE_STATUS_STYLES[form.status]}`}>{form.status}</span>
+      </div>
+
+      <QSection title="Client & project">
+        <div className="grid sm:grid-cols-2 gap-x-4">
+          <Field label="Link to an existing project (optional)">
+            <select className={inputCls} value={form.projectId || ""} onChange={e => applyProject(e.target.value)}>
+              <option value="">Not linked — standalone BOQ</option>
+              {data.projects.map(p => <option key={p.id} value={p.id}>{p.name} — {p.client}</option>)}
+            </select>
+          </Field>
+          <Field label="Status">
+            <select className={inputCls} value={form.status} onChange={e => set({ status: e.target.value })}>
+              {QUOTATION_STATUSES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="Client name *">
+            <input className={inputCls} value={form.clientName} onChange={e => set({ clientName: e.target.value })}
+              placeholder="Diahart" />
+          </Field>
+          <Field label="Project / showroom">
+            <input className={inputCls} value={form.projectTitle} onChange={e => set({ projectTitle: e.target.value })}
+              placeholder="Showroom interiors" />
+          </Field>
+          <Field label="Location">
+            <input className={inputCls} value={form.location || ""} onChange={e => set({ location: e.target.value })}
+              placeholder="Anna Nagar" />
+          </Field>
+          <Field label="Date">
+            <input type="date" className={inputCls} value={form.date} onChange={e => set({ date: e.target.value })} />
+          </Field>
+        </div>
+      </QSection>
+
+      <QSection title="Material specifications" subtitle="Printed at the head of the BOQ — one per line" defaultOpen={false}>
+        <ListEditor rows={12} value={form.materialSpecs} onChange={v => set({ materialSpecs: v })} />
+        <button type="button" onClick={() => set({ materialSpecs: BOQ_MATERIAL_SPECS })}
+          className="text-sm text-stone-500 hover:text-stone-800 mt-2">Reset to standard specifications</button>
+      </QSection>
+
+      {sections.map((section, si) => {
+        const sectionSum = boqSectionTotal(section);
+        return (
+          <QSection key={si}
+            title={`${sectionCode(si)}. ${section.title || "Untitled section"}`}
+            subtitle={section.group || undefined}
+            badge={<span className="text-[10px] font-semibold px-2 py-0.5 rounded-full dia-bg-cream-soft dia-text-bronze">{fmtINR(sectionSum)}</span>}>
+            <div className="grid sm:grid-cols-2 gap-x-4">
+              <Field label="Section name">
+                <input className={inputCls} value={section.title || ""}
+                  onChange={e => setSection(si, { title: e.target.value })} placeholder="Entrance Lobby" />
+              </Field>
+              <Field label="Area / floor heading (repeat to group sections)">
+                <input className={inputCls} value={section.group || ""}
+                  onChange={e => setSection(si, { group: e.target.value })} placeholder="Ground Floor" />
+              </Field>
+            </div>
+
+            <div className="space-y-3">
+              {(section.items || []).map((item, ii) => {
+                const qty = boqItemQty(item);
+                const key = `${si}-${ii}`;
+                return (
+                  <div key={ii} className="border border-stone-200 rounded-xl p-3">
+                    <div className="flex items-start gap-2 mb-2">
+                      <span className="text-xs text-stone-400 font-mono pt-2.5 w-5 shrink-0">{ii + 1}.</span>
+                      <input className={`${inputCls} font-semibold`} value={item.particulars || ""}
+                        onChange={e => setItem(si, ii, { particulars: e.target.value })} placeholder="Particulars, e.g. Plywood partition" />
+                      <button type="button" onClick={() => removeItem(si, ii)}
+                        className="text-stone-300 hover:text-rose-600 pt-2.5 shrink-0"><Trash2 size={15} /></button>
+                    </div>
+                    <textarea rows={2} className={`${inputCls} mb-2`} value={item.description || ""}
+                      onChange={e => setItem(si, ii, { description: e.target.value })}
+                      placeholder="Full specification as it should read on the BOQ" />
+                    <div className="grid grid-cols-2 sm:grid-cols-6 gap-2">
+                      <label className="block">
+                        <span className="block text-[10px] text-stone-500 mb-1">Length (ft)</span>
+                        <input type="number" className={inputCls} value={item.length || ""}
+                          onChange={e => setItem(si, ii, { length: e.target.value })} />
+                      </label>
+                      <label className="block">
+                        <span className="block text-[10px] text-stone-500 mb-1">Height (ft)</span>
+                        <input type="number" className={inputCls} value={item.height || ""}
+                          onChange={e => setItem(si, ii, { height: e.target.value })} />
+                      </label>
+                      <label className="block">
+                        <span className="block text-[10px] text-stone-500 mb-1">
+                          Qty {Number(item.length) > 0 && Number(item.height) > 0 && <span className="dia-text-bronze">(auto)</span>}
+                        </span>
+                        <input type="number" className={inputCls} value={Number(item.length) > 0 && Number(item.height) > 0 ? qty : (item.qty || "")}
+                          disabled={Number(item.length) > 0 && Number(item.height) > 0}
+                          onChange={e => setItem(si, ii, { qty: e.target.value })} />
+                      </label>
+                      <label className="block">
+                        <span className="block text-[10px] text-stone-500 mb-1">Unit</span>
+                        <input list="boq-units" className={inputCls} value={item.unit || ""}
+                          onChange={e => setItem(si, ii, { unit: e.target.value })} />
+                      </label>
+                      <label className="block">
+                        <span className="block text-[10px] text-stone-500 mb-1">Rate (₹)</span>
+                        <input type="number" className={inputCls} value={item.rate || ""}
+                          onChange={e => setItem(si, ii, { rate: e.target.value })} />
+                      </label>
+                      <div>
+                        <span className="block text-[10px] text-stone-500 mb-1">Amount</span>
+                        <div className="py-2 text-sm font-semibold text-stone-900 tabular-nums">{fmtINR(boqItemAmount(item))}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 mt-2">
+                      <input className={`${inputCls} text-xs`} value={item.remarks || ""}
+                        onChange={e => setItem(si, ii, { remarks: e.target.value })} placeholder="Remarks (optional)" />
+                      <button type="button" onClick={() => saveRowToLibrary(si, ii)}
+                        className="text-xs dia-text-bronze font-semibold shrink-0 whitespace-nowrap">
+                        {savedToLibrary[key] ? "Saved ✓" : "Save to library"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 mt-3">
+              <button type="button" onClick={() => setPicker({ sectionIndex: si })}
+                className="flex items-center gap-1.5 text-sm dia-btn-gold font-semibold px-3 py-2 rounded-lg">
+                <ListChecks size={14} /> Add from library
+              </button>
+              <button type="button" onClick={() => addItem(si)}
+                className="flex items-center gap-1.5 text-sm dia-text-bronze font-semibold">
+                <Plus size={14} /> Blank line
+              </button>
+              <span className="flex-1" />
+              <button type="button" onClick={() => set({ boqSections: sections.filter((_, x) => x !== si) })}
+                className="text-xs text-stone-400 hover:text-rose-600">Remove section</button>
+            </div>
+          </QSection>
+        );
+      })}
+
+      <datalist id="boq-units">{BOQ_UNITS.map(u => <option key={u} value={u} />)}</datalist>
+
+      <button type="button"
+        onClick={() => set({ boqSections: [...sections, { group: sections[sections.length - 1]?.group || "", title: "", note: "", items: [] }] })}
+        className="flex items-center gap-1.5 text-sm dia-text-bronze font-semibold">
+        <Plus size={15} /> Add section
+      </button>
+
+      <QSection title="Totals & payment terms"
+        badge={<span className="text-[10px] font-semibold px-2 py-0.5 rounded-full dia-bg-cream-soft dia-text-bronze">{fmtINR(totals.grand)}</span>}>
+        <div className="dia-bg-cream-soft rounded-xl p-4 space-y-2 mb-4">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-stone-600">Sub total ({sections.length} section{sections.length !== 1 ? "s" : ""})</span>
+            <span className="font-semibold text-stone-900">{fmtINR(totals.subtotal)}</span>
+          </div>
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <input className={`${inputCls} flex-1 text-xs`} value={form.extraChargeLabel || ""}
+              onChange={e => set({ extraChargeLabel: e.target.value })} />
+            <div className="relative w-24 shrink-0">
+              <input type="number" step="0.1" className={`${inputCls} pr-6 text-right`} value={form.extraChargePct ?? ""}
+                onChange={e => set({ extraChargePct: e.target.value })} />
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-stone-400">%</span>
+            </div>
+            <span className="font-semibold text-stone-900 w-28 text-right shrink-0">{fmtINR(totals.extra)}</span>
+          </div>
+          <div className="flex items-center justify-between pt-2 border-t dia-border-gold-soft">
+            <span className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">Grand total</span>
+            <span className="font-display text-2xl font-semibold text-stone-900">{fmtINR(totals.grand)}</span>
+          </div>
+          <p className="text-xs text-stone-600 italic">{amountInWords(totals.grand)}</p>
+        </div>
+
+        <div className="text-xs font-semibold text-stone-600 mb-2 flex items-center gap-2">
+          Payment stages
+          <span className={`text-[10px] px-2 py-0.5 rounded-full ${Math.abs(pctTotal - 100) < 0.01 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>{pctTotal}%</span>
+        </div>
+        <div className="space-y-2">
+          {(form.paymentStages || []).map((st, i) => (
+            <div key={i} className="grid grid-cols-12 gap-2 items-center">
+              <input className={`${inputCls} col-span-2 sm:col-span-1`} value={st.stage}
+                onChange={e => { const n = [...form.paymentStages]; n[i] = { ...st, stage: e.target.value }; set({ paymentStages: n }); }} />
+              <input className={`${inputCls} col-span-6`} value={st.milestone}
+                onChange={e => { const n = [...form.paymentStages]; n[i] = { ...st, milestone: e.target.value }; set({ paymentStages: n }); }} />
+              <div className="col-span-2 relative">
+                <input type="number" className={`${inputCls} pr-5`} value={st.percentage}
+                  onChange={e => { const n = [...form.paymentStages]; n[i] = { ...st, percentage: Number(e.target.value) }; set({ paymentStages: n }); }} />
+                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-stone-400">%</span>
+              </div>
+              <div className="col-span-2 sm:col-span-2 text-sm font-semibold text-right tabular-nums">
+                {fmtINR(computeStageAmounts(totals.grand, form.paymentStages)[i])}
+              </div>
+              <button type="button" onClick={() => set({ paymentStages: form.paymentStages.filter((_, x) => x !== i) })}
+                className="col-span-1 text-stone-300 hover:text-rose-600 flex justify-center"><Trash2 size={14} /></button>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-3 mt-3">
+          <button type="button"
+            onClick={() => set({ paymentStages: [...(form.paymentStages || []), { stage: String((form.paymentStages?.length || 0) + 1), milestone: "", percentage: 0 }] })}
+            className="flex items-center gap-1.5 text-sm dia-text-bronze font-semibold"><Plus size={14} /> Add stage</button>
+          <button type="button" onClick={() => set({ paymentStages: BOQ_PAYMENT_TEMPLATE })}
+            className="text-sm text-stone-500 hover:text-stone-800">Reset to standard stages</button>
+        </div>
+      </QSection>
+
+      <QSection title="Exclusions" subtitle="Work not covered by this BOQ — one per line" defaultOpen={false}>
+        <ListEditor rows={9} value={form.exclusions} onChange={v => set({ exclusions: v })} />
+        <button type="button" onClick={() => set({ exclusions: BOQ_EXCLUSIONS })}
+          className="text-sm text-stone-500 hover:text-stone-800 mt-2">Reset to standard exclusions</button>
+        <div className="mt-4">
+          <Field label="Internal notes (never printed)">
+            <textarea rows={2} className={inputCls} value={form.notes || ""} onChange={e => set({ notes: e.target.value })} />
+          </Field>
+        </div>
+      </QSection>
+
+      <QSection title="Signature" defaultOpen={false}>
+        <SignatoryFields form={form} set={set} currentUser={currentUser} lastSignature={lastSignature} />
+      </QSection>
+
+      {picker && (
+        <BoqLibraryPicker
+          library={library}
+          actions={actions}
+          onClose={() => setPicker(null)}
+          onPick={(item) => {
+            addItem(picker.sectionIndex, {
+              particulars: item.particulars, description: item.description,
+              length: 0, height: 0, qty: 0, unit: item.unit, rate: item.rate, remarks: "",
+            });
+            setPicker(null);
+          }} />
+      )}
+
+      <div className="fixed bottom-0 left-0 right-0 sm:left-60 bg-white/95 backdrop-blur border-t border-stone-200 px-4 sm:px-8 py-3 z-30"
+        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className="min-w-0 flex-1">
+            {errors.length > 0 ? (
+              <p className="text-xs text-rose-600 flex items-center gap-1.5 truncate"><AlertCircle size={13} className="shrink-0" /> {errors[0]}</p>
+            ) : (
+              <p className="text-xs text-stone-500 truncate">
+                <span className="font-semibold text-stone-800">{fmtINR(totals.grand)}</span> across {sections.length} sections · ready to send
+              </p>
+            )}
+          </div>
+          <button onClick={onCancel} className="px-3 py-2.5 rounded-lg text-sm font-semibold text-stone-600 hover:bg-stone-100">Cancel</button>
+          <button onClick={() => exportBOQExcel({ ...payload(), quotationNo: form.quotationNo || "DRAFT" })} disabled={errors.length > 0}
+            className="flex items-center gap-1.5 px-3 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40">
+            <FileSpreadsheet size={15} /> <span className="hidden sm:inline">Excel</span>
+          </button>
+          <button onClick={preview} disabled={errors.length > 0}
+            className="flex items-center gap-1.5 px-3 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40">
+            <Eye size={15} /> <span className="hidden sm:inline">Preview</span>
+          </button>
+          <button onClick={() => onSave(payload())} disabled={errors.length > 0 || saving}
+            className="flex items-center gap-1.5 dia-btn-gold px-4 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+            <Check size={15} /> {saving ? "Saving…" : quotation ? "Save" : "Create BOQ"}
           </button>
         </div>
       </div>
@@ -4162,6 +4619,10 @@ export default function App() {
     updateQuotationStatus: (id, status) => dbUpdateQuotationStatus(id, status).then(reload),
     duplicateQuotation: (q) => dbDuplicateQuotation(q, profile?.id).then(reload),
     deleteQuotation: (id) => dbDeleteQuotation(id).then(reload),
+    addBoqLibraryItem: (item) => dbAddBoqLibraryItem(item, profile?.id).then(reload),
+    updateBoqLibraryItem: (id, item) => dbUpdateBoqLibraryItem(id, item).then(reload),
+    deleteBoqLibraryItem: (id) => dbDeleteBoqLibraryItem(id).then(reload),
+    touchBoqLibraryItem: (id, timesUsed) => dbTouchBoqLibraryItem(id, timesUsed),
     addVendor: (v) => dbAddVendor(v).then(reload),
     updateVendor: (id, v) => dbUpdateVendor(id, v).then(reload),
     deleteVendor: (id) => dbDeleteVendor(id).then(reload),
