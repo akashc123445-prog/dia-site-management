@@ -552,8 +552,6 @@ function AdminDashboard({ data, setView }) {
 function ProjectsList({ data, setView, actions, currentUser }) {
   const { projects, tasks, expenses, siteReports, users } = data;
   const [statusFilter, setStatusFilter] = useState("All");
-  const [typeFilter, setTypeFilter] = useState("All");
-  const [newMenu, setNewMenu] = useState(false);
   const [search, setSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
   const canAdd = currentUser?.role === "Admin";
@@ -2598,6 +2596,8 @@ const cleanList = (arr) => (arr || []).map(s => String(s).trim()).filter(Boolean
 function QuotationsView({ data, currentUser, actions, setView }) {
   const [editing, setEditing] = useState(null);   // quotation object, or "new"
   const [statusFilter, setStatusFilter] = useState("All");
+  const [typeFilter, setTypeFilter] = useState("All");
+  const [newMenu, setNewMenu] = useState(false);
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
