@@ -47,7 +47,7 @@ import {
   QUOTATION_SIGNATORY, WORK_QUOTE_TERMS, WORK_QUOTE_UNITS,
   BOQ_MATERIAL_SPECS, BOQ_EXCLUSIONS, BOQ_PAYMENT_TEMPLATE, BOQ_UNITS,
   blankQuotation, blankWorkQuote, blankBOQ, computeStageAmounts, amountInWords,
-  boqItemQty, boqItemAmount, boqSectionTotal, boqTotals, sectionCode,
+  boqItemQty, boqItemAmount, boqItemIsOverridden, boqSectionTotal, boqTotals, sectionCode,
 } from "./lib/quotationDefaults";
 
 /* ---------------------------------------------------------------------- */
@@ -3656,6 +3656,7 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
             particulars: i.particulars || "", description: i.description || "",
             length: Number(i.length) || 0, height: Number(i.height) || 0,
             qty: Number(i.qty) || 0, unit: i.unit || "", rate: Number(i.rate) || 0,
+            amount: i.amount === "" || i.amount === null || i.amount === undefined ? "" : Number(i.amount),
             remarks: i.remarks || "",
           })),
       })),
@@ -3837,10 +3838,17 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
                         <input type="number" className={inputCls} value={item.rate || ""}
                           onChange={e => setItem(si, ii, { rate: e.target.value })} />
                       </label>
-                      <div>
-                        <span className="block text-[10px] text-stone-500 mb-1">Amount</span>
-                        <div className="py-2 text-sm font-semibold text-stone-900 tabular-nums">{fmtINR(boqItemAmount(item))}</div>
-                      </div>
+                      <label className="block">
+                        <span className="block text-[10px] text-stone-500 mb-1">
+                          Amount {boqItemIsOverridden(item)
+                            ? <span className="dia-text-bronze" title="Set by hand — clear to calculate">(set)</span>
+                            : <span className="text-stone-400">(auto)</span>}
+                        </span>
+                        <input type="number" className={`${inputCls} ${boqItemIsOverridden(item) ? "dia-border-gold font-semibold" : ""}`}
+                          placeholder={String(boqItemQty(item) * (Number(item.rate) || 0) || "")}
+                          value={item.amount ?? ""}
+                          onChange={e => setItem(si, ii, { amount: e.target.value })} />
+                      </label>
                     </div>
                     <div className="flex items-center gap-2 mt-2">
                       <input className={`${inputCls} text-xs`} value={item.remarks || ""}
@@ -3960,7 +3968,7 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
           onPick={(item) => {
             addItem(picker.sectionIndex, {
               particulars: item.particulars, description: item.description,
-              length: 0, height: 0, qty: 0, unit: item.unit, rate: item.rate, remarks: "",
+              length: 0, height: 0, qty: 0, unit: item.unit, rate: item.rate, amount: "", remarks: "",
             });
             setPicker(null);
           }} />
