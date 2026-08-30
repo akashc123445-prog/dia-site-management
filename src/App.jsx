@@ -41,6 +41,7 @@ import { generateQuotationPdf } from "./lib/generateQuotation";
 import { generateWorkQuotePdf, workQuoteTotals, lineTotal } from "./lib/generateWorkQuote";
 import { generateBOQPdf } from "./lib/generateBOQ";
 import { exportBOQExcel } from "./lib/exportBOQExcel";
+import { parseBOQFile } from "./lib/importBOQ";
 import {
   QUOTATION_STATUSES, QUOTATION_SERVICE_LINES, QUOTATION_SCOPE_TEMPLATE, QUOTATION_PAYMENT_TEMPLATE,
   QUOTATION_SIGNATORY, WORK_QUOTE_TERMS, WORK_QUOTE_UNITS,
@@ -3505,6 +3506,96 @@ function BoqLibraryPicker({ library, onPick, onClose, onSaveItem, actions }) {
   );
 }
 
+/* Reads an existing BOQ spreadsheet and shows what was found before anything
+   is applied — an import that silently rewrites a priced document would be
+   hard to trust, so nothing changes until the summary is accepted. */
+function BOQImportPanel({ onApply }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [preview, setPreview] = useState(null);
+  const [mode, setMode] = useState("replace");   // replace | append
+
+  const pick = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setBusy(true); setError(""); setPreview(null);
+    try {
+      const parsed = await parseBOQFile(file);
+      setPreview({ ...parsed, fileName: file.name });
+    } catch (err) {
+      setError(err.message || "That file couldn't be read. Save it as .xlsx or .csv and try again.");
+    }
+    setBusy(false);
+  };
+
+  const itemCount = (preview?.sections || []).reduce((s, sec) => s + sec.items.length, 0);
+  const total = preview ? boqTotals({ boqSections: preview.sections, extraChargePct: preview.extraChargePct }) : null;
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="inline-flex items-center gap-2 border border-dashed border-stone-300 rounded-lg px-4 py-2.5 text-sm text-stone-600 cursor-pointer hover:dia-border-gold hover:dia-text-bronze">
+          <Upload size={15} /> {busy ? "Reading…" : "Choose a BOQ spreadsheet"}
+          <input type="file" accept=".xlsx,.xls,.csv" hidden onChange={pick} disabled={busy} />
+        </label>
+        <p className="text-xs text-stone-500">Excel or CSV. The sheet needs a header row naming Particulars, Description and a rate column.</p>
+      </div>
+      {error && <p className="text-xs text-rose-600 mt-2 flex items-center gap-1.5"><AlertCircle size={13} /> {error}</p>}
+
+      {preview && (
+        <div className="mt-4 border dia-border-gold-soft rounded-xl overflow-hidden">
+          <div className="dia-bg-cream-soft px-4 py-3">
+            <div className="text-sm font-semibold text-stone-800">{preview.fileName}</div>
+            <div className="text-xs text-stone-600 mt-0.5">
+              {preview.sections.length} section{preview.sections.length !== 1 ? "s" : ""} · {itemCount} line item{itemCount !== 1 ? "s" : ""} · {fmtINR(total.grand)} grand total
+            </div>
+          </div>
+
+          <div className="px-4 py-3 max-h-64 overflow-y-auto space-y-1.5">
+            {preview.sections.map((sec, i) => (
+              <div key={i} className="flex items-center justify-between gap-3 text-xs">
+                <span className="text-stone-700 truncate">
+                  <span className="font-mono text-stone-400 mr-1.5">{sectionCode(i)}</span>
+                  {sec.title}
+                  {sec.group && <span className="text-stone-400"> · {sec.group}</span>}
+                </span>
+                <span className="text-stone-500 shrink-0">{sec.items.length} items · {fmtINR(boqSectionTotal(sec))}</span>
+              </div>
+            ))}
+          </div>
+
+          {preview.warnings.length > 0 && (
+            <div className="px-4 py-2.5 bg-amber-50 border-t border-amber-100">
+              {preview.warnings.map((w, i) => (
+                <p key={i} className="text-xs text-amber-800 flex items-start gap-1.5"><AlertCircle size={12} className="mt-0.5 shrink-0" /> {w}</p>
+              ))}
+            </div>
+          )}
+
+          <div className="px-4 py-3 border-t border-stone-100 flex flex-wrap items-center gap-2">
+            <div className="flex gap-1.5 flex-1">
+              {[["replace", "Replace everything"], ["append", "Add to what's here"]].map(([v, label]) => (
+                <button key={v} type="button" onClick={() => setMode(v)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                    mode === v ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <button type="button" onClick={() => setPreview(null)}
+              className="px-3 py-1.5 text-xs font-semibold text-stone-500 hover:text-stone-800">Discard</button>
+            <button type="button" onClick={() => { onApply(preview, mode); setPreview(null); }}
+              className="dia-btn-gold px-4 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5">
+              <Check size={13} /> Import
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 /* Bill of Quantities: sections of priced line items, used when a client moves
    past design into turnkey execution. */
 function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, lastSignature, actions }) {
@@ -3583,6 +3674,24 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
     });
   };
 
+  /* Applies a parsed spreadsheet. Only the parts the file actually contained
+     are overwritten, so importing a sheet with no exclusions doesn't wipe the
+     standard ones already in the document. */
+  const applyImport = (parsed, mode) => {
+    const incoming = parsed.sections.map(s => ({ group: s.group || "", title: s.title || "", note: "", items: s.items }));
+    const patch = {
+      boqSections: mode === "append" ? [...sections, ...incoming] : incoming,
+    };
+    if (parsed.materialSpecs.length) patch.materialSpecs = parsed.materialSpecs;
+    if (parsed.exclusions.length) patch.exclusions = parsed.exclusions;
+    if (parsed.paymentStages.length) patch.paymentStages = parsed.paymentStages;
+    if (parsed.extraChargePct) {
+      patch.extraChargePct = parsed.extraChargePct;
+      if (parsed.extraChargeLabel) patch.extraChargeLabel = parsed.extraChargeLabel;
+    }
+    set(patch);
+  };
+
   const saveRowToLibrary = async (si, ii) => {
     const item = sections[si].items[ii];
     if (!String(item.particulars || "").trim()) return;
@@ -3651,6 +3760,12 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
             <input type="date" className={inputCls} value={form.date} onChange={e => set({ date: e.target.value })} />
           </Field>
         </div>
+      </QSection>
+
+      <QSection title="Import an existing BOQ"
+        subtitle="Bring an old Excel BOQ into this format instead of retyping it"
+        defaultOpen={!quotation && sections.length <= 1 && !(sections[0]?.items || []).some(i => i.particulars)}>
+        <BOQImportPanel onApply={applyImport} />
       </QSection>
 
       <QSection title="Material specifications" subtitle="Printed at the head of the BOQ — one per line" defaultOpen={false}>
