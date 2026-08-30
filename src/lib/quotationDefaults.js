@@ -347,8 +347,24 @@ export function boqItemQty(item) {
   return Number(item.qty) || 0;
 }
 
+/* Amount is normally quantity x rate, but a BOQ line sometimes carries a
+   manually set figure — a partition priced at 1.5 times for a design feature,
+   say — where the printed amount deliberately differs from the arithmetic.
+   An explicit amount on the item wins; clear it to go back to calculating. */
 export function boqItemAmount(item) {
+  const override = Number(item.amount);
+  if (item.amount !== "" && item.amount !== null && item.amount !== undefined && Number.isFinite(override) && override > 0) {
+    return Math.round(override);
+  }
   return Math.round(boqItemQty(item) * (Number(item.rate) || 0));
+}
+
+/* True when the printed amount doesn't match quantity x rate, so the editor
+   can flag the line rather than let a silent override go unnoticed. */
+export function boqItemIsOverridden(item) {
+  const override = Number(item.amount);
+  if (!(item.amount !== "" && item.amount !== null && item.amount !== undefined && Number.isFinite(override) && override > 0)) return false;
+  return Math.abs(override - boqItemQty(item) * (Number(item.rate) || 0)) > 1;
 }
 
 export function boqSectionTotal(section) {
