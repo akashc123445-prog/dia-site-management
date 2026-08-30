@@ -37,6 +37,10 @@ export default defineConfig({
         // Cache the app shell; data itself always comes from Supabase (network),
         // never served stale from the cache.
         globPatterns: ["**/*.{js,css,html,svg,png,ico}"],
+        // The main bundle carries embedded brand fonts, base64 logos and the
+        // PDF/spreadsheet libraries, so it exceeds Workbox's 2 MiB default and
+        // the build fails outright rather than just skipping the file.
+        maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         runtimeCaching: [
           {
             urlPattern: ({ url }) => url.hostname.endsWith("supabase.co"),
