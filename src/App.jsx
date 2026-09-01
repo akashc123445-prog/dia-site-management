@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer,
   CartesianGrid, Legend
@@ -3506,6 +3506,58 @@ function BoqLibraryPicker({ library, onPick, onClose, onSaveItem, actions }) {
   );
 }
 
+/* Keeps an in-progress quotation in the browser so a reload — a deploy, a
+   crash, a closed tab — doesn't cost someone an afternoon of BOQ entry. The
+   draft is cleared the moment the document is saved or abandoned. */
+const draftKey = (docType, id) => `dia:draft:${docType}:${id || "new"}`;
+
+function loadDraft(docType, id) {
+  try {
+    const raw = window.localStorage.getItem(draftKey(docType, id));
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function saveDraft(docType, id, form) {
+  try {
+    window.localStorage.setItem(draftKey(docType, id), JSON.stringify({ savedAt: Date.now(), form }));
+  } catch { /* private mode or a full quota — the editor still works */ }
+}
+
+function clearDraft(docType, id) {
+  try { window.localStorage.removeItem(draftKey(docType, id)); } catch { /* nothing to do */ }
+}
+
+/* Autosaves the form and warns before the tab is closed with unsaved work. */
+function useDraft(docType, id, form, dirty) {
+  useEffect(() => {
+    if (!dirty) return;
+    const t = setTimeout(() => saveDraft(docType, id, form), 800);
+    return () => clearTimeout(t);
+  }, [docType, id, form, dirty]);
+
+  useEffect(() => {
+    if (!dirty) return;
+    const onLeave = (e) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", onLeave);
+    return () => window.removeEventListener("beforeunload", onLeave);
+  }, [dirty]);
+}
+
+/* Offered when a draft is found that's newer than what's on the server. */
+function DraftBanner({ savedAt, onRestore, onDiscard }) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 border dia-border-gold-soft dia-bg-cream-soft rounded-xl px-4 py-3">
+      <AlertCircle size={16} className="dia-text-bronze shrink-0" />
+      <span className="text-sm text-stone-700 flex-1 min-w-[200px]">
+        Unsaved changes from {fmtDate(new Date(savedAt).toISOString())} are still here.
+      </span>
+      <button type="button" onClick={onRestore} className="dia-btn-gold text-xs font-semibold px-3 py-1.5 rounded-lg">Restore them</button>
+      <button type="button" onClick={onDiscard} className="text-xs text-stone-500 hover:text-stone-800">Discard</button>
+    </div>
+  );
+}
+
 /* Reads an existing BOQ spreadsheet and shows what was found before anything
    is applied — an import that silently rewrites a priced document would be
    hard to trust, so nothing changes until the summary is accepted. */
@@ -3728,7 +3780,11 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
   const [form, setForm] = useState(() => quotation ? { ...quotation } : blankBOQ(null));
   const [picker, setPicker] = useState(null);        // { sectionIndex }
   const [savedToLibrary, setSavedToLibrary] = useState({});
-  const set = (patch) => setForm(f => ({ ...f, ...patch }));
+  const [dirty, setDirty] = useState(false);
+  const [draft, setDraft] = useState(() => loadDraft("boq", quotation?.id));
+  const set = (patch) => { setDirty(true); setForm(f => ({ ...f, ...patch })); };
+
+  useDraft("boq", quotation?.id, form, dirty);
 
   const sections = form.boqSections || [];
   const library = data.boqLibrary || [];
@@ -3841,15 +3897,29 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
   };
 
   const preview = () => {
+    /* Opening the PDF in another tab used to come back to a reloaded app, so
+       the current state is written out before leaving. */
+    saveDraft("boq", quotation?.id, form);
     const url = generateBOQPdf({ ...payload(), quotationNo: form.quotationNo || "DRAFT" }, "preview");
     if (url) window.open(url, "_blank");
   };
 
+  const finish = (fn) => (...args) => { clearDraft("boq", quotation?.id); setDirty(false); return fn(...args); };
+
   return (
     <div className="p-4 sm:p-8 pb-32 space-y-4">
-      <button onClick={onCancel} className="flex items-center gap-1.5 text-sm dia-text-bronze font-medium">
+      <button onClick={() => {
+        if (dirty && !window.confirm("Leave without saving? Your changes are kept as a draft.")) return;
+        onCancel();
+      }} className="flex items-center gap-1.5 text-sm dia-text-bronze font-medium">
         <ArrowLeft size={15} /> Back to quotations
       </button>
+
+      {draft && (
+        <DraftBanner savedAt={draft.savedAt}
+          onRestore={() => { setForm(draft.form); setDraft(null); setDirty(true); }}
+          onDiscard={() => { clearDraft("boq", quotation?.id); setDraft(null); }} />
+      )}
 
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2">
         <div>
@@ -4172,7 +4242,7 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
             className="flex items-center gap-1.5 px-3 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40">
             <Eye size={15} /> <span className="hidden sm:inline">Preview</span>
           </button>
-          <button onClick={() => onSave(payload())} disabled={errors.length > 0 || saving}
+          <button onClick={() => finish(onSave)(payload())} disabled={errors.length > 0 || saving}
             className="flex items-center gap-1.5 dia-btn-gold px-4 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
             <Check size={15} /> {saving ? "Saving…" : quotation ? "Save" : "Create BOQ"}
           </button>
@@ -4774,6 +4844,25 @@ function ArchitectHome({ data, currentUser, setView }) {
   );
 }
 
+/* Offers a new deploy without taking the decision away. Sits at the foot of
+   the screen until it's accepted or dismissed. */
+function UpdateBanner() {
+  const [apply, setApply] = useState(null);
+  useEffect(() => {
+    const onUpdate = (e) => setApply(() => e.detail.apply);
+    window.addEventListener("dia:update-available", onUpdate);
+    return () => window.removeEventListener("dia:update-available", onUpdate);
+  }, []);
+  if (!apply) return null;
+  return (
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-stone-900 text-white px-4 py-2.5 rounded-xl shadow-xl">
+      <span className="text-sm">A new version is ready.</span>
+      <button onClick={() => apply()} className="dia-btn-gold text-xs font-semibold px-3 py-1.5 rounded-lg">Reload</button>
+      <button onClick={() => setApply(null)} className="text-xs text-stone-400 hover:text-white">Later</button>
+    </div>
+  );
+}
+
 /* ---------------------------------------------------------------------- */
 /* Main App                                                                 */
 /* ---------------------------------------------------------------------- */
@@ -4837,6 +4926,9 @@ function ErrorScreen({ message, onRetry, onLogout }) {
 
 export default function App() {
   const [session, setSession] = useState(undefined); // undefined = still checking, null = signed out
+  /* Which user we've already loaded data for, so a repeat SIGNED_IN on tab
+     focus doesn't tear the workspace down and rebuild it. */
+  const signedInUserRef = useRef(null);
   const [profile, setProfile] = useState(null);
   const [data, setData] = useState(null);
   const [view, setView] = useState({ tab: "dashboard" });
@@ -4865,7 +4957,12 @@ export default function App() {
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session: s } }) => {
       setSession(s);
-      if (s) loadProfileAndData(s.user.id); else setLoading(false);
+      if (s) {
+        signedInUserRef.current = s.user.id;
+        loadProfileAndData(s.user.id);
+      } else {
+        setLoading(false);
+      }
     });
     // Supabase fires this on more than just sign-in/out — it also fires
     // silently on token refresh (roughly hourly, and sometimes when the
@@ -4875,11 +4972,19 @@ export default function App() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, s) => {
       setSession(s);
       if (event === "SIGNED_OUT" || !s) {
+        signedInUserRef.current = null;
         setProfile(null); setData(null); setLoading(false);
         return;
       }
       if (event === "SIGNED_IN") {
-        loadProfileAndData(s.user.id);
+        /* Supabase re-fires SIGNED_IN when a tab regains focus and the session
+           is re-validated — coming back from a PDF preview, for instance.
+           Reloading on those would wipe `data` and reset whatever screen the
+           person was on, so only a genuinely different user reloads. */
+        if (signedInUserRef.current !== s.user.id) {
+          signedInUserRef.current = s.user.id;
+          loadProfileAndData(s.user.id);
+        }
       }
       // TOKEN_REFRESHED / USER_UPDATED / etc: session is kept current above,
       // but we deliberately don't touch `data` or `view` here.
@@ -5004,6 +5109,7 @@ export default function App() {
   return (
     <div className="font-body min-h-screen bg-stone-50 flex">
       <style>{FONT_STYLE}</style>
+      <UpdateBanner />
       <Sidebar user={currentUser} view={view} setView={setView} onLogout={handleLogout} pendingCount={pendingCount}
         mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
       <div className="flex-1 min-w-0">
