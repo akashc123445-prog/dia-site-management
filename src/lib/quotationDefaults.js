@@ -402,6 +402,7 @@ export function blankBOQ(project) {
     extraChargePct: BOQ_EXTRA_CHARGE_PCT,
     concession: 0,
     concessionLabel: "Concession",
+    pageOptions: { summaryBreak: "auto" },
     exclusions: BOQ_EXCLUSIONS,
     paymentStages: BOQ_PAYMENT_TEMPLATE,
     showPaymentTerms: true,

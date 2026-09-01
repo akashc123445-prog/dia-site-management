@@ -114,6 +114,7 @@ const mapQuotation = (r) => ({
   showPaymentTerms: r.show_payment_terms !== false,
   concession: Number(r.discount) || 0,
   concessionLabel: r.concession_label || "Concession",
+  pageOptions: r.page_options || {},
   status: r.status, notes: r.notes, createdBy: r.created_by,
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
@@ -547,6 +548,7 @@ const quotationPayload = (q) => ({
   line_items: q.lineItems || [],
   discount: q.docType === "boq" ? Number(q.concession) || 0 : Number(q.discount) || 0,
   concession_label: q.concessionLabel || null,
+  page_options: q.pageOptions || {},
   work_terms: q.workTerms || [],
   material_specs: q.materialSpecs || [],
   boq_sections: q.boqSections || [],

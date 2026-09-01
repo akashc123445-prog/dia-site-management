@@ -87,12 +87,16 @@ function drawChrome(doc, pageNo, title) {
 function makeCtx(doc, title) {
   const ctx = {
     doc, y: M.top, page: 1, title,
-    need(h) { if (this.y + h > PAGE.h - M.bottom) this.newPage(); },
+    /* top and bottom are read by the page-break logic, so they live on the
+       context rather than being recomputed inline. */
+    top: M.top,
+    bottom: PAGE.h - M.bottom,
+    need(h) { if (this.y + h > this.bottom) this.newPage(); },
     newPage() {
       this.doc.addPage("a3", "portrait");
       this.page += 1;
       drawChrome(this.doc, this.page, this.title);
-      this.y = M.top;
+      this.y = this.top;
     },
   };
   registerBrandFonts(doc);
@@ -269,6 +273,23 @@ function summaryRow(ctx, label, value, emphasis) {
   ctx.y += h;
 }
 
+/* Height the exclusions block will take, so the tail can be reserved whole. */
+function bulletBlockHeight(doc, items, columns = 2) {
+  const gutter = 26;
+  const colW = (CONTENT_W - gutter * (columns - 1)) / columns;
+  const perCol = Math.ceil(items.length / columns);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6.8);
+  let deepest = 0;
+  for (let c = 0; c < columns; c++) {
+    const slice = items.slice(c * perCol, (c + 1) * perCol);
+    let h = 0;
+    slice.forEach((t) => { h += doc.splitTextToSize(String(t), colW - 14).length * 9; });
+    deepest = Math.max(deepest, h);
+  }
+  return 11 + deepest + 8;
+}
+
 function bulletBlock(ctx, heading, items, opts = {}) {
   const { doc } = ctx;
   const columns = opts.columns || 1;
@@ -433,6 +454,9 @@ export function generateBOQPdf(q, mode = "save") {
   let lastGroup = null;
   let headed = false;
   (q.boqSections || []).forEach((section, si) => {
+    /* A section marked to start on a new page does so, unless it already
+       happens to be sitting at the top of a fresh page. */
+    if (section.pageBreak && ctx.y > ctx.top) { ctx.newPage(); lastGroup = null; headed = false; }
     const group = (section.group || "").trim();
     if (group && group !== lastGroup) {
       groupBand(ctx, group);
@@ -447,6 +471,28 @@ export function generateBOQPdf(q, mode = "save") {
   });
 
   /* ---- totals ---- */
+  /* Measured and reserved as one block: three rows that break across a page
+     boundary read as an error, and a stray "Grand Total" on its own sheet is
+     worse still. */
+  const summaryRows = 1 + (Number(q.extraChargePct) > 0 ? 1 : 0) + (totals.concession > 0 ? 1 : 0);
+  const summaryH = summaryRows * 21 + 24 + 12;
+  const summaryBreak = (q.pageOptions && q.pageOptions.summaryBreak) || "auto";
+
+  /* The closing matter — totals, exclusions, payment terms and the sign-off —
+     is measured as one unit. Either it all follows the last section or it all
+     moves to a fresh page; splitting it leaves a page holding nothing but a
+     payment table, which is what this avoids. */
+  const exclusionsPreview = (q.exclusions || []).filter(Boolean);
+  const stagesPreview = q.showPaymentTerms === false ? [] : (q.paymentStages || []);
+  const tailH = summaryH + 18
+    + (exclusionsPreview.length ? bulletBlockHeight(doc, exclusionsPreview) : 0)
+    + Math.max(stagesPreview.length ? 10 + 15 + stagesPreview.length * 14 + 17 + 8 : 0, 90)
+    + 20;
+
+  if (summaryBreak === "new-page" && ctx.y > ctx.top) ctx.newPage();
+  else if (ctx.y + tailH > ctx.bottom && tailH < ctx.bottom - ctx.top) ctx.newPage();
+  else ctx.need(summaryH);
+
   ctx.y += 4;
   summaryRow(ctx, "Sub Total", totals.subtotal);
   if (Number(q.extraChargePct) > 0) {
