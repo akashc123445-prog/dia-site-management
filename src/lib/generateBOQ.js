@@ -410,6 +410,9 @@ function paymentTable(ctx, stages, grand) {
   ctx.y += totalH + 8;
 }
 
+/* mode: "save" downloads, "preview" returns a blob URL, "measure" lays the
+   document out and returns which page every section starts on without
+   producing a file. */
 export function generateBOQPdf(q, mode = "save") {
   const doc = new jsPDF({ unit: "pt", format: "a3", orientation: "portrait" });
   const title = `BOQ for ${q.clientName || ""}${q.location ? ", " + q.location : ""}`;
@@ -451,6 +454,10 @@ export function generateBOQPdf(q, mode = "save") {
   }
 
   /* ---- sections ---- */
+  /* Which page each section starts on. Collected during the real layout pass
+     rather than estimated, so the editor's page map can't drift from the PDF. */
+  const layout = { sections: [], tailPage: 1, pages: 1 };
+
   let lastGroup = null;
   let headed = false;
   (q.boqSections || []).forEach((section, si) => {
@@ -465,6 +472,7 @@ export function generateBOQPdf(q, mode = "save") {
     }
     if (!headed) { tableHead(ctx); headed = true; }
 
+    layout.sections.push({ index: si, title: section.title || "", page: ctx.page, pageBreak: !!section.pageBreak });
     sectionBand(ctx, sectionCode(si), section.title || "");
     (section.items || []).forEach((item, ii) => itemRow(ctx, item, ii));
     sectionTotalRow(ctx, sectionCode(si), boqSectionTotal(section));
@@ -493,6 +501,7 @@ export function generateBOQPdf(q, mode = "save") {
   else if (ctx.y + tailH > ctx.bottom && tailH < ctx.bottom - ctx.top) ctx.newPage();
   else ctx.need(summaryH);
 
+  layout.tailPage = ctx.page;
   ctx.y += 4;
   summaryRow(ctx, "Sub Total", totals.subtotal);
   if (Number(q.extraChargePct) > 0) {
@@ -548,8 +557,11 @@ export function generateBOQPdf(q, mode = "save") {
   if (q.signatoryTitle) { doc.text(q.signatoryTitle, sx, sigY); sigY += 10; }
   ctx.y = Math.max(ctx.y, sigY);
 
+  layout.pages = ctx.page;
+
   const safe = (v) => String(v || "").replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim();
   const filename = `BOQ ${safe(q.quotationNo)} - ${safe(q.clientName) || "Client"}.pdf`;
+  if (mode === "measure") return layout;
   if (mode === "preview") return doc.output("bloburl");
   doc.save(filename);
   return null;
