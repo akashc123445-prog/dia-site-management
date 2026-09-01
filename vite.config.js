@@ -15,7 +15,10 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: "autoUpdate",
+      /* "prompt", not "autoUpdate": an automatic update reloads the page the
+         moment a new deploy is found — which, if someone is mid-way through a
+         BOQ, throws their work away. The app now offers the update instead. */
+      registerType: "prompt",
       includeAssets: ["favicon.svg", "apple-touch-icon.png"],
       manifest: {
         name: "Dia Site Management",
