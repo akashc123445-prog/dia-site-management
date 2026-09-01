@@ -3707,7 +3707,7 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
     boqSections: sections
       .filter(s => String(s.title || "").trim() || (s.items || []).length)
       .map(s => ({
-        group: s.group || "", title: s.title || "", note: s.note || "",
+        group: s.group || "", title: s.title || "", note: s.note || "", pageBreak: !!s.pageBreak,
         items: (s.items || [])
           .filter(i => String(i.particulars || "").trim() || String(i.description || "").trim())
           .map(i => ({
@@ -3854,6 +3854,11 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
                   onChange={e => setSection(si, { group: e.target.value })} placeholder="Ground Floor" />
               </Field>
             </div>
+            <label className="flex items-center gap-2 -mt-1 mb-3 cursor-pointer">
+              <input type="checkbox" className="accent-current dia-text-bronze" checked={!!section.pageBreak}
+                onChange={e => setSection(si, { pageBreak: e.target.checked })} />
+              <span className="text-xs text-stone-600">Start this section on a new page</span>
+            </label>
 
             <div className="space-y-3">
               {(section.items || []).map((item, ii) => {
@@ -3973,6 +3978,15 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
             <div className="w-24 shrink-0" />
             <input type="number" className={`${inputCls} w-28 shrink-0 text-right`} value={form.concession || ""}
               onChange={e => set({ concession: e.target.value })} placeholder="0" />
+          </div>
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span className="text-xs text-stone-600">Totals block on the PDF</span>
+            <select className={`${inputCls} max-w-[220px]`}
+              value={(form.pageOptions && form.pageOptions.summaryBreak) || "auto"}
+              onChange={e => set({ pageOptions: { ...(form.pageOptions || {}), summaryBreak: e.target.value } })}>
+              <option value="auto">Follow the last section</option>
+              <option value="new-page">Always start a new page</option>
+            </select>
           </div>
           <div className="flex items-center justify-between pt-2 border-t dia-border-gold-soft">
             <span className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">Grand total</span>
