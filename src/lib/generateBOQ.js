@@ -35,7 +35,7 @@ const MAROON_DEEP = hexToRgb(DIA.maroonDeep);
 const CREAM = hexToRgb(DIA.cream);
 const CREAM_SOFT = hexToRgb(DIA.creamSoft);
 
-const rs = (n) => "Rs. " + Math.round(Number(n) || 0).toLocaleString("en-IN");
+const rs = (n) => (Number(n) < 0 ? "- Rs. " : "Rs. ") + Math.abs(Math.round(Number(n) || 0)).toLocaleString("en-IN");
 const num = (n) => (Number(n) || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 
 /* Column widths as fractions of the content width. */
@@ -452,6 +452,9 @@ export function generateBOQPdf(q, mode = "save") {
   if (Number(q.extraChargePct) > 0) {
     summaryRow(ctx, `${q.extraChargeLabel || "Additional charges"} (${q.extraChargePct}%)`, totals.extra);
   }
+  if (totals.concession > 0) {
+    summaryRow(ctx, `Less: ${q.concessionLabel || "Concession"}`, -totals.concession);
+  }
   summaryRow(ctx, "Grand Total", totals.grand, true);
   ctx.y += 18;
 
@@ -462,7 +465,7 @@ export function generateBOQPdf(q, mode = "save") {
   /* Reserve room for the payment table and the sign-off beside it in one go.
      Measuring first means the block never splits across a page and the
      signature can't anchor to a y position left behind on the previous one. */
-  const stages = q.paymentStages || [];
+  const stages = q.showPaymentTerms === false ? [] : (q.paymentStages || []);
   const payBlockH = stages.length ? 10 + 15 + stages.length * 14 + 17 + 8 : 0;
   ctx.need(Math.max(payBlockH, 90));
   const payTop = ctx.y;

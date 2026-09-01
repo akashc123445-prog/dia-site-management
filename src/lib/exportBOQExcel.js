@@ -68,6 +68,9 @@ export function exportBOQExcel(q) {
   if (Number(q.extraChargePct) > 0) {
     push("", "", "", "", "", "", "", `${q.extraChargeLabel || "Additional charges"} (${q.extraChargePct}%)`, totals.extra);
   }
+  if (totals.concession > 0) {
+    push("", "", "", "", "", "", "", `Less: ${q.concessionLabel || "Concession"}`, -totals.concession);
+  }
   push("", "", "", "", "", "", "", "GRAND TOTAL", totals.grand);
 
   const exclusions = (q.exclusions || []).filter(Boolean);
@@ -77,7 +80,7 @@ export function exportBOQExcel(q) {
     exclusions.forEach((t) => push("", t));
   }
 
-  const stages = q.paymentStages || [];
+  const stages = q.showPaymentTerms === false ? [] : (q.paymentStages || []);
   if (stages.length) {
     const amounts = computeStageAmounts(totals.grand, stages);
     push("");

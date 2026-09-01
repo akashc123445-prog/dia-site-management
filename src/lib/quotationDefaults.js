@@ -376,7 +376,10 @@ export function boqTotals(q) {
   const subtotal = sections.reduce((s, sec) => s + boqSectionTotal(sec), 0);
   const pct = Number(q.extraChargePct) || 0;
   const extra = Math.round((subtotal * pct) / 100);
-  return { subtotal, extra, grand: subtotal + extra };
+  /* A concession — a discount carried over from an earlier BOQ, say — comes
+     off after the handling charge, as it does on the firm's own sheets. */
+  const concession = Math.max(0, Math.round(Number(q.concession) || 0));
+  return { subtotal, extra, concession, grand: subtotal + extra - concession };
 }
 
 export function blankBOQ(project) {
@@ -397,8 +400,11 @@ export function blankBOQ(project) {
     ],
     extraChargeLabel: BOQ_EXTRA_CHARGE_LABEL,
     extraChargePct: BOQ_EXTRA_CHARGE_PCT,
+    concession: 0,
+    concessionLabel: "Concession",
     exclusions: BOQ_EXCLUSIONS,
     paymentStages: BOQ_PAYMENT_TEMPLATE,
+    showPaymentTerms: true,
     signatoryName: "",
     signatoryTitle: "",
     signatureUrl: "",

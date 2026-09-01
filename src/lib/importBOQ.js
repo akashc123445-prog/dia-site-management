@@ -68,9 +68,19 @@ function findHeader(row) {
   return hasDesc && hasMoney ? map : null;
 }
 
+/* A section belongs to a floor and, within it, sometimes an area band. Both
+   are kept so a workbook split by floor still reads correctly when merged. */
+const sectionGroup = (floor, band) =>
+  [floor, band].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).join(" — ");
+
 const SECTION_LETTER = /^[A-Z]{1,2}$/;
 const TOTAL_ROW = /^total\b/i;
-const GROUP_HINT = /(floor|basement|mezzanine|terrace|area|specification|services|block|level)/i;
+/* Matches a floor or area band, not a section. Deliberately specific: a bare
+   "FLOORING" is a section of work, whereas "GROUND FLOOR" is a band, and a
+   loose /floor/ test can't tell them apart. */
+const FLOOR_HINT = /((ground|first|second|third|fourth|upper|lower|top)\s+floor|basement|mezzanine|terrace)/i;
+
+const GROUP_HINT = /((ground|first|second|third|fourth|upper|lower|top)\s+floor|basement|mezzanine|terrace|\barea\b|\blevel\b|boq\s*specification)/i;
 
 /* Rows that carry one piece of text and no numbers are either a floor band, a
    section title, or one of the tail headings. A trailing note in the remarks
@@ -84,19 +94,32 @@ function loneText(row, remarksIdx) {
   return row.some((c) => toNumber(c) > 0) ? null : filled[0];
 }
 
+/* A BOQ workbook is often split a sheet per floor, with a summary sheet
+   carrying the payment terms and any concession. Every sheet is parsed and
+   the caller decides which to bring in. */
 export function parseBOQWorkbook(data) {
   const wb = XLSX.read(data, { type: "array" });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: true });
+  const sheets = wb.SheetNames.map((name) => {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: null, blankrows: true });
+    const parsed = parseSheet(rows);
+    parsed.name = name;
+    parsed.itemCount = parsed.sections.reduce((n, sec) => n + sec.items.length, 0);
+    return parsed;
+  });
+  return { sheets, sheetNames: wb.SheetNames };
+}
 
+function parseSheet(rows) {
   const result = {
     materialSpecs: [], sections: [], exclusions: [], paymentStages: [],
     extraChargeLabel: "", extraChargePct: 0,
-    warnings: [], sheetName: wb.SheetNames[0],
+    concession: 0, concessionLabel: "", sheetGrandTotal: 0,
+    warnings: [],
   };
 
   let cols = null;
   let group = "";
+  let floor = "";
   let section = null;
   let mode = "head";          // head → table → tail
   let tail = null;            // 'exclusions' | 'payment'
@@ -198,6 +221,39 @@ export function parseBOQWorkbook(data) {
       }
     }
 
+    /* Summary sheets carry the money lines without any item table, so these
+       are matched before the header-row gate rather than inside it. */
+    const lastNumber = () => {
+      const nums = row.map(toNumber).filter((n) => n > 0);
+      return nums.length ? nums[nums.length - 1] : 0;
+    };
+
+    if (/transport|handling|deep clean|misc/i.test(joined)) {
+      const m = joined.match(/(\d+(?:\.\d+)?)\s*%/);
+      if (m) {
+        result.extraChargePct = Number(m[1]);
+        result.extraChargeLabel = joined.replace(/\(?\s*\d+(?:\.\d+)?\s*%\s*\)?/, "").replace(/[₹\d,]+\s*$/, "").trim();
+      }
+      continue;
+    }
+
+    /* A flat deduction — a concession carried over from an earlier BOQ. */
+    if (/concession|deduction|rebate|waiver|^less\b/i.test(joined) && !/^total/i.test(joined)) {
+      const amt = lastNumber();
+      if (amt > 0) {
+        result.concession = amt;
+        result.concessionLabel = (row.map(txt).find((c) => c && !/^[\d.,%₹\s]+$/.test(c)) || "Concession").trim();
+        continue;
+      }
+    }
+
+    /* The sheet's own grand total, kept only to check our arithmetic against. */
+    if (/^grand total/i.test(joined)) {
+      const amt = lastNumber();
+      if (amt > 0) result.sheetGrandTotal = amt;
+      continue;
+    }
+
     /* ---- material specifications, before the table starts ---- */
     if (mode === "head") {
       const header = findHeader(row);
@@ -205,6 +261,13 @@ export function parseBOQWorkbook(data) {
       const t = single || joined;
       if (/^material specification/i.test(t)) {
         splitLines(single || "").slice(1).forEach((l) => result.materialSpecs.push(l));
+        continue;
+      }
+      if (/^boq\s*specification/i.test(t)) {
+        /* "BOQ SPECIFICATION - GROUND FLOOR" names the floor for everything
+           that follows, and it sits above the header row. */
+        const m = t.match(/^boq\s*specification\s*[-–:]\s*(.+)$/i);
+        if (m) floor = m[1].trim();
         continue;
       }
       if (/^boq\b|^bill of quantit/i.test(t)) continue;
@@ -217,15 +280,6 @@ export function parseBOQWorkbook(data) {
     /* ---- inside the table ---- */
     if (findHeader(row)) continue;                       // repeated header on later pages
 
-    /* transportation / handling percentage line */
-    if (/transport|handling|deep clean|misc/i.test(joined)) {
-      const m = joined.match(/(\d+(?:\.\d+)?)\s*%/);
-      if (m) {
-        result.extraChargePct = Number(m[1]);
-        result.extraChargeLabel = joined.replace(/\(?\s*\d+(?:\.\d+)?\s*%\s*\)?/, "").replace(/[₹\d,]+\s*$/, "").trim();
-      }
-      continue;
-    }
 
     if (TOTAL_ROW.test(joined) || /^grand total/i.test(joined)) {
       /* Only a section's own total counts. The running totals further down
@@ -249,26 +303,29 @@ export function parseBOQWorkbook(data) {
     if (SECTION_LETTER.test(snoCell) && rate === 0 && amount === 0) {
       closeSection();
       const title = row.map(txt).filter(Boolean).slice(1).join(" ") || "Untitled section";
-      section = { group, title, items: [] };
+      section = { group: sectionGroup(floor, group), title, items: [] };
       continue;
     }
 
     /* A lone line of text is either a floor band or an unlettered section. */
     if (single && rate === 0 && amount === 0 && qtyRaw === 0) {
       if (GROUP_HINT.test(single)) {
-        /* "BOQ Specification - Ground Floor" → keep only the meaningful part */
-        group = single.replace(/^boq\s*specification\s*[-–]?\s*/i, "").trim();
+        const label = single.replace(/^boq\s*specification\s*[-–:]?\s*/i, "").trim();
         closeSection();
+        /* A floor replaces the floor and clears the band beneath it; anything
+           else is an area band sitting inside the current floor. */
+        if (FLOOR_HINT.test(label)) { floor = label; group = ""; }
+        else group = label;
       } else {
         closeSection();
-        section = { group, title: single, items: [] };
+        section = { group: sectionGroup(floor, group), title: single, items: [] };
       }
       continue;
     }
 
     /* Otherwise it should be a priced line. */
     if (particulars || description) {
-      if (!section) section = { group, title: "Imported items", items: [] };
+      if (!section) section = { group: sectionGroup(floor, group), title: "Imported items", items: [] };
       const length = toNumber(row[cols.length]);
       const height = toNumber(row[cols.height]);
       /* The sheet's own qty is kept only when it isn't simply length x height,
@@ -316,6 +373,20 @@ export function parseBOQWorkbook(data) {
       `"${m.title}" adds up to ${m.computed.toLocaleString("en-IN")} but the sheet's total says ${m.sheet.toLocaleString("en-IN")} — a difference of ${Math.abs(diff).toLocaleString("en-IN")}. The line items were used.`
     );
   });
+
+  if (result.sheetGrandTotal > 0 && result.sections.length) {
+    const sub = result.sections.reduce((t, sec) => t + sec.items.reduce((n, it) => {
+      const q = it.length > 0 && it.height > 0 ? it.length * it.height : it.qty;
+      const a = Number(it.amount);
+      return n + (Number.isFinite(a) && a > 0 ? a : q * it.rate);
+    }, 0), 0);
+    const expected = Math.round(sub * (1 + (result.extraChargePct || 0) / 100) - (result.concession || 0));
+    if (Math.abs(expected - result.sheetGrandTotal) > 1) {
+      result.warnings.push(
+        `The sheet's grand total reads ${Math.round(result.sheetGrandTotal).toLocaleString("en-IN")}, but its own line items come to ${expected.toLocaleString("en-IN")} — a difference of ${Math.abs(expected - Math.round(result.sheetGrandTotal)).toLocaleString("en-IN")}. Worth checking the workbook's SUM ranges.`
+      );
+    }
+  }
 
   const pct = result.paymentStages.reduce((s, p) => s + p.percentage, 0);
   if (result.paymentStages.length && Math.abs(pct - 100) > 0.01) {
