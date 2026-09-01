@@ -3651,6 +3651,77 @@ function BOQImportPanel({ onApply }) {
   );
 }
 
+/* Shows how the BOQ actually paginates and lets a break be set against it.
+   The page numbers come from laying the document out with the real generator,
+   so what's shown here is what prints — no second estimate to drift. */
+function BOQPageMap({ form, payload, onToggleBreak }) {
+  const [layout, setLayout] = useState(null);
+  const [error, setError] = useState("");
+
+  /* Re-measuring runs the whole layout, so it's debounced rather than run on
+     every keystroke. */
+  useEffect(() => {
+    const id = setTimeout(() => {
+      try {
+        setLayout(generateBOQPdf(payload(), "measure"));
+        setError("");
+      } catch (err) {
+        setError(err.message || "Couldn't work out the page layout.");
+      }
+    }, 400);
+    return () => clearTimeout(id);
+  }, [form.boqSections, form.materialSpecs, form.exclusions, form.paymentStages,
+      form.showPaymentTerms, form.pageOptions, form.extraChargePct, form.concession]);
+
+  if (error) return <p className="text-xs text-rose-600 flex items-center gap-1.5"><AlertCircle size={13} /> {error}</p>;
+  if (!layout) return <p className="text-xs text-stone-400">Working out the page layout…</p>;
+
+  const pages = [];
+  for (let p = 1; p <= layout.pages; p++) {
+    pages.push({
+      number: p,
+      sections: layout.sections.filter(s => s.page === p),
+      hasTail: layout.tailPage === p,
+    });
+  }
+
+  return (
+    <>
+      <p className="text-xs text-stone-500 mb-3">
+        {layout.pages} A3 page{layout.pages !== 1 ? "s" : ""}. Click a section to start it on a new page, or click again to let it flow.
+      </p>
+      <div className="space-y-2">
+        {pages.map(page => (
+          <div key={page.number} className="border border-stone-200 rounded-xl overflow-hidden">
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-stone-50 border-b border-stone-100">
+              <span className="text-[10px] uppercase tracking-wide text-stone-500 font-semibold">Page {page.number}</span>
+              {page.hasTail && <span className="text-[10px] dia-text-bronze font-semibold">· totals & terms</span>}
+              {page.sections.length === 0 && !page.hasTail && <span className="text-[10px] text-stone-400">continued</span>}
+            </div>
+            <div className="p-2 flex flex-wrap gap-1.5">
+              {page.sections.length === 0 && (
+                <span className="text-xs text-stone-400 px-1.5 py-1">Continuation of the previous page</span>
+              )}
+              {page.sections.map(sec => (
+                <button key={sec.index} type="button" onClick={() => onToggleBreak(sec.index)}
+                  title={sec.pageBreak ? "Starts a new page — click to let it flow" : "Click to start this section on a new page"}
+                  className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border transition-colors ${
+                    sec.pageBreak
+                      ? "dia-btn-gold dia-border-gold font-semibold"
+                      : "border-stone-200 text-stone-600 hover:dia-border-gold hover:dia-text-bronze"}`}>
+                  <span className="font-mono text-[10px] opacity-60">{sectionCode(sec.index)}</span>
+                  <span className="truncate max-w-[220px]">{sec.title || "Untitled"}</span>
+                  {sec.pageBreak && <span className="text-[10px]">↵ break</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 /* Bill of Quantities: sections of priced line items, used when a client moves
    past design into turnkey execution. */
 function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, lastSignature, actions }) {
@@ -4040,6 +4111,15 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
             className="text-sm text-stone-500 hover:text-stone-800">Reset to standard stages</button>
         </div>
         </>)}
+      </QSection>
+
+      <QSection title="Page layout" subtitle="Where each section falls on the printed A3 sheets" defaultOpen={false}>
+        <BOQPageMap form={form} payload={payload}
+          onToggleBreak={(i) => {
+            const next = [...sections];
+            next[i] = { ...next[i], pageBreak: !next[i].pageBreak };
+            set({ boqSections: next });
+          }} />
       </QSection>
 
       <QSection title="Exclusions" subtitle="Work not covered by this BOQ — one per line" defaultOpen={false}>
