@@ -3512,25 +3512,59 @@ function BoqLibraryPicker({ library, onPick, onClose, onSaveItem, actions }) {
 function BOQImportPanel({ onApply }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [preview, setPreview] = useState(null);
-  const [mode, setMode] = useState("replace");   // replace | append
+  const [parsed, setParsed] = useState(null);      // { sheets, fileName }
+  const [chosen, setChosen] = useState({});        // sheet name → included
+  const [mode, setMode] = useState("replace");     // replace | append
 
   const pick = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    setBusy(true); setError(""); setPreview(null);
+    setBusy(true); setError(""); setParsed(null);
     try {
-      const parsed = await parseBOQFile(file);
-      setPreview({ ...parsed, fileName: file.name });
+      const result = await parseBOQFile(file);
+      setParsed({ ...result, fileName: file.name });
+      /* Every sheet is on by default: a workbook split by floor needs all of
+         them, and a summary sheet with no items still carries the payment
+         terms and any concession. */
+      setChosen(Object.fromEntries(result.sheets.map(sh => [sh.name, true])));
     } catch (err) {
       setError(err.message || "That file couldn't be read. Save it as .xlsx or .csv and try again.");
     }
     setBusy(false);
   };
 
-  const itemCount = (preview?.sections || []).reduce((s, sec) => s + sec.items.length, 0);
-  const total = preview ? boqTotals({ boqSections: preview.sections, extraChargePct: preview.extraChargePct }) : null;
+  const sheets = parsed?.sheets || [];
+  const selected = sheets.filter(sh => chosen[sh.name]);
+
+  /* Merge the chosen sheets: sections stack in sheet order, and the header and
+     tail details are taken from the first sheet that actually supplies them. */
+  const merged = () => {
+    const multi = selected.filter(sh => sh.sections.length).length > 1;
+    const sections = [];
+    selected.forEach(sh => sh.sections.forEach(sec => sections.push({
+      ...sec,
+      group: sec.group || (multi ? sh.name : ""),
+    })));
+    const firstWith = (key) => selected.find(sh => (sh[key] || []).length)?.[key] || [];
+    const withPct = selected.find(sh => sh.extraChargePct > 0);
+    const withConcession = selected.find(sh => sh.concession > 0);
+    return {
+      sections,
+      materialSpecs: firstWith("materialSpecs"),
+      exclusions: firstWith("exclusions"),
+      paymentStages: firstWith("paymentStages"),
+      extraChargePct: withPct?.extraChargePct || 0,
+      extraChargeLabel: withPct?.extraChargeLabel || "",
+      concession: withConcession?.concession || 0,
+      concessionLabel: withConcession?.concessionLabel || "",
+      warnings: selected.flatMap(sh => sh.warnings.map(w => sh.name + ": " + w)),
+    };
+  };
+
+  const view = parsed ? merged() : null;
+  const itemCount = view ? view.sections.reduce((n, sec) => n + sec.items.length, 0) : 0;
+  const totals = view ? boqTotals({ boqSections: view.sections, extraChargePct: view.extraChargePct, concession: view.concession }) : null;
 
   return (
     <>
@@ -3539,21 +3573,41 @@ function BOQImportPanel({ onApply }) {
           <Upload size={15} /> {busy ? "Reading…" : "Choose a BOQ spreadsheet"}
           <input type="file" accept=".xlsx,.xls,.csv" hidden onChange={pick} disabled={busy} />
         </label>
-        <p className="text-xs text-stone-500">Excel or CSV. The sheet needs a header row naming Particulars, Description and a rate column.</p>
+        <p className="text-xs text-stone-500">Excel or CSV. Every sheet is read — pick which ones to bring in.</p>
       </div>
       {error && <p className="text-xs text-rose-600 mt-2 flex items-center gap-1.5"><AlertCircle size={13} /> {error}</p>}
 
-      {preview && (
+      {parsed && (
         <div className="mt-4 border dia-border-gold-soft rounded-xl overflow-hidden">
           <div className="dia-bg-cream-soft px-4 py-3">
-            <div className="text-sm font-semibold text-stone-800">{preview.fileName}</div>
+            <div className="text-sm font-semibold text-stone-800">{parsed.fileName}</div>
             <div className="text-xs text-stone-600 mt-0.5">
-              {preview.sections.length} section{preview.sections.length !== 1 ? "s" : ""} · {itemCount} line item{itemCount !== 1 ? "s" : ""} · {fmtINR(total.grand)} grand total
+              {view.sections.length} section{view.sections.length !== 1 ? "s" : ""} · {itemCount} line item{itemCount !== 1 ? "s" : ""} · {fmtINR(totals.grand)} grand total
             </div>
           </div>
 
-          <div className="px-4 py-3 max-h-64 overflow-y-auto space-y-1.5">
-            {preview.sections.map((sec, i) => (
+          {sheets.length > 1 && (
+            <div className="px-4 py-3 border-b border-stone-100 space-y-1.5">
+              <div className="text-[10px] uppercase tracking-wide text-stone-400 font-semibold mb-1">Sheets in this workbook</div>
+              {sheets.map(sh => (
+                <label key={sh.name} className="flex items-center gap-2.5 cursor-pointer">
+                  <input type="checkbox" className="accent-current dia-text-bronze" checked={!!chosen[sh.name]}
+                    onChange={e => setChosen(c => ({ ...c, [sh.name]: e.target.checked }))} />
+                  <span className="text-xs text-stone-700 flex-1 truncate">{sh.name}</span>
+                  <span className="text-[11px] text-stone-500 shrink-0">
+                    {sh.itemCount > 0
+                      ? `${sh.sections.length} sections · ${sh.itemCount} items`
+                      : sh.paymentStages.length || sh.concession
+                        ? "summary only — terms & concession"
+                        : "nothing found"}
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+
+          <div className="px-4 py-3 max-h-56 overflow-y-auto space-y-1.5">
+            {view.sections.map((sec, i) => (
               <div key={i} className="flex items-center justify-between gap-3 text-xs">
                 <span className="text-stone-700 truncate">
                   <span className="font-mono text-stone-400 mr-1.5">{sectionCode(i)}</span>
@@ -3565,9 +3619,9 @@ function BOQImportPanel({ onApply }) {
             ))}
           </div>
 
-          {preview.warnings.length > 0 && (
-            <div className="px-4 py-2.5 bg-amber-50 border-t border-amber-100">
-              {preview.warnings.map((w, i) => (
+          {view.warnings.length > 0 && (
+            <div className="px-4 py-2.5 bg-amber-50 border-t border-amber-100 space-y-1">
+              {view.warnings.map((w, i) => (
                 <p key={i} className="text-xs text-amber-800 flex items-start gap-1.5"><AlertCircle size={12} className="mt-0.5 shrink-0" /> {w}</p>
               ))}
             </div>
@@ -3583,10 +3637,11 @@ function BOQImportPanel({ onApply }) {
                 </button>
               ))}
             </div>
-            <button type="button" onClick={() => setPreview(null)}
+            <button type="button" onClick={() => setParsed(null)}
               className="px-3 py-1.5 text-xs font-semibold text-stone-500 hover:text-stone-800">Discard</button>
-            <button type="button" onClick={() => { onApply(preview, mode); setPreview(null); }}
-              className="dia-btn-gold px-4 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5">
+            <button type="button" disabled={!view.sections.length}
+              onClick={() => { onApply(view, mode); setParsed(null); }}
+              className="dia-btn-gold px-4 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40">
               <Check size={13} /> Import
             </button>
           </div>
@@ -3638,8 +3693,11 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
   if (!String(form.clientName || "").trim()) errors.push("Client name is required.");
   if (!sections.some(s => (s.items || []).some(i => String(i.particulars || "").trim()))) errors.push("Add at least one line item.");
   if (totals.grand <= 0) errors.push("The BOQ total must be greater than zero.");
+  const showPayment = form.showPaymentTerms !== false;
   const pctTotal = (form.paymentStages || []).reduce((s, st) => s + (Number(st.percentage) || 0), 0);
-  if (Math.abs(pctTotal - 100) > 0.01) errors.push(`Payment stages add up to ${pctTotal}% — they must total 100%.`);
+  if (showPayment && Math.abs(pctTotal - 100) > 0.01) {
+    errors.push(`Payment stages add up to ${pctTotal}% — they must total 100%.`);
+  }
 
   const payload = () => ({
     ...form,
@@ -3689,6 +3747,10 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
     if (parsed.extraChargePct) {
       patch.extraChargePct = parsed.extraChargePct;
       if (parsed.extraChargeLabel) patch.extraChargeLabel = parsed.extraChargeLabel;
+    }
+    if (parsed.concession) {
+      patch.concession = parsed.concession;
+      if (parsed.concessionLabel) patch.concessionLabel = parsed.concessionLabel;
     }
     set(patch);
   };
@@ -3905,6 +3967,13 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
             </div>
             <span className="font-semibold text-stone-900 w-28 text-right shrink-0">{fmtINR(totals.extra)}</span>
           </div>
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <input className={`${inputCls} flex-1 text-xs`} value={form.concessionLabel || ""}
+              onChange={e => set({ concessionLabel: e.target.value })} placeholder="Less: concession (leave blank if none)" />
+            <div className="w-24 shrink-0" />
+            <input type="number" className={`${inputCls} w-28 shrink-0 text-right`} value={form.concession || ""}
+              onChange={e => set({ concession: e.target.value })} placeholder="0" />
+          </div>
           <div className="flex items-center justify-between pt-2 border-t dia-border-gold-soft">
             <span className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">Grand total</span>
             <span className="font-display text-2xl font-semibold text-stone-900">{fmtINR(totals.grand)}</span>
@@ -3912,10 +3981,23 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
           <p className="text-xs text-stone-600 italic">{amountInWords(totals.grand)}</p>
         </div>
 
+        <label className="flex items-start gap-2.5 mb-3 cursor-pointer">
+          <input type="checkbox" className="mt-0.5 accent-current dia-text-bronze" checked={showPayment}
+            onChange={e => set({ showPaymentTerms: e.target.checked })} />
+          <span>
+            <span className="text-sm font-semibold text-stone-800">Print payment terms on this BOQ</span>
+            <span className="block text-xs text-stone-500">
+              Turn off to send a pure schedule of rates. The stages below stay saved, they just don't appear in the PDF or the Excel.
+            </span>
+          </span>
+        </label>
+
+        {showPayment && (
         <div className="text-xs font-semibold text-stone-600 mb-2 flex items-center gap-2">
           Payment stages
           <span className={`text-[10px] px-2 py-0.5 rounded-full ${Math.abs(pctTotal - 100) < 0.01 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>{pctTotal}%</span>
-        </div>
+        </div>)}
+        {showPayment && (<>
         <div className="space-y-2">
           {(form.paymentStages || []).map((st, i) => (
             <div key={i} className="grid grid-cols-12 gap-2 items-center">
@@ -3943,6 +4025,7 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
           <button type="button" onClick={() => set({ paymentStages: BOQ_PAYMENT_TEMPLATE })}
             className="text-sm text-stone-500 hover:text-stone-800">Reset to standard stages</button>
         </div>
+        </>)}
       </QSection>
 
       <QSection title="Exclusions" subtitle="Work not covered by this BOQ — one per line" defaultOpen={false}>
