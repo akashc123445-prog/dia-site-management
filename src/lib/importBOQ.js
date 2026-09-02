@@ -232,7 +232,14 @@ function parseSheet(rows) {
       const m = joined.match(/(\d+(?:\.\d+)?)\s*%/);
       if (m) {
         result.extraChargePct = Number(m[1]);
-        result.extraChargeLabel = joined.replace(/\(?\s*\d+(?:\.\d+)?\s*%\s*\)?/, "").replace(/[₹\d,]+\s*$/, "").trim();
+        /* The row's cells are joined for matching, so the label picks up the
+           amount alongside it — "… MISC CHARGES ₹ 235819." Strip the
+           percentage, then any trailing currency figure and its punctuation. */
+        result.extraChargeLabel = joined
+          .replace(/\(?\s*\d+(?:\.\d+)?\s*%\s*\)?/, "")
+          .replace(/[₹\s]*[\d,]+(?:\.\d+)?\s*[.,]?\s*$/, "")
+          .replace(/[\s,.:;-]+$/, "")
+          .trim();
       }
       continue;
     }
