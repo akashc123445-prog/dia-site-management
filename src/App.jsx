@@ -45,7 +45,7 @@ import { parseBOQFile } from "./lib/importBOQ";
 import {
   QUOTATION_STATUSES, QUOTATION_SERVICE_LINES, QUOTATION_SCOPE_TEMPLATE, QUOTATION_PAYMENT_TEMPLATE,
   QUOTATION_SIGNATORY, WORK_QUOTE_TERMS, WORK_QUOTE_UNITS,
-  BOQ_MATERIAL_SPECS, BOQ_EXCLUSIONS, BOQ_PAYMENT_TEMPLATE, BOQ_UNITS,
+  BOQ_MATERIAL_SPECS, BOQ_EXCLUSIONS, BOQ_PAYMENT_TEMPLATE, BOQ_UNITS, BOQ_GST_NOTES,
   blankQuotation, blankWorkQuote, blankBOQ, computeStageAmounts, amountInWords,
   boqItemQty, boqItemAmount, boqItemIsOverridden, boqSectionTotal, boqTotals, sectionCode,
 } from "./lib/quotationDefaults";
@@ -3833,6 +3833,11 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
   if (!sections.some(s => (s.items || []).some(i => String(i.particulars || "").trim()))) errors.push("Add at least one line item.");
   if (totals.grand <= 0) errors.push("The BOQ total must be greater than zero.");
   const showPayment = form.showPaymentTerms !== false;
+  const gstNoteText = String(form.gstNote || "").trim();
+  const gstMode = !gstNoteText ? "none"
+    : gstNoteText === BOQ_GST_NOTES.exclusive ? "exclusive"
+    : gstNoteText === BOQ_GST_NOTES.inclusive ? "inclusive"
+    : "custom";
   const pctTotal = (form.paymentStages || []).reduce((s, st) => s + (Number(st.percentage) || 0), 0);
   if (showPayment && Math.abs(pctTotal - 100) > 0.01) {
     errors.push(`Payment stages add up to ${pctTotal}% — they must total 100%.`);
@@ -4141,6 +4146,31 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
             <span className="font-display text-2xl font-semibold text-stone-900">{fmtINR(totals.grand)}</span>
           </div>
           <p className="text-xs text-stone-600 italic">{amountInWords(totals.grand)}</p>
+
+          {/* Whether the quoted figure carries GST — printed under the grand
+              total on both the PDF and the spreadsheet. */}
+          <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+            <div className="w-[230px]">
+              <select className={inputCls} value={gstMode}
+                onChange={e => {
+                  const v = e.target.value;
+                  if (v === "exclusive") set({ gstNote: BOQ_GST_NOTES.exclusive });
+                  else if (v === "inclusive") set({ gstNote: BOQ_GST_NOTES.inclusive });
+                  else if (v === "none") set({ gstNote: "" });
+                  else set({ gstNote: form.gstNote || "GST " });
+                }}>
+                <option value="exclusive">Rates exclude GST</option>
+                <option value="inclusive">Rates include GST</option>
+                <option value="custom">Custom wording…</option>
+                <option value="none">Print no GST note</option>
+              </select>
+            </div>
+          </div>
+          {gstMode === "custom" && (
+            <input className={`${inputCls} text-xs`} value={form.gstNote || ""}
+              onChange={e => set({ gstNote: e.target.value })}
+              placeholder="e.g. GST at 18% extra as applicable." />
+          )}
         </div>
 
         <label className="flex items-start gap-2.5 mb-3 cursor-pointer">
