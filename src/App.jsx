@@ -3401,6 +3401,18 @@ function WorkQuoteEditor({ quotation, data, currentUser, onSave, onCancel, savin
           </div>
           <p className="text-xs text-stone-600 italic">{amountInWords(totals.grand)}</p>
         </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <span className="text-xs text-stone-600">Where the totals block sits on the PDF</span>
+          <div className="w-[220px]">
+            <select className={inputCls}
+              value={(form.pageOptions && form.pageOptions.summaryBreak) || "auto"}
+              onChange={e => set({ pageOptions: { ...(form.pageOptions || {}), summaryBreak: e.target.value } })}>
+              <option value="auto">Follow the last section</option>
+              <option value="new-page">Always start a new page</option>
+            </select>
+          </div>
+        </div>
       </QSection>
 
       <QSection title="Terms & conditions" defaultOpen={false}>
@@ -4104,7 +4116,7 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
             <span className="font-semibold text-stone-900">{fmtINR(totals.subtotal)}</span>
           </div>
           <div className="flex items-center justify-between gap-3 text-sm">
-            <input className={`${inputCls} flex-1 text-xs`} value={form.extraChargeLabel || ""}
+            <input className={`${inputCls} flex-1 min-w-0 text-xs`} value={form.extraChargeLabel || ""}
               onChange={e => set({ extraChargeLabel: e.target.value })} />
             <div className="relative w-24 shrink-0">
               <input type="number" step="0.1" className={`${inputCls} pr-6 text-right`} value={form.extraChargePct ?? ""}
@@ -4113,21 +4125,16 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
             </div>
             <span className="font-semibold text-stone-900 w-28 text-right shrink-0">{fmtINR(totals.extra)}</span>
           </div>
+          {/* Width classes have to sit on a wrapper: inputCls carries w-full,
+              which wins over a w-28 on the input itself and stretches the row. */}
           <div className="flex items-center justify-between gap-3 text-sm">
-            <input className={`${inputCls} flex-1 text-xs`} value={form.concessionLabel || ""}
-              onChange={e => set({ concessionLabel: e.target.value })} placeholder="Less: concession (leave blank if none)" />
+            <input className={`${inputCls} flex-1 min-w-0 text-xs`} value={form.concessionLabel || ""}
+              onChange={e => set({ concessionLabel: e.target.value })} placeholder="Less: concession (optional)" />
             <div className="w-24 shrink-0" />
-            <input type="number" className={`${inputCls} w-28 shrink-0 text-right`} value={form.concession || ""}
-              onChange={e => set({ concession: e.target.value })} placeholder="0" />
-          </div>
-          <div className="flex items-center justify-between gap-3 text-sm">
-            <span className="text-xs text-stone-600">Totals block on the PDF</span>
-            <select className={`${inputCls} max-w-[220px]`}
-              value={(form.pageOptions && form.pageOptions.summaryBreak) || "auto"}
-              onChange={e => set({ pageOptions: { ...(form.pageOptions || {}), summaryBreak: e.target.value } })}>
-              <option value="auto">Follow the last section</option>
-              <option value="new-page">Always start a new page</option>
-            </select>
+            <div className="w-28 shrink-0">
+              <input type="number" className={`${inputCls} text-right`} value={form.concession || ""}
+                onChange={e => set({ concession: e.target.value })} placeholder="0" />
+            </div>
           </div>
           <div className="flex items-center justify-between pt-2 border-t dia-border-gold-soft">
             <span className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">Grand total</span>
