@@ -324,6 +324,13 @@ export const BOQ_PAYMENT_TEMPLATE = [
   { stage: "4", milestone: "Project completion", percentage: 5 },
 ];
 
+/* Whether the quoted rates carry GST. Printed under the grand total, because
+   "is this with or without GST" is the first thing a client asks. */
+export const BOQ_GST_NOTES = {
+  exclusive: "GST extra as applicable.",
+  inclusive: "Rates are inclusive of GST.",
+};
+
 export const BOQ_UNITS = ["Sq.ft.", "Rft", "Nos.", "LS", "S.ft.", "Kg", "Set", "Job"];
 
 export const BOQ_EXTRA_CHARGE_LABEL =
@@ -403,6 +410,7 @@ export function blankBOQ(project) {
     concession: 0,
     concessionLabel: "Concession",
     pageOptions: { summaryBreak: "auto" },
+    gstNote: BOQ_GST_NOTES.exclusive,
     exclusions: BOQ_EXCLUSIONS,
     paymentStages: BOQ_PAYMENT_TEMPLATE,
     showPaymentTerms: true,

@@ -72,6 +72,7 @@ export function exportBOQExcel(q) {
     push("", "", "", "", "", "", "", `Less: ${q.concessionLabel || "Concession"}`, -totals.concession);
   }
   push("", "", "", "", "", "", "", "GRAND TOTAL", totals.grand);
+  if (String(q.gstNote || "").trim()) push("", "", "", "", "", "", "", "", String(q.gstNote).trim());
 
   const exclusions = (q.exclusions || []).filter(Boolean);
   if (exclusions.length) {

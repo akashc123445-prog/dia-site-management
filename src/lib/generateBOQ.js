@@ -511,6 +511,14 @@ export function generateBOQPdf(q, mode = "save") {
     summaryRow(ctx, `Less: ${q.concessionLabel || "Concession"}`, -totals.concession);
   }
   summaryRow(ctx, "Grand Total", totals.grand, true);
+
+  if (String(q.gstNote || "").trim()) {
+    ctx.y += 11;
+    doc.setFont(TRAJAN, "normal");
+    doc.setFontSize(7.2);
+    doc.setTextColor(...GREY);
+    doc.text(String(q.gstNote).trim(), PAGE.w - M.right - 4, ctx.y, { align: "right" });
+  }
   ctx.y += 18;
 
   /* ---- exclusions and payment terms ---- */
