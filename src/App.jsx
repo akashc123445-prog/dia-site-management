@@ -9,7 +9,7 @@ import {
   ChevronLeft, Download, Search, ArrowLeft, Image as ImageIcon, IndianRupee,
   TrendingUp, Clock, CheckCircle2, XCircle, Filter, FileSpreadsheet, Eye, EyeOff, Pencil,
   PenTool, ListChecks, Paperclip, FileText, AlertCircle, Trash2, Store, Landmark, Upload,
-  ChevronDown, Copy
+  ChevronDown, Copy, Calculator
 } from "lucide-react";
 
 import { supabase } from "./lib/supabaseClient";
@@ -4901,6 +4901,311 @@ function UpdateBanner() {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Floating calculator                                                      */
+/* ---------------------------------------------------------------------- */
+
+/* Conversions the studio actually needs: drawings come in feet and inches,
+   client sheets in metres, and rates get quoted per sq.ft here but per sq.m
+   by some vendors. Every factor converts to the group's base unit. */
+const CONVERSIONS = {
+  Length: {
+    base: "m",
+    units: { "mm": 0.001, "cm": 0.01, "m": 1, "inch": 0.0254, "feet": 0.3048, "yard": 0.9144 },
+  },
+  Area: {
+    base: "sq.m",
+    units: { "sq.ft": 0.09290304, "sq.m": 1, "sq.yd": 0.83612736, "sq.inch": 0.00064516, "cent": 40.4686, "acre": 4046.86 },
+  },
+  "Rate per area": {
+    base: "Rs/sq.m",
+    units: { "Rs/sq.ft": 10.7639104, "Rs/sq.m": 1, "Rs/sq.yd": 1.19599 },
+  },
+  Weight: {
+    base: "kg",
+    units: { "g": 0.001, "kg": 1, "quintal": 100, "tonne": 1000, "lb": 0.45359237 },
+  },
+};
+
+const GST_RATES = [5, 12, 18, 28];
+
+const fmtNum = (n) => {
+  if (!Number.isFinite(n)) return "—";
+  const r = Math.round(n * 10000) / 10000;
+  return r.toLocaleString("en-IN", { maximumFractionDigits: 4 });
+};
+
+function CalcKeys({ onKey }) {
+  const keys = [
+    ["C", "⌫", "%", "÷"],
+    ["7", "8", "9", "×"],
+    ["4", "5", "6", "−"],
+    ["1", "2", "3", "+"],
+    ["0", ".", "="],
+  ];
+  return (
+    <div className="grid grid-cols-4 gap-1.5">
+      {keys.flat().map((k) => {
+        const isOp = ["÷", "×", "−", "+", "%"].includes(k);
+        const isEq = k === "=";
+        const isClear = k === "C" || k === "⌫";
+        return (
+          <button key={k} type="button" onClick={() => onKey(k)}
+            className={`py-2.5 rounded-lg text-sm font-semibold transition-colors ${
+              isEq ? "col-span-2 dia-btn-gold"
+                : isOp ? "dia-bg-cream-soft dia-text-bronze hover:brightness-95"
+                : isClear ? "bg-stone-100 text-stone-600 hover:bg-stone-200"
+                : "bg-white border border-stone-200 text-stone-800 hover:dia-border-gold"}`}>
+            {k}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function FloatingCalculator() {
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState("calc");
+
+  /* --- basic calculator --- */
+  const [display, setDisplay] = useState("0");
+  const [stored, setStored] = useState(null);
+  const [op, setOp] = useState(null);
+  const [fresh, setFresh] = useState(true);   // next digit starts a new number
+
+  const apply = (a, b, o) => {
+    switch (o) {
+      case "+": return a + b;
+      case "−": return a - b;
+      case "×": return a * b;
+      case "÷": return b === 0 ? NaN : a / b;
+      default: return b;
+    }
+  };
+
+  const press = (k) => {
+    const current = parseFloat(display.replace(/,/g, "")) || 0;
+    if (/^[0-9]$/.test(k)) {
+      setDisplay(fresh || display === "0" ? k : display + k);
+      setFresh(false);
+      return;
+    }
+    if (k === ".") {
+      if (fresh) { setDisplay("0."); setFresh(false); }
+      else if (!display.includes(".")) setDisplay(display + ".");
+      return;
+    }
+    if (k === "C") { setDisplay("0"); setStored(null); setOp(null); setFresh(true); return; }
+    if (k === "⌫") {
+      const next = display.length > 1 ? display.slice(0, -1) : "0";
+      setDisplay(next === "-" ? "0" : next);
+      return;
+    }
+    if (k === "%") {
+      /* Reads the way people expect: 200 + 10% is 220, not 200.1 */
+      const pct = op === "+" || op === "−" ? (stored || 0) * current / 100 : current / 100;
+      setDisplay(String(pct));
+      setFresh(true);
+      return;
+    }
+    if (["+", "−", "×", "÷"].includes(k)) {
+      if (op !== null && !fresh) {
+        const result = apply(stored, current, op);
+        setStored(result);
+        setDisplay(String(result));
+      } else {
+        setStored(current);
+      }
+      setOp(k);
+      setFresh(true);
+      return;
+    }
+    if (k === "=") {
+      if (op === null) return;
+      const result = apply(stored, current, op);
+      setDisplay(String(result));
+      setStored(null); setOp(null); setFresh(true);
+    }
+  };
+
+  /* keyboard, while the panel is open */
+  useEffect(() => {
+    if (!open || tab !== "calc") return;
+    const onKey = (e) => {
+      const map = { "*": "×", "x": "×", "/": "÷", "-": "−", "Enter": "=", "Backspace": "⌫", "Escape": "C" };
+      const k = map[e.key] || e.key;
+      if (/^[0-9.]$/.test(k) || ["+", "−", "×", "÷", "=", "⌫", "C", "%"].includes(k)) {
+        e.preventDefault();
+        press(k);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  /* --- GST --- */
+  const [gstAmount, setGstAmount] = useState("");
+  const [gstRate, setGstRate] = useState(18);
+  const [gstMode, setGstMode] = useState("add");
+  const gstBase = Number(gstAmount) || 0;
+  const gstValue = gstMode === "add"
+    ? gstBase * gstRate / 100
+    : gstBase - gstBase * 100 / (100 + gstRate);
+  const gstNet = gstMode === "add" ? gstBase : gstBase - gstValue;
+  const gstGross = gstMode === "add" ? gstBase + gstValue : gstBase;
+
+  /* --- percentages --- */
+  const [pctA, setPctA] = useState("");
+  const [pctB, setPctB] = useState("");
+
+  /* --- units --- */
+  const [group, setGroup] = useState("Area");
+  const [fromUnit, setFromUnit] = useState("sq.ft");
+  const [toUnit, setToUnit] = useState("sq.m");
+  const [amount, setAmount] = useState("");
+  const units = CONVERSIONS[group].units;
+  const converted = (Number(amount) || 0) * units[fromUnit] / units[toUnit];
+
+  const switchGroup = (g) => {
+    const keys = Object.keys(CONVERSIONS[g].units);
+    setGroup(g); setFromUnit(keys[0]); setToUnit(keys[1] || keys[0]);
+  };
+
+  const copy = (value) => {
+    try { navigator.clipboard.writeText(String(value)); } catch { /* clipboard blocked */ }
+  };
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} title="Calculator"
+        className="fixed bottom-20 right-5 z-40 w-12 h-12 rounded-full dia-btn-gold shadow-lg flex items-center justify-center hover:scale-105 transition-transform">
+        <Calculator size={20} />
+      </button>
+    );
+  }
+
+  const Row = ({ label, value, strong }) => (
+    <div className="flex items-center justify-between gap-3 py-1">
+      <span className="text-xs text-stone-500">{label}</span>
+      <button type="button" onClick={() => copy(value)} title="Copy"
+        className={`tabular-nums text-right hover:dia-text-bronze ${strong ? "font-display text-lg font-semibold text-stone-900" : "text-sm text-stone-800"}`}>
+        {fmtNum(value)}
+      </button>
+    </div>
+  );
+
+  return (
+    <div className="fixed bottom-20 right-5 z-40 w-[330px] max-w-[calc(100vw-2.5rem)] bg-white rounded-2xl shadow-2xl border dia-border-gold-soft overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2.5 dia-bg-cream-soft border-b dia-border-gold-soft">
+        <span className="font-display text-sm font-semibold dia-text-bronze">Calculator</span>
+        <button type="button" onClick={() => setOpen(false)} className="text-stone-400 hover:text-stone-700">
+          <X size={16} />
+        </button>
+      </div>
+
+      <div className="flex border-b border-stone-100">
+        {[["calc", "Basic"], ["gst", "GST & %"], ["units", "Units"]].map(([k, label]) => (
+          <button key={k} type="button" onClick={() => setTab(k)}
+            className={`flex-1 py-2 text-xs font-semibold transition-colors ${
+              tab === k ? "dia-text-bronze border-b-2 dia-border-gold" : "text-stone-400 hover:text-stone-600"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="p-3.5">
+        {tab === "calc" && (
+          <>
+            <div className="dia-bg-cream-soft rounded-xl px-3 py-3 mb-3 text-right">
+              <div className="text-[10px] text-stone-500 h-3">{stored !== null && op ? `${fmtNum(stored)} ${op}` : ""}</div>
+              <button type="button" onClick={() => copy(display)} title="Copy"
+                className="font-display text-2xl font-semibold text-stone-900 tabular-nums truncate w-full text-right">
+                {fmtNum(parseFloat(display))}
+              </button>
+            </div>
+            <CalcKeys onKey={press} />
+          </>
+        )}
+
+        {tab === "gst" && (
+          <div className="space-y-3">
+            <div className="flex gap-1.5">
+              {[["add", "Add GST"], ["extract", "Remove GST"]].map(([v, label]) => (
+                <button key={v} type="button" onClick={() => setGstMode(v)}
+                  className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                    gstMode === v ? "dia-btn-gold dia-border-gold" : "border-stone-200 text-stone-600 hover:bg-stone-50"}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <input type="number" className={inputCls} value={gstAmount} onChange={e => setGstAmount(e.target.value)}
+              placeholder={gstMode === "add" ? "Amount before GST" : "Amount including GST"} />
+            <div className="flex gap-1.5">
+              {GST_RATES.map(r => (
+                <button key={r} type="button" onClick={() => setGstRate(r)}
+                  className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                    gstRate === r ? "dia-btn-gold dia-border-gold" : "border-stone-200 text-stone-600 hover:bg-stone-50"}`}>
+                  {r}%
+                </button>
+              ))}
+            </div>
+            <div className="dia-bg-cream-soft rounded-xl px-3 py-2">
+              <Row label="Taxable value" value={gstNet} />
+              <Row label={`GST at ${gstRate}%`} value={gstValue} />
+              <Row label="Total" value={gstGross} strong />
+            </div>
+
+            <div className="pt-1 border-t border-stone-100">
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <input type="number" className={inputCls} value={pctA} onChange={e => setPctA(e.target.value)} placeholder="A" />
+                <input type="number" className={inputCls} value={pctB} onChange={e => setPctB(e.target.value)} placeholder="B" />
+              </div>
+              <div className="dia-bg-cream-soft rounded-xl px-3 py-2">
+                <Row label="A% of B" value={(Number(pctA) || 0) * (Number(pctB) || 0) / 100} />
+                <Row label="A is what % of B" value={(Number(pctA) || 0) / (Number(pctB) || 1) * 100} />
+                <Row label="Change A → B" value={((Number(pctB) || 0) - (Number(pctA) || 0)) / (Number(pctA) || 1) * 100} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "units" && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-1.5">
+              {Object.keys(CONVERSIONS).map(g => (
+                <button key={g} type="button" onClick={() => switchGroup(g)}
+                  className={`py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                    group === g ? "dia-btn-gold dia-border-gold" : "border-stone-200 text-stone-600 hover:bg-stone-50"}`}>
+                  {g}
+                </button>
+              ))}
+            </div>
+            <input type="number" className={inputCls} value={amount} onChange={e => setAmount(e.target.value)} placeholder="Value" />
+            <div className="flex items-center gap-2">
+              <select className={inputCls} value={fromUnit} onChange={e => setFromUnit(e.target.value)}>
+                {Object.keys(units).map(u => <option key={u}>{u}</option>)}
+              </select>
+              <button type="button" title="Swap"
+                onClick={() => { const f = fromUnit; setFromUnit(toUnit); setToUnit(f); }}
+                className="shrink-0 p-2 rounded-lg border border-stone-200 text-stone-500 hover:dia-text-bronze hover:dia-border-gold">
+                <ArrowLeft size={14} className="rotate-180" />
+              </button>
+              <select className={inputCls} value={toUnit} onChange={e => setToUnit(e.target.value)}>
+                {Object.keys(units).map(u => <option key={u}>{u}</option>)}
+              </select>
+            </div>
+            <div className="dia-bg-cream-soft rounded-xl px-3 py-2.5">
+              <Row label={`${fmtNum(Number(amount) || 0)} ${fromUnit} =`} value={converted} strong />
+              <p className="text-[10px] text-stone-500 mt-1">Tap any figure to copy it.</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Main App                                                                 */
 /* ---------------------------------------------------------------------- */
 
@@ -5147,6 +5452,7 @@ export default function App() {
     <div className="font-body min-h-screen bg-stone-50 flex">
       <style>{FONT_STYLE}</style>
       <UpdateBanner />
+      <FloatingCalculator />
       <Sidebar user={currentUser} view={view} setView={setView} onLogout={handleLogout} pendingCount={pendingCount}
         mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
       <div className="flex-1 min-w-0">
