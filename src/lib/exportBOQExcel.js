@@ -71,8 +71,13 @@ export function exportBOQExcel(q) {
   if (totals.concession > 0) {
     push("", "", "", "", "", "", "", `Less: ${q.concessionLabel || "Concession"}`, -totals.concession);
   }
-  push("", "", "", "", "", "", "", "GRAND TOTAL", totals.grand);
-  if (String(q.gstNote || "").trim()) push("", "", "", "", "", "", "", "", String(q.gstNote).trim());
+  push("", "", "", "", "", "", "", totals.gstRate > 0 ? "TOTAL" : "GRAND TOTAL", totals.grand);
+  if (totals.gstRate > 0) {
+    push("", "", "", "", "", "", "", `GST @ ${totals.gstRate}%`, totals.gstAmount);
+    push("", "", "", "", "", "", "", "GRAND TOTAL (INCLUDING GST)", totals.payable);
+  } else if (String(q.gstNote || "").trim()) {
+    push("", "", "", "", "", "", "", "", String(q.gstNote).trim());
+  }
 
   const exclusions = (q.exclusions || []).filter(Boolean);
   if (exclusions.length) {
@@ -83,7 +88,7 @@ export function exportBOQExcel(q) {
 
   const stages = q.showPaymentTerms === false ? [] : (q.paymentStages || []);
   if (stages.length) {
-    const amounts = computeStageAmounts(totals.grand, stages);
+    const amounts = computeStageAmounts(totals.payable, stages);
     push("");
     push("PAYMENT TERMS");
     push("S.No.", "Stage", "Percentage", "Amount");

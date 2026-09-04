@@ -386,7 +386,19 @@ export function boqTotals(q) {
   /* A concession — a discount carried over from an earlier BOQ, say — comes
      off after the handling charge, as it does on the firm's own sheets. */
   const concession = Math.max(0, Math.round(Number(q.concession) || 0));
-  return { subtotal, extra, concession, grand: subtotal + extra - concession };
+  const grand = subtotal + extra - concession;
+
+  /* GST is calculated on the grand total when a rate is set. A rate of zero
+     leaves the BOQ exactly as it was — quoted before tax, with a footnote. */
+  const gstRate = Number(q.gstRate) || 0;
+  const gstAmount = gstRate > 0 ? Math.round((grand * gstRate) / 100) : 0;
+
+  return {
+    subtotal, extra, concession, grand,
+    gstRate, gstAmount,
+    /* what the client actually pays, and what the payment stages divide */
+    payable: grand + gstAmount,
+  };
 }
 
 export function blankBOQ(project) {
@@ -409,6 +421,7 @@ export function blankBOQ(project) {
     extraChargePct: BOQ_EXTRA_CHARGE_PCT,
     concession: 0,
     concessionLabel: "Concession",
+    gstRate: 0,
     pageOptions: { summaryBreak: "auto" },
     gstNote: BOQ_GST_NOTES.exclusive,
     exclusions: BOQ_EXCLUSIONS,
