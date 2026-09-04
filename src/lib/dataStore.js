@@ -87,6 +87,35 @@ const mapVendor = (r) => ({
   bankIfsc: r.bank_ifsc, bankName: r.bank_name, createdAt: r.created_at,
 });
 
+const mapSchedule = (r) => ({
+  id: r.id, projectId: r.project_id, quotationId: r.quotation_id,
+  clientName: r.client_name, projectTitle: r.project_title, location: r.location,
+  title: r.title, subject: r.subject, date: r.date, projectStart: r.project_start,
+  handover: r.handover,
+  intro: r.intro || [], closing: r.closing || [],
+  welcomeHeading: r.welcome_heading, welcomeParas: r.welcome_paras || [],
+  nextSteps: r.next_steps || [],
+  includeWelcome: r.include_welcome !== false, includeGantt: r.include_gantt !== false,
+  tasks: r.tasks || [],
+  signatoryName: r.signatory_name, signatoryTitle: r.signatory_title,
+  signatureUrl: r.signature_url || "",
+  status: r.status, notes: r.notes,
+  createdAt: r.created_at, updatedAt: r.updated_at,
+});
+
+const mapFeedPost = (r) => ({
+  id: r.id, projectId: r.project_id, authorId: r.author_id,
+  kind: r.kind || "update", severity: r.severity || "info",
+  body: r.body, status: r.status || "open",
+  resolvedBy: r.resolved_by, resolvedAt: r.resolved_at,
+  createdAt: r.created_at, updatedAt: r.updated_at,
+});
+
+const mapFeedComment = (r) => ({
+  id: r.id, postId: r.post_id, authorId: r.author_id,
+  body: r.body, createdAt: r.created_at,
+});
+
 const mapBoqLibraryItem = (r) => ({
   id: r.id, particulars: r.particulars, description: r.description,
   unit: r.unit, rate: Number(r.rate) || 0, category: r.category,
@@ -115,6 +144,7 @@ const mapQuotation = (r) => ({
   concession: Number(r.discount) || 0,
   concessionLabel: r.concession_label || "Concession",
   pageOptions: r.page_options || {},
+  gstRate: Number(r.gst_rate) || 0,
   status: r.status, notes: r.notes, createdBy: r.created_by,
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
@@ -137,7 +167,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -155,6 +185,10 @@ export async function fetchAllData() {
       // empty (not an error) for architects and supervisors.
       supabase.from("quotations").select("*").order("created_at", { ascending: false }),
       supabase.from("boq_library").select("*").order("times_used", { ascending: false }),
+      // The feed is readable by every role, so it loads for everyone.
+      supabase.from("feed_posts").select("*").order("created_at", { ascending: false }).limit(400),
+      supabase.from("feed_comments").select("*").order("created_at", { ascending: true }),
+      supabase.from("schedules").select("*").order("created_at", { ascending: false }),
     ]);
 
   const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw };
@@ -173,6 +207,14 @@ export async function fetchAllData() {
     // eslint-disable-next-line no-console
     console.warn("BOQ library unavailable:", boqLibraryRaw.error.message);
   }
+  if (schedulesRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("Schedules unavailable:", schedulesRaw.error.message);
+  }
+  if (feedPostsRaw.error || feedCommentsRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("Feed unavailable:", (feedPostsRaw.error || feedCommentsRaw.error).message);
+  }
 
   return {
     users: (profiles.data || []).map(mapUser),
@@ -188,6 +230,9 @@ export async function fetchAllData() {
     siteVisits: (siteVisitsRaw.data || []).map(mapSiteVisit),
     quotations: (quotationsRaw.data || []).map(mapQuotation),
     boqLibrary: (boqLibraryRaw.data || []).map(mapBoqLibraryItem),
+    schedules: (schedulesRaw.data || []).map(mapSchedule),
+    feedPosts: (feedPostsRaw.data || []).map(mapFeedPost),
+    feedComments: (feedCommentsRaw.data || []).map(mapFeedComment),
   };
 }
 
@@ -549,6 +594,7 @@ const quotationPayload = (q) => ({
   discount: q.docType === "boq" ? Number(q.concession) || 0 : Number(q.discount) || 0,
   concession_label: q.concessionLabel || null,
   page_options: q.pageOptions || {},
+  gst_rate: Number(q.gstRate) || 0,
   work_terms: q.workTerms || [],
   material_specs: q.materialSpecs || [],
   boq_sections: q.boqSections || [],
@@ -590,6 +636,98 @@ export async function dbDeleteQuotation(id) {
    the usual way a revised price goes out to the same client. */
 export async function dbDuplicateQuotation(source, createdBy) {
   return dbAddQuotation({ ...source, quotationNo: "", status: "Draft" }, createdBy);
+}
+
+/* ---- project schedules --------------------------------------------------- */
+
+const schedulePayload = (s) => ({
+  project_id: s.projectId || null,
+  quotation_id: s.quotationId || null,
+  client_name: s.clientName,
+  project_title: s.projectTitle,
+  location: s.location,
+  title: s.title || "Site Work Schedule",
+  subject: s.subject,
+  date: s.date,
+  project_start: s.projectStart || null,
+  handover: s.handover,
+  intro: s.intro || [],
+  closing: s.closing || [],
+  welcome_heading: s.welcomeHeading,
+  welcome_paras: s.welcomeParas || [],
+  next_steps: s.nextSteps || [],
+  include_welcome: s.includeWelcome !== false,
+  include_gantt: s.includeGantt !== false,
+  tasks: s.tasks || [],
+  signatory_name: s.signatoryName,
+  signatory_title: s.signatoryTitle,
+  signature_url: s.signatureUrl || null,
+  status: s.status || "Draft",
+  notes: s.notes,
+});
+
+export async function dbAddSchedule(s, createdBy) {
+  const { data, error } = await supabase.from("schedules")
+    .insert({ ...schedulePayload(s), created_by: createdBy }).select().single();
+  if (error) throw error;
+  return mapSchedule(data);
+}
+
+export async function dbUpdateSchedule(id, s) {
+  const { error } = await supabase.from("schedules").update(schedulePayload(s)).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteSchedule(id) {
+  const { error } = await supabase.from("schedules").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/* ---- project feed -------------------------------------------------------- */
+
+export async function dbAddFeedPost(post, authorId) {
+  const { data, error } = await supabase.from("feed_posts").insert({
+    project_id: post.projectId || null,
+    author_id: authorId,
+    kind: post.kind || "update",
+    severity: post.severity || "info",
+    body: post.body,
+  }).select().single();
+  if (error) throw error;
+  return mapFeedPost(data);
+}
+
+export async function dbUpdateFeedPost(id, patch) {
+  const { error } = await supabase.from("feed_posts").update(patch).eq("id", id);
+  if (error) throw error;
+}
+
+/* Anyone can clear a follow-up or approval — the person who closes it is
+   usually not the person who raised it. */
+export async function dbResolveFeedPost(id, resolverId, resolved) {
+  const { error } = await supabase.from("feed_posts").update({
+    status: resolved ? "resolved" : "open",
+    resolved_by: resolved ? resolverId : null,
+    resolved_at: resolved ? new Date().toISOString() : null,
+  }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteFeedPost(id) {
+  const { error } = await supabase.from("feed_posts").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbAddFeedComment(postId, body, authorId) {
+  const { data, error } = await supabase.from("feed_comments")
+    .insert({ post_id: postId, author_id: authorId, body }).select().single();
+  if (error) throw error;
+  return mapFeedComment(data);
+}
+
+export async function dbDeleteFeedComment(id) {
+  const { error } = await supabase.from("feed_comments").delete().eq("id", id);
+  if (error) throw error;
 }
 
 /* ---- BOQ item library --------------------------------------------------- */
