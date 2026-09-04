@@ -9,7 +9,7 @@ import {
   ChevronLeft, Download, Search, ArrowLeft, Image as ImageIcon, IndianRupee,
   TrendingUp, Clock, CheckCircle2, XCircle, Filter, FileSpreadsheet, Eye, EyeOff, Pencil,
   PenTool, ListChecks, Paperclip, FileText, AlertCircle, Trash2, Store, Landmark, Upload,
-  ChevronDown, Copy, Calculator
+  ChevronDown, Copy, Calculator, MessageSquare, CalendarDays
 } from "lucide-react";
 
 import { supabase } from "./lib/supabaseClient";
@@ -31,6 +31,8 @@ import {
   dbAddVendor, dbUpdateVendor, dbDeleteVendor,
   dbAddQuotation, dbUpdateQuotation, dbUpdateQuotationStatus, dbDeleteQuotation, dbDuplicateQuotation,
   dbAddBoqLibraryItem, dbUpdateBoqLibraryItem, dbDeleteBoqLibraryItem, dbTouchBoqLibraryItem,
+  dbAddFeedPost, dbUpdateFeedPost, dbResolveFeedPost, dbDeleteFeedPost, dbAddFeedComment, dbDeleteFeedComment,
+  dbAddSchedule, dbUpdateSchedule, dbDeleteSchedule,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
   dbMarkMaterialReceived, dbFulfillMaterialRequest,
   dbStartSiteVisit, dbEndSiteVisit,
@@ -42,6 +44,12 @@ import { generateWorkQuotePdf, workQuoteTotals, lineTotal } from "./lib/generate
 import { generateBOQPdf } from "./lib/generateBOQ";
 import { exportBOQExcel } from "./lib/exportBOQExcel";
 import { parseBOQFile } from "./lib/importBOQ";
+import { parseScheduleFile } from "./lib/importSchedule";
+import { generateSchedulePdf } from "./lib/generateSchedule";
+import {
+  SCHEDULE_STATUSES, SCHEDULE_TASK_TEMPLATE, TASK_STATUSES,
+  blankSchedule, computeSchedule, scheduleSpan, taskEnd, newTask,
+} from "./lib/scheduleDefaults";
 import {
   QUOTATION_STATUSES, QUOTATION_SERVICE_LINES, QUOTATION_SCOPE_TEMPLATE, QUOTATION_PAYMENT_TEMPLATE,
   QUOTATION_SIGNATORY, WORK_QUOTE_TERMS, WORK_QUOTE_UNITS,
@@ -288,28 +296,40 @@ function LoginScreen() {
 /* App Shell (Sidebar + Header)                                             */
 /* ---------------------------------------------------------------------- */
 
-function Sidebar({ user, view, setView, onLogout, pendingCount, mobileOpen, onCloseMobile }) {
+function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, mobileOpen, onCloseMobile }) {
+  /* The feed carries an open-item count so a pending approval is visible from
+     whatever screen someone is on. */
+  const feedItem = { key: "feed", label: "Team Feed", icon: MessageSquare, badge: openFeedCount };
+  const scheduleItem = { key: "schedules", label: "Schedules", icon: CalendarDays };
   const adminNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    feedItem,
     { key: "updates", label: "Updates", icon: ImageIcon },
     { key: "projects", label: "Projects", icon: Building2 },
     { key: "expenses", label: "Expenses", icon: Receipt, badge: pendingCount },
     { key: "quotations", label: "Quotations", icon: FileText },
+    scheduleItem,
     { key: "vendors", label: "Vendors", icon: Store },
     { key: "users", label: "Team", icon: Users },
   ];
   const accountsNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    feedItem,
     { key: "projects", label: "Projects", icon: Building2 },
     { key: "expenses", label: "Expenses", icon: Receipt, badge: pendingCount },
     { key: "quotations", label: "Quotations", icon: FileText },
+    scheduleItem,
     { key: "vendors", label: "Vendors", icon: Store },
   ];
   const supNav = [
     { key: "sup-home", label: "My Sites", icon: LayoutDashboard },
+    feedItem,
+    scheduleItem,
   ];
   const archNav = [
     { key: "arch-home", label: "My Design Work", icon: PenTool },
+    feedItem,
+    scheduleItem,
   ];
   const nav = user.role === "Admin" ? adminNav : user.role === "Accounts" ? accountsNav : user.role === "Architect" ? archNav : supNav;
 
@@ -3402,6 +3422,18 @@ function WorkQuoteEditor({ quotation, data, currentUser, onSave, onCancel, savin
           <p className="text-xs text-stone-600 italic">{amountInWords(totals.grand)}</p>
         </div>
 
+        <label className="flex items-start gap-2.5 mb-3 cursor-pointer">
+          <input type="checkbox" className="mt-0.5 accent-current dia-text-bronze"
+            checked={!(form.pageOptions && form.pageOptions.fillPages === false)}
+            onChange={e => set({ pageOptions: { ...(form.pageOptions || {}), fillPages: e.target.checked } })} />
+          <span>
+            <span className="text-sm font-semibold text-stone-800">Fill the pages</span>
+            <span className="block text-xs text-stone-500">
+              Every row in the document is given the same extra height — as much as fits without running onto another sheet — so the pages fill out and the rows stay a consistent size throughout.
+            </span>
+          </span>
+        </label>
+
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <span className="text-xs text-stone-600">Where the totals block sits on the PDF</span>
           <div className="w-[220px]">
@@ -4142,13 +4174,47 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
             </div>
           </div>
           <div className="flex items-center justify-between pt-2 border-t dia-border-gold-soft">
-            <span className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">Grand total</span>
-            <span className="font-display text-2xl font-semibold text-stone-900">{fmtINR(totals.grand)}</span>
+            <span className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">
+              {totals.gstRate > 0 ? "Total" : "Grand total"}
+            </span>
+            <span className={`font-display font-semibold text-stone-900 ${totals.gstRate > 0 ? "text-lg" : "text-2xl"}`}>
+              {fmtINR(totals.grand)}
+            </span>
           </div>
-          <p className="text-xs text-stone-600 italic">{amountInWords(totals.grand)}</p>
+
+          {/* GST as a calculated line rather than a footnote, for BOQs quoted
+              inclusive of tax. Zero leaves the document exactly as before. */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs text-stone-600">GST on this BOQ</span>
+            <div className="flex gap-1">
+              {[0, 5, 12, 18, 28].map(r => (
+                <button key={r} type="button" onClick={() => set({ gstRate: r })}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors ${
+                    (Number(form.gstRate) || 0) === r ? "dia-btn-gold dia-border-gold" : "border-stone-200 text-stone-600 hover:bg-stone-50"}`}>
+                  {r === 0 ? "None" : `${r}%`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {totals.gstRate > 0 && (
+            <>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-stone-600">GST @ {totals.gstRate}%</span>
+                <span className="font-semibold text-stone-900">{fmtINR(totals.gstAmount)}</span>
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t dia-border-gold-soft">
+                <span className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">Grand total (incl. GST)</span>
+                <span className="font-display text-2xl font-semibold text-stone-900">{fmtINR(totals.payable)}</span>
+              </div>
+            </>
+          )}
+
+          <p className="text-xs text-stone-600 italic">{amountInWords(totals.payable)}</p>
 
           {/* Whether the quoted figure carries GST — printed under the grand
               total on both the PDF and the spreadsheet. */}
+          {totals.gstRate === 0 && (
           <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
             <div className="w-[230px]">
               <select className={inputCls} value={gstMode}
@@ -4166,7 +4232,8 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
               </select>
             </div>
           </div>
-          {gstMode === "custom" && (
+          )}
+          {totals.gstRate === 0 && gstMode === "custom" && (
             <input className={`${inputCls} text-xs`} value={form.gstNote || ""}
               onChange={e => set({ gstNote: e.target.value })}
               placeholder="e.g. GST at 18% extra as applicable." />
@@ -4203,7 +4270,7 @@ function BOQEditor({ quotation, data, currentUser, onSave, onCancel, saving, las
                 <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-stone-400">%</span>
               </div>
               <div className="col-span-2 sm:col-span-2 text-sm font-semibold text-right tabular-nums">
-                {fmtINR(computeStageAmounts(totals.grand, form.paymentStages)[i])}
+                {fmtINR(computeStageAmounts(totals.payable, form.paymentStages)[i])}
               </div>
               <button type="button" onClick={() => set({ paymentStages: form.paymentStages.filter((_, x) => x !== i) })}
                 className="col-span-1 text-stone-300 hover:text-rose-600 flex justify-center"><Trash2 size={14} /></button>
@@ -4901,6 +4968,762 @@ function UpdateBanner() {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Project schedules                                                        */
+/* ---------------------------------------------------------------------- */
+
+/* An in-browser Gantt so dates can be judged by eye while they're edited,
+   rather than only after a PDF is generated. */
+function GanttPreview({ tasks }) {
+  const span = scheduleSpan(tasks);
+  if (!span) return <p className="text-xs text-stone-400">Add a start date to a task to see the timeline.</p>;
+
+  const from = Date.parse(span.from);
+  const pct = (iso) => ((Date.parse(iso) - from) / 86400000 / span.days) * 100;
+
+  const months = [];
+  const cursor = new Date(from);
+  cursor.setDate(1);
+  while (cursor.getTime() <= Date.parse(span.to)) {
+    const iso = cursor.toISOString().slice(0, 10);
+    if (Date.parse(iso) >= from) {
+      months.push({ iso, label: cursor.toLocaleDateString("en-IN", { month: "short", year: "2-digit" }) });
+    }
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+
+  return (
+    <div className="border border-stone-200 rounded-xl overflow-hidden">
+      <div className="flex text-[10px] text-stone-400 border-b border-stone-100 bg-stone-50">
+        <div className="w-44 shrink-0 px-3 py-1.5 font-semibold">{span.days} days</div>
+        <div className="relative flex-1 py-1.5">
+          {months.map(m => (
+            <span key={m.iso} className="absolute top-1.5" style={{ left: `${pct(m.iso)}%` }}>{m.label}</span>
+          ))}
+        </div>
+      </div>
+      <div className="max-h-72 overflow-y-auto">
+        {tasks.map((t, i) => {
+          const style = TASK_STATUSES[t.status] || TASK_STATUSES.not_started;
+          const left = t.start ? pct(t.start) : 0;
+          const width = t.start ? Math.max(1.2, pct(taskEnd(t)) - left) : 0;
+          return (
+            <div key={t.id} className={`flex items-center ${i % 2 ? "bg-stone-50/60" : ""}`}>
+              <div className={`w-44 shrink-0 px-3 py-1.5 text-[11px] truncate ${t.parentId ? "pl-6 text-stone-500" : "font-semibold text-stone-700"}`}
+                title={t.name}>{t.name || "Untitled"}</div>
+              <div className="relative flex-1 h-6">
+                {t.start && (
+                  <div className="absolute top-1.5 h-3 rounded-full" title={`${fmtDate(t.start)} → ${fmtDate(taskEnd(t))}`}
+                    style={{ left: `${left}%`, width: `${width}%`, background: style.bar }} />
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ScheduleEditor({ schedule, data, currentUser, onSave, onCancel, saving, lastSignature }) {
+  const [form, setForm] = useState(() => schedule ? { ...schedule } : blankSchedule(null));
+  const [importError, setImportError] = useState("");
+  const [importPreview, setImportPreview] = useState(null);
+  const set = (patch) => setForm(f => ({ ...f, ...patch }));
+
+  const tasks = form.tasks || [];
+  const computed = computeSchedule(tasks, form.projectStart);
+  const span = scheduleSpan(computed);
+
+  const setTask = (i, patch) => {
+    const next = [...tasks];
+    next[i] = { ...next[i], ...patch };
+    set({ tasks: next });
+  };
+  const addTask = (parentId = null) => set({ tasks: [...tasks, { ...newTask(tasks.length), parentId }] });
+  const removeTask = (i) => {
+    const id = tasks[i].id;
+    set({ tasks: tasks.filter((_, x) => x !== i)
+      .map(t => ({ ...t, parentId: t.parentId === id ? null : t.parentId,
+                   dependsOn: (t.dependsOn || []).filter(d => d !== id) })) });
+  };
+
+  const errors = [];
+  if (!String(form.clientName || "").trim()) errors.push("Client name is required.");
+  if (!tasks.some(t => String(t.name || "").trim())) errors.push("Add at least one activity.");
+
+  const payload = () => ({
+    ...form,
+    tasks: computed.filter(t => String(t.name || "").trim()).map(t => ({
+      id: t.id, name: t.name, parentId: t.parentId || null,
+      days: Number(t.days) || 0, durationNote: t.durationNote || "",
+      start: t.start || "", revisedStart: t.revisedStart || "", end: t.end || "",
+      notes: t.notes || "", dependsOn: t.dependsOn || [], lag: Number(t.lag) || 0,
+      pinned: !!t.pinned, status: t.status || "not_started",
+    })),
+    handover: form.handover || (span ? span.to : ""),
+  });
+
+  const applyProject = (projectId) => {
+    const p = data.projects.find(x => x.id === projectId);
+    if (!p) { set({ projectId: null }); return; }
+    set({ projectId: p.id, clientName: form.clientName || p.client,
+      projectTitle: form.projectTitle || p.name, location: form.location || p.location });
+  };
+
+  const pickFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setImportError(""); setImportPreview(null);
+    try {
+      const { sheets } = await parseScheduleFile(file);
+      const usable = sheets.filter(s => s.taskCount > 0);
+      if (!usable.length) { setImportError("No task table found in that workbook."); return; }
+      setImportPreview({ fileName: file.name, sheets: usable, chosen: usable[0].name });
+    } catch (err) {
+      setImportError(err.message || "That file couldn't be read.");
+    }
+  };
+
+  const applyImport = () => {
+    const sheet = importPreview.sheets.find(s => s.name === importPreview.chosen);
+    set({
+      tasks: sheet.tasks.map(t => ({ ...t, dependsOn: [], lag: 0, pinned: !!t.start })),
+      clientName: form.clientName || sheet.client,
+      subject: sheet.subject || form.subject,
+      handover: sheet.handover || form.handover,
+    });
+    setImportPreview(null);
+  };
+
+  const preview = () => {
+    const url = generateSchedulePdf(payload(), "preview");
+    if (url) window.open(url, "_blank");
+  };
+
+  return (
+    <div className="p-4 sm:p-8 pb-32 space-y-4">
+      <button onClick={onCancel} className="flex items-center gap-1.5 text-sm dia-text-bronze font-medium">
+        <ArrowLeft size={15} /> Back to schedules
+      </button>
+
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2">
+        <div>
+          <h2 className="font-display text-2xl font-semibold text-stone-900">
+            {schedule ? "Edit schedule" : "New project schedule"}
+          </h2>
+          <p className="text-sm text-stone-500 mt-0.5">
+            {span ? `${span.days} days · ${fmtDate(span.from)} to ${fmtDate(span.to)}` : "Client welcome pack and programme of works"}
+          </p>
+        </div>
+        <span className={`text-xs font-semibold px-2.5 py-1 rounded-full self-start ${QUOTE_STATUS_STYLES[form.status] || "bg-stone-100 text-stone-600"}`}>{form.status}</span>
+      </div>
+
+      <QSection title="Client & project">
+        <div className="grid sm:grid-cols-2 gap-x-4">
+          <Field label="Link to a project (optional)">
+            <select className={inputCls} value={form.projectId || ""} onChange={e => applyProject(e.target.value)}>
+              <option value="">Not linked</option>
+              {data.projects.map(p => <option key={p.id} value={p.id}>{p.name} — {p.client}</option>)}
+            </select>
+          </Field>
+          <Field label="Status">
+            <select className={inputCls} value={form.status} onChange={e => set({ status: e.target.value })}>
+              {SCHEDULE_STATUSES.map(s => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          <Field label="Client name *">
+            <input className={inputCls} value={form.clientName} onChange={e => set({ clientName: e.target.value })} />
+          </Field>
+          <Field label="Location">
+            <input className={inputCls} value={form.location || ""} onChange={e => set({ location: e.target.value })} />
+          </Field>
+          <Field label="Subject line">
+            <input className={inputCls} value={form.subject || ""} onChange={e => set({ subject: e.target.value })} />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Letter date">
+              <input type="date" className={inputCls} value={form.date} onChange={e => set({ date: e.target.value })} />
+            </Field>
+            <Field label="Site start">
+              <input type="date" className={inputCls} value={form.projectStart || ""} onChange={e => set({ projectStart: e.target.value })} />
+            </Field>
+          </div>
+        </div>
+      </QSection>
+
+      <QSection title="Import an existing schedule" subtitle="Bring a schedule across from Excel" defaultOpen={!schedule && !tasks.length}>
+        <label className="inline-flex items-center gap-2 border border-dashed border-stone-300 rounded-lg px-4 py-2.5 text-sm text-stone-600 cursor-pointer hover:dia-border-gold hover:dia-text-bronze">
+          <Upload size={15} /> Choose a schedule spreadsheet
+          <input type="file" accept=".xlsx,.xls,.csv" hidden onChange={pickFile} />
+        </label>
+        {importError && <p className="text-xs text-rose-600 mt-2">{importError}</p>}
+        {importPreview && (
+          <div className="mt-3 border dia-border-gold-soft rounded-xl p-3">
+            <div className="text-sm font-semibold text-stone-800">{importPreview.fileName}</div>
+            <select className={`${inputCls} mt-2`} value={importPreview.chosen}
+              onChange={e => setImportPreview({ ...importPreview, chosen: e.target.value })}>
+              {importPreview.sheets.map(s => <option key={s.name} value={s.name}>{s.name} — {s.taskCount} tasks</option>)}
+            </select>
+            {(importPreview.sheets.find(s => s.name === importPreview.chosen)?.warnings || []).map((w, i) => (
+              <p key={i} className="text-xs text-amber-700 mt-2 flex items-start gap-1.5">
+                <AlertCircle size={12} className="mt-0.5 shrink-0" /> {w}
+              </p>
+            ))}
+            <div className="flex gap-2 mt-3">
+              <button type="button" onClick={applyImport} className="dia-btn-gold px-4 py-1.5 rounded-lg text-xs font-semibold">Import tasks</button>
+              <button type="button" onClick={() => setImportPreview(null)} className="text-xs text-stone-500">Discard</button>
+            </div>
+          </div>
+        )}
+      </QSection>
+
+      <QSection title="Activities" badge={<span className="text-[10px] font-semibold px-2 py-0.5 rounded-full dia-bg-cream-soft dia-text-bronze">{tasks.length}</span>}
+        subtitle="Dates follow their predecessor unless pinned">
+        <div className="space-y-2">
+          {computed.map((task, i) => {
+            const raw = tasks[i];
+            const options = tasks.filter(t => t.id !== task.id && String(t.name || "").trim());
+            return (
+              <div key={task.id} className={`border rounded-xl p-3 ${task.parentId ? "ml-5 border-stone-100 bg-stone-50/40" : "border-stone-200"}`}>
+                <div className="flex items-start gap-2 mb-2">
+                  <input className={`${inputCls} font-semibold`} value={raw.name || ""}
+                    onChange={e => setTask(i, { name: e.target.value })} placeholder="Activity, e.g. Carpentry — base carcass" />
+                  <select className={`${inputCls} max-w-[150px]`} value={raw.status || "not_started"}
+                    onChange={e => setTask(i, { status: e.target.value })}>
+                    {Object.entries(TASK_STATUSES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                  </select>
+                  <button type="button" onClick={() => removeTask(i)} className="text-stone-300 hover:text-rose-600 pt-2.5 shrink-0">
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  <label className="block">
+                    <span className="block text-[10px] text-stone-500 mb-1">Days</span>
+                    <input type="number" className={inputCls} value={raw.days ?? ""} onChange={e => setTask(i, { days: e.target.value })} />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[10px] text-stone-500 mb-1">
+                      Starts {!raw.pinned && (raw.dependsOn || []).length > 0 && <span className="dia-text-bronze">(auto)</span>}
+                    </span>
+                    <input type="date" className={inputCls} value={(raw.pinned ? raw.start : task.start) || ""}
+                      onChange={e => setTask(i, { start: e.target.value, pinned: true })} />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[10px] text-stone-500 mb-1">Follows</span>
+                    <select className={inputCls} value={(raw.dependsOn || [])[0] || ""}
+                      onChange={e => setTask(i, { dependsOn: e.target.value ? [e.target.value] : [], pinned: false })}>
+                      <option value="">— nothing —</option>
+                      {options.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="block text-[10px] text-stone-500 mb-1">Gap (days)</span>
+                    <input type="number" className={inputCls} value={raw.lag ?? 0} onChange={e => setTask(i, { lag: e.target.value })} />
+                  </label>
+                  <label className="block">
+                    <span className="block text-[10px] text-stone-500 mb-1">Sub-task of</span>
+                    <select className={inputCls} value={raw.parentId || ""}
+                      onChange={e => setTask(i, { parentId: e.target.value || null })}>
+                      <option value="">— top level —</option>
+                      {options.filter(o => !o.parentId).map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <div className="flex items-center gap-2 mt-2">
+                  <input className={`${inputCls} text-xs`} value={raw.notes || ""} onChange={e => setTask(i, { notes: e.target.value })}
+                    placeholder="Notes printed under the activity" />
+                  <label className="flex items-center gap-1.5 shrink-0 text-xs text-stone-600 cursor-pointer">
+                    <input type="checkbox" className="accent-current dia-text-bronze" checked={!!raw.pinned}
+                      onChange={e => setTask(i, { pinned: e.target.checked })} />
+                    Pin date
+                  </label>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="flex flex-wrap gap-3 mt-3">
+          <button type="button" onClick={() => addTask()} className="flex items-center gap-1.5 text-sm dia-text-bronze font-semibold">
+            <Plus size={14} /> Add activity
+          </button>
+          <button type="button" onClick={() => set({ tasks: SCHEDULE_TASK_TEMPLATE.map((t, i) => ({ ...newTask(i), ...t })) })}
+            className="text-sm text-stone-500 hover:text-stone-800">Load the standard fit-out programme</button>
+        </div>
+      </QSection>
+
+      <QSection title="Timeline" subtitle="How the programme looks as a Gantt">
+        <GanttPreview tasks={computed} />
+        {span && (
+          <p className="text-xs text-stone-500 mt-2">
+            Handover falls on <span className="font-semibold text-stone-800">{fmtDate(form.handover || span.to)}</span> at this pace.
+          </p>
+        )}
+      </QSection>
+
+      <QSection title="Welcome letter" subtitle="The onboarding note sent once the BOQ is accepted" defaultOpen={false}>
+        <label className="flex items-center gap-2 mb-3 cursor-pointer">
+          <input type="checkbox" className="accent-current dia-text-bronze" checked={form.includeWelcome !== false}
+            onChange={e => set({ includeWelcome: e.target.checked })} />
+          <span className="text-sm text-stone-700">Include the welcome page</span>
+        </label>
+        <Field label="Heading"><input className={inputCls} value={form.welcomeHeading || ""} onChange={e => set({ welcomeHeading: e.target.value })} /></Field>
+        <Field label="Paragraphs (one per line) — {{client}} and {{location}} fill in automatically">
+          <ListEditor rows={5} value={form.welcomeParas} onChange={v => set({ welcomeParas: v })} />
+        </Field>
+        <Field label="What we need from the client">
+          <ListEditor rows={4} value={form.nextSteps} onChange={v => set({ nextSteps: v })} />
+        </Field>
+        <Field label="Schedule introduction">
+          <ListEditor rows={3} value={form.intro} onChange={v => set({ intro: v })} />
+        </Field>
+        <Field label="Closing paragraphs">
+          <ListEditor rows={3} value={form.closing} onChange={v => set({ closing: v })} />
+        </Field>
+        <label className="flex items-center gap-2 mt-1 cursor-pointer">
+          <input type="checkbox" className="accent-current dia-text-bronze" checked={form.includeGantt !== false}
+            onChange={e => set({ includeGantt: e.target.checked })} />
+          <span className="text-sm text-stone-700">Include the Gantt chart page</span>
+        </label>
+      </QSection>
+
+      <QSection title="Signature" defaultOpen={false}>
+        <SignatoryFields form={form} set={set} currentUser={currentUser} lastSignature={lastSignature} />
+      </QSection>
+
+      <div className="fixed bottom-0 left-0 right-0 sm:left-60 bg-white/95 backdrop-blur border-t border-stone-200 px-4 sm:px-8 py-3 z-30"
+        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
+        <div className="flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            {errors.length > 0
+              ? <p className="text-xs text-rose-600 flex items-center gap-1.5 truncate"><AlertCircle size={13} className="shrink-0" /> {errors[0]}</p>
+              : <p className="text-xs text-stone-500 truncate">{tasks.length} activities{span ? ` · handover ${fmtDate(form.handover || span.to)}` : ""}</p>}
+          </div>
+          <button onClick={onCancel} className="px-4 py-2.5 rounded-lg text-sm font-semibold text-stone-600 hover:bg-stone-100">Cancel</button>
+          <button onClick={preview} disabled={errors.length > 0}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40">
+            <Eye size={15} /> <span className="hidden sm:inline">Preview</span>
+          </button>
+          <button onClick={() => onSave(payload())} disabled={errors.length > 0 || saving}
+            className="flex items-center gap-1.5 dia-btn-gold px-5 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+            <Check size={15} /> {saving ? "Saving…" : schedule ? "Save" : "Create schedule"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SchedulesView({ data, currentUser, actions }) {
+  const [editing, setEditing] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const schedules = data.schedules || [];
+  const canEdit = currentUser.role === "Admin" || currentUser.role === "Accounts";
+  const lastSignature = schedules.find(s => s.signatureUrl)?.signatureUrl || "";
+
+  if (editing) {
+    const isNew = editing === "new";
+    return (
+      <ScheduleEditor
+        key={isNew ? "new" : editing.id}
+        schedule={isNew ? null : editing}
+        data={data} currentUser={currentUser} saving={busy} lastSignature={lastSignature}
+        onCancel={() => setEditing(null)}
+        onSave={async (payload) => {
+          setBusy(true);
+          try {
+            if (isNew) await actions.addSchedule(payload);
+            else await actions.updateSchedule(editing.id, payload);
+            setEditing(null);
+          } catch (err) { alert(err.message || "Could not save the schedule."); }
+          setBusy(false);
+        }} />
+    );
+  }
+
+  return (
+    <div className="p-4 sm:p-8 space-y-5">
+      {canEdit && (
+        <div className="flex justify-end">
+          <button onClick={() => setEditing("new")}
+            className="flex items-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg">
+            <Plus size={16} /> New schedule
+          </button>
+        </div>
+      )}
+
+      {schedules.length === 0 && (
+        <Card className="p-10 text-center">
+          <CalendarDays size={26} className="mx-auto text-stone-300 mb-2" />
+          <p className="text-sm text-stone-400">
+            No schedules yet. Create one to send the client their welcome pack and programme of works.
+          </p>
+        </Card>
+      )}
+
+      <div className="space-y-3">
+        {schedules.map(s => {
+          const computed = computeSchedule(s.tasks || [], s.projectStart);
+          const span = scheduleSpan(computed);
+          const done = computed.filter(t => t.status === "done").length;
+          return (
+            <Card key={s.id} className="p-4">
+              <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${QUOTE_STATUS_STYLES[s.status] || "bg-stone-100 text-stone-600"}`}>{s.status}</span>
+                    {s.projectTitle && <span className="text-[10px] dia-text-bronze font-medium">· {s.projectTitle}</span>}
+                  </div>
+                  <h3 className="font-display text-lg font-semibold text-stone-900 mt-1 truncate">{s.clientName}</h3>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5 text-xs text-stone-500">
+                    <span>{(s.tasks || []).length} activities</span>
+                    {computed.length > 0 && <span>{done} completed</span>}
+                    {span && <span>{fmtDate(span.from)} → {fmtDate(span.to)}</span>}
+                    {s.handover && <span>Handover {/^\d{4}-\d{2}-\d{2}$/.test(s.handover) ? fmtDate(s.handover) : s.handover}</span>}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button onClick={() => generateSchedulePdf(s, "save")} title="Download the pack"
+                    className="p-2 rounded-lg border border-stone-200 text-stone-600 hover:dia-text-bronze hover:dia-border-gold">
+                    <Download size={15} />
+                  </button>
+                  <button onClick={() => { const u = generateSchedulePdf(s, "preview"); if (u) window.open(u, "_blank"); }} title="Preview"
+                    className="p-2 rounded-lg border border-stone-200 text-stone-600 hover:dia-text-bronze hover:dia-border-gold">
+                    <Eye size={15} />
+                  </button>
+                  {canEdit && (
+                    <button onClick={() => setEditing(s)} title="Edit"
+                      className="p-2 rounded-lg border border-stone-200 text-stone-600 hover:dia-text-bronze hover:dia-border-gold">
+                      <Pencil size={15} />
+                    </button>
+                  )}
+                  {currentUser.role === "Admin" && (
+                    <button onClick={() => { if (window.confirm(`Delete the schedule for ${s.clientName}?`)) actions.deleteSchedule(s.id); }}
+                      title="Delete" className="p-2 rounded-lg border border-stone-200 text-stone-400 hover:text-rose-600 hover:border-rose-200">
+                      <Trash2 size={15} />
+                    </button>
+                  )}
+                </div>
+              </div>
+              {computed.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-stone-100">
+                  <GanttPreview tasks={computed} />
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Project feed                                                             */
+/* ---------------------------------------------------------------------- */
+
+const POST_KINDS = {
+  update: { label: "Day's work", hint: "What was done on site or at the desk today" },
+  follow_up: { label: "Follow-up", hint: "Something waiting on someone else" },
+  approval: { label: "Needs approval", hint: "Blocked until a decision is made" },
+};
+
+/* Severity is set by whoever writes the post — they know whether the site can
+   carry on without it. */
+const SEVERITIES = {
+  info: { label: "For information", pill: "bg-stone-100 text-stone-600", dot: "bg-stone-400" },
+  attention: { label: "Needs attention", pill: "bg-amber-50 text-amber-700", dot: "bg-amber-500" },
+  urgent: { label: "Urgent", pill: "bg-rose-50 text-rose-700", dot: "bg-rose-500" },
+};
+
+const relativeTime = (iso) => {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.round(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return fmtDate(iso);
+};
+
+function FeedComposer({ projects, defaultProjectId, onPost, posting }) {
+  const [body, setBody] = useState("");
+  const [kind, setKind] = useState("update");
+  const [severity, setSeverity] = useState("info");
+  const [projectId, setProjectId] = useState(defaultProjectId || "");
+
+  /* A follow-up or an approval that nobody has flagged is almost always at
+     least "needs attention" — nudge the default up rather than let it sit
+     silently as information. */
+  const chooseKind = (k) => {
+    setKind(k);
+    if (k !== "update" && severity === "info") setSeverity("attention");
+    if (k === "update" && severity === "attention") setSeverity("info");
+  };
+
+  const submit = () => {
+    if (!body.trim()) return;
+    onPost({ body: body.trim(), kind, severity, projectId: projectId || null });
+    setBody(""); setKind("update"); setSeverity("info");
+  };
+
+  return (
+    <Card className="p-4">
+      <textarea rows={3} className={`${inputCls} leading-relaxed`} value={body}
+        onChange={e => setBody(e.target.value)}
+        placeholder="What did you work on today? Add anything you're waiting on." />
+
+      <div className="flex flex-wrap gap-1.5 mt-3">
+        {Object.entries(POST_KINDS).map(([k, v]) => (
+          <button key={k} type="button" onClick={() => chooseKind(k)} title={v.hint}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+              kind === k ? "dia-btn-gold dia-border-gold" : "border-stone-200 text-stone-600 hover:bg-stone-50"}`}>
+            {v.label}
+          </button>
+        ))}
+        <span className="w-px bg-stone-200 mx-1" />
+        {Object.entries(SEVERITIES).map(([k, v]) => (
+          <button key={k} type="button" onClick={() => setSeverity(k)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+              severity === k ? "dia-border-gold " + v.pill : "border-stone-200 text-stone-500 hover:bg-stone-50"}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${v.dot}`} /> {v.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 mt-3">
+        <div className="flex-1 min-w-[180px]">
+          <select className={inputCls} value={projectId} onChange={e => setProjectId(e.target.value)}>
+            <option value="">General — not about one site</option>
+            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </div>
+        <button type="button" onClick={submit} disabled={!body.trim() || posting}
+          className="dia-btn-gold px-5 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+          {posting ? "Posting…" : "Post update"}
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+function FeedPost({ post, author, project, comments, currentUser, users, actions }) {
+  const [showComments, setShowComments] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const sev = SEVERITIES[post.severity] || SEVERITIES.info;
+  const kind = POST_KINDS[post.kind] || POST_KINDS.update;
+  const needsClosing = post.kind !== "update";
+  const resolved = post.status === "resolved";
+  const canDelete = post.authorId === currentUser.id || currentUser.role === "Admin";
+  const resolver = users.find(u => u.id === post.resolvedBy);
+
+  const addComment = async () => {
+    if (!draft.trim()) return;
+    setBusy(true);
+    try { await actions.addFeedComment(post.id, draft.trim()); setDraft(""); }
+    catch (err) { alert(err.message || "Couldn't post that reply."); }
+    setBusy(false);
+  };
+
+  return (
+    <Card className={`p-4 ${resolved ? "opacity-70" : ""}`}>
+      <div className="flex items-start gap-3">
+        <div className="w-9 h-9 rounded-full dia-bg-cream-soft dia-text-bronze flex items-center justify-center font-display font-semibold text-sm shrink-0">
+          {(author?.name || "?").charAt(0)}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-sm font-semibold text-stone-900">{author?.name || "Unknown"}</span>
+            <span className="text-[11px] text-stone-400">{author?.role}</span>
+            <span className="text-[11px] text-stone-400">· {relativeTime(post.createdAt)}</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+            {project && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full dia-bg-cream-soft dia-text-bronze">{project.name}</span>}
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">{kind.label}</span>
+            {post.severity !== "info" && (
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${sev.pill}`}>{sev.label}</span>
+            )}
+            {resolved && (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
+                Closed{resolver ? ` by ${resolver.name.split(" ")[0]}` : ""}
+              </span>
+            )}
+          </div>
+
+          <p className="text-sm text-stone-700 mt-2.5 whitespace-pre-wrap leading-relaxed">{post.body}</p>
+
+          <div className="flex flex-wrap items-center gap-3 mt-3">
+            <button type="button" onClick={() => setShowComments(o => !o)}
+              className="text-xs text-stone-500 hover:dia-text-bronze font-medium">
+              {comments.length > 0 ? `${comments.length} repl${comments.length === 1 ? "y" : "ies"}` : "Reply"}
+            </button>
+            {needsClosing && (
+              <button type="button" onClick={() => actions.resolveFeedPost(post.id, !resolved)}
+                className={`text-xs font-semibold ${resolved ? "text-stone-500 hover:text-stone-800" : "dia-text-bronze"}`}>
+                {resolved ? "Reopen" : post.kind === "approval" ? "Mark approved" : "Mark done"}
+              </button>
+            )}
+            {canDelete && (
+              <button type="button" onClick={() => actions.deleteFeedPost(post.id)}
+                className="text-xs text-stone-400 hover:text-rose-600">Delete</button>
+            )}
+          </div>
+
+          {showComments && (
+            <div className="mt-3 pt-3 border-t border-stone-100 space-y-2.5">
+              {comments.map(c => {
+                const ca = users.find(u => u.id === c.authorId);
+                return (
+                  <div key={c.id} className="flex items-start gap-2">
+                    <div className="w-6 h-6 rounded-full bg-stone-100 text-stone-500 flex items-center justify-center text-[10px] font-semibold shrink-0 mt-0.5">
+                      {(ca?.name || "?").charAt(0)}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <span className="text-xs font-semibold text-stone-800">{ca?.name || "Unknown"}</span>
+                      <span className="text-[10px] text-stone-400 ml-1.5">{relativeTime(c.createdAt)}</span>
+                      <p className="text-xs text-stone-600 whitespace-pre-wrap">{c.body}</p>
+                    </div>
+                    {(c.authorId === currentUser.id || currentUser.role === "Admin") && (
+                      <button type="button" onClick={() => actions.deleteFeedComment(c.id)}
+                        className="text-stone-300 hover:text-rose-600 shrink-0"><Trash2 size={12} /></button>
+                    )}
+                  </div>
+                );
+              })}
+              <div className="flex items-center gap-2">
+                <input className={`${inputCls} text-xs`} value={draft} onChange={e => setDraft(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addComment(); } }}
+                  placeholder="Write a reply…" />
+                <button type="button" onClick={addComment} disabled={!draft.trim() || busy}
+                  className="dia-btn-gold px-3 py-2 rounded-lg text-xs font-semibold disabled:opacity-40 shrink-0">Send</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function FeedView({ data, currentUser, actions }) {
+  const [projectFilter, setProjectFilter] = useState("All");
+  const [kindFilter, setKindFilter] = useState("All");
+  const [openOnly, setOpenOnly] = useState(false);
+  const [query, setQuery] = useState("");
+  const [posting, setPosting] = useState(false);
+
+  const posts = data.feedPosts || [];
+  const comments = data.feedComments || [];
+  const users = data.users || [];
+
+  const openItems = posts.filter(p => p.kind !== "update" && p.status === "open");
+  const urgentOpen = openItems.filter(p => p.severity === "urgent");
+  const today = new Date().toDateString();
+  const todayCount = posts.filter(p => new Date(p.createdAt).toDateString() === today).length;
+
+  const filtered = posts.filter(p => {
+    if (projectFilter === "General" ? p.projectId : projectFilter !== "All" && p.projectId !== projectFilter) return false;
+    if (kindFilter !== "All" && p.kind !== kindFilter) return false;
+    if (openOnly && !(p.kind !== "update" && p.status === "open")) return false;
+    if (query.trim()) {
+      const author = users.find(u => u.id === p.authorId)?.name || "";
+      if (!`${p.body} ${author}`.toLowerCase().includes(query.trim().toLowerCase())) return false;
+    }
+    return true;
+  });
+
+  /* Grouped by day so the feed reads as a diary rather than one long column. */
+  const byDay = [];
+  filtered.forEach(p => {
+    const key = new Date(p.createdAt).toDateString();
+    const bucket = byDay.find(b => b.key === key);
+    if (bucket) bucket.posts.push(p);
+    else byDay.push({ key, posts: [p] });
+  });
+
+  const dayLabel = (key) => {
+    const d = new Date(key);
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) return "Today";
+    const yest = new Date(now); yest.setDate(now.getDate() - 1);
+    if (d.toDateString() === yest.toDateString()) return "Yesterday";
+    return fmtDate(d.toISOString());
+  };
+
+  return (
+    <div className="p-4 sm:p-8 space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <KPI label="Posted today" value={todayCount} sub="updates from the team" icon={ListChecks} />
+        <KPI label="Open follow-ups" value={openItems.filter(p => p.kind === "follow_up").length} sub="waiting on someone" icon={Clock} />
+        <KPI label="Awaiting approval" value={openItems.filter(p => p.kind === "approval").length} sub="blocking work" icon={AlertCircle} />
+        <KPI label="Urgent & open" value={urgentOpen.length} sub="flagged urgent" icon={AlertCircle} />
+      </div>
+
+      <FeedComposer projects={data.projects} posting={posting}
+        defaultProjectId={projectFilter !== "All" && projectFilter !== "General" ? projectFilter : ""}
+        onPost={async (post) => {
+          setPosting(true);
+          try { await actions.addFeedPost(post); }
+          catch (err) { alert(err.message || "Couldn't post that update."); }
+          setPosting(false);
+        }} />
+
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="relative flex-1">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search updates or people"
+            className={`${inputCls} pl-9`} />
+        </div>
+        <select value={projectFilter} onChange={e => setProjectFilter(e.target.value)} className={`${inputCls} sm:w-52`}>
+          <option value="All">All projects</option>
+          <option value="General">General only</option>
+          {data.projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <select value={kindFilter} onChange={e => setKindFilter(e.target.value)} className={`${inputCls} sm:w-44`}>
+          <option value="All">Everything</option>
+          {Object.entries(POST_KINDS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+        <button type="button" onClick={() => setOpenOnly(o => !o)}
+          className={`px-4 py-2.5 rounded-lg text-sm font-semibold border shrink-0 transition-colors ${
+            openOnly ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+          Open only
+        </button>
+      </div>
+
+      {filtered.length === 0 && (
+        <Card className="p-10 text-center">
+          <ListChecks size={26} className="mx-auto text-stone-300 mb-2" />
+          <p className="text-sm text-stone-400">
+            {posts.length === 0 ? "No updates yet. Post the first one above." : "Nothing matches these filters."}
+          </p>
+        </Card>
+      )}
+
+      {byDay.map(day => (
+        <div key={day.key} className="space-y-3">
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-semibold text-stone-500 font-label uppercase tracking-wide">{dayLabel(day.key)}</span>
+            <div className="flex-1 h-px bg-stone-200" />
+            <span className="text-[11px] text-stone-400">{day.posts.length} update{day.posts.length !== 1 ? "s" : ""}</span>
+          </div>
+          {day.posts.map(post => (
+            <FeedPost key={post.id} post={post}
+              author={users.find(u => u.id === post.authorId)}
+              project={data.projects.find(p => p.id === post.projectId)}
+              comments={comments.filter(c => c.postId === post.id)}
+              currentUser={currentUser} users={users} actions={actions} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Floating calculator                                                      */
 /* ---------------------------------------------------------------------- */
 
@@ -5366,6 +6189,15 @@ export default function App() {
     updateQuotationStatus: (id, status) => dbUpdateQuotationStatus(id, status).then(reload),
     duplicateQuotation: (q) => dbDuplicateQuotation(q, profile?.id).then(reload),
     deleteQuotation: (id) => dbDeleteQuotation(id).then(reload),
+    addSchedule: (s) => dbAddSchedule(s, profile?.id).then(reload),
+    updateSchedule: (id, s) => dbUpdateSchedule(id, s).then(reload),
+    deleteSchedule: (id) => dbDeleteSchedule(id).then(reload),
+    addFeedPost: (post) => dbAddFeedPost(post, profile?.id).then(reload),
+    updateFeedPost: (id, patch) => dbUpdateFeedPost(id, patch).then(reload),
+    resolveFeedPost: (id, resolved) => dbResolveFeedPost(id, profile?.id, resolved).then(reload),
+    deleteFeedPost: (id) => dbDeleteFeedPost(id).then(reload),
+    addFeedComment: (postId, body) => dbAddFeedComment(postId, body, profile?.id).then(reload),
+    deleteFeedComment: (id) => dbDeleteFeedComment(id).then(reload),
     addBoqLibraryItem: (item) => dbAddBoqLibraryItem(item, profile?.id).then(reload),
     updateBoqLibraryItem: (id, item) => dbUpdateBoqLibraryItem(id, item).then(reload),
     deleteBoqLibraryItem: (id) => dbDeleteBoqLibraryItem(id).then(reload),
@@ -5436,6 +6268,8 @@ export default function App() {
     dashboard: ["Company Dashboard", "Real-time visibility across every project"],
     projects: ["Projects", "All active and completed projects"],
     expenses: ["Expenses", "Review, filter and approve project expenses"],
+    feed: ["Team Feed", "Daily updates, follow-ups and approvals across every site"],
+    schedules: ["Schedules", "Client welcome packs and the programme of works"],
     quotations: ["Quotations", "Design proposals, fee schedules and client-ready PDFs"],
     vendors: ["Vendors", "Vendor directory, materials and bank details for payment"],
     updates: ["Updates", "Site progress photos shared by your team, as they happen"],
@@ -5454,6 +6288,7 @@ export default function App() {
       <UpdateBanner />
       <FloatingCalculator />
       <Sidebar user={currentUser} view={view} setView={setView} onLogout={handleLogout} pendingCount={pendingCount}
+        openFeedCount={(data.feedPosts || []).filter(p => p.kind !== "update" && p.status === "open").length}
         mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
       <div className="flex-1 min-w-0">
         {view.tab !== "project" && view.tab !== "sup-home" && view.tab !== "arch-home" && (
@@ -5466,6 +6301,8 @@ export default function App() {
         {view.tab === "projects" && (isStaffOnly ? <ProjectsList data={data} setView={setView} actions={actions} currentUser={currentUser} /> : <AccessDenied />)}
         {view.tab === "project" && <ProjectDetail data={data} projectId={view.projectId} sub={view.sub} setView={setView} currentUser={currentUser} actions={actions} onMenuClick={() => setMobileNavOpen(true)} />}
         {view.tab === "expenses" && (isStaffOnly ? <ExpensesGlobal data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
+        {view.tab === "feed" && <FeedView data={data} currentUser={currentUser} actions={actions} />}
+        {view.tab === "schedules" && <SchedulesView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "quotations" && (isStaffOnly ? <QuotationsView data={data} currentUser={currentUser} actions={actions} setView={setView} /> : <AccessDenied />)}
         {view.tab === "vendors" && (isStaffOnly ? <VendorsView data={data} actions={actions} /> : <AccessDenied />)}
         {view.tab === "updates" && (isAdmin ? <UpdatesFeed data={data} setView={setView} /> : <AccessDenied />)}
