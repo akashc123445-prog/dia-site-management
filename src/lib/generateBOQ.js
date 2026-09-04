@@ -84,15 +84,30 @@ function drawChrome(doc, pageNo, title) {
   );
 }
 
-function makeCtx(doc, title) {
+function makeCtx(doc, title, pads) {
   const ctx = {
     doc, y: M.top, page: 1, title,
     /* top and bottom are read by the page-break logic, so they live on the
        context rather than being recomputed inline. */
     top: M.top,
     bottom: PAGE.h - M.bottom,
+    /* One extra height for every row in the document. Padding page by page
+       would leave a tall row on one sheet beside a short one on the next,
+       which reads worse than the gap it was meant to close. */
+    pad: Number(pads) || 0,
+    stats: {},                                  // page → { rows, used }
+    padFor() { return this.pad; },
+    countRow() {
+      const st = this.stats[this.page] || (this.stats[this.page] = { rows: 0, used: 0 });
+      st.rows += 1;
+    },
+    closePage() {
+      const st = this.stats[this.page] || (this.stats[this.page] = { rows: 0, used: 0 });
+      st.used = this.y - this.top;
+    },
     need(h) { if (this.y + h > this.bottom) this.newPage(); },
     newPage() {
+      this.closePage();
       this.doc.addPage("a3", "portrait");
       this.page += 1;
       drawChrome(this.doc, this.page, this.title);
@@ -159,9 +174,10 @@ function itemRow(ctx, item, index) {
   const partLines = doc.splitTextToSize(String(item.particulars || ""), COLS[1].width - 8);
   const remLines = doc.splitTextToSize(String(item.remarks || ""), COLS[9].width - 8);
   const lines = Math.max(descLines.length, partLines.length, remLines.length, 1);
-  const h = Math.max(18, lines * 8 + 8);
+  const h = Math.max(18, lines * 8 + 8) + ctx.padFor();
 
-  if (ctx.y + h > PAGE.h - M.bottom) { ctx.newPage(); tableHead(ctx); }
+  if (ctx.y + h > ctx.bottom) { ctx.newPage(); tableHead(ctx); }
+  ctx.countRow();
   const top = ctx.y;
 
   if (index % 2 === 1) {
@@ -213,7 +229,7 @@ function itemRow(ctx, item, index) {
 function sectionTotalRow(ctx, code, total) {
   const { doc } = ctx;
   const h = 17;
-  if (ctx.y + h > PAGE.h - M.bottom) { ctx.newPage(); tableHead(ctx); }
+  if (ctx.y + h > ctx.bottom) { ctx.newPage(); tableHead(ctx); }
   doc.setFillColor(...CREAM_SOFT);
   doc.rect(M.left, ctx.y, CONTENT_W, h, "F");
   doc.setDrawColor(...RULE);
@@ -413,10 +429,9 @@ function paymentTable(ctx, stages, grand) {
 /* mode: "save" downloads, "preview" returns a blob URL, "measure" lays the
    document out and returns which page every section starts on without
    producing a file. */
-export function generateBOQPdf(q, mode = "save") {
-  const doc = new jsPDF({ unit: "pt", format: "a3", orientation: "portrait" });
+function renderBOQ(doc, q, pads) {
   const title = `BOQ for ${q.clientName || ""}${q.location ? ", " + q.location : ""}`;
-  const ctx = makeCtx(doc, title);
+  const ctx = makeCtx(doc, title, pads);
   const totals = boqTotals(q);
 
   /* ---- reference line + material specifications ---- */
@@ -482,7 +497,8 @@ export function generateBOQPdf(q, mode = "save") {
   /* Measured and reserved as one block: three rows that break across a page
      boundary read as an error, and a stray "Grand Total" on its own sheet is
      worse still. */
-  const summaryRows = 1 + (Number(q.extraChargePct) > 0 ? 1 : 0) + (totals.concession > 0 ? 1 : 0);
+  const summaryRows = 1 + (Number(q.extraChargePct) > 0 ? 1 : 0) + (totals.concession > 0 ? 1 : 0)
+    + (totals.gstRate > 0 ? 2 : 0);
   const summaryH = summaryRows * 21 + 24 + 12;
   const summaryBreak = (q.pageOptions && q.pageOptions.summaryBreak) || "auto";
 
@@ -510,9 +526,16 @@ export function generateBOQPdf(q, mode = "save") {
   if (totals.concession > 0) {
     summaryRow(ctx, `Less: ${q.concessionLabel || "Concession"}`, -totals.concession);
   }
-  summaryRow(ctx, "Grand Total", totals.grand, true);
+  summaryRow(ctx, totals.gstRate > 0 ? "Total" : "Grand Total", totals.grand, totals.gstRate === 0);
 
-  if (String(q.gstNote || "").trim()) {
+  if (totals.gstRate > 0) {
+    summaryRow(ctx, `GST @ ${totals.gstRate}%`, totals.gstAmount);
+    summaryRow(ctx, "Grand Total (including GST)", totals.payable, true);
+  }
+
+  /* The footnote and a calculated GST line would contradict each other, so
+     the note only prints when no GST line is shown. */
+  if (totals.gstRate === 0 && String(q.gstNote || "").trim()) {
     ctx.y += 11;
     doc.setFont(TRAJAN, "normal");
     doc.setFontSize(7.2);
@@ -532,7 +555,7 @@ export function generateBOQPdf(q, mode = "save") {
   const payBlockH = stages.length ? 10 + 15 + stages.length * 14 + 17 + 8 : 0;
   ctx.need(Math.max(payBlockH, 90));
   const payTop = ctx.y;
-  if (stages.length) paymentTable(ctx, stages, totals.grand);
+  if (stages.length) paymentTable(ctx, stages, totals.payable);
 
   /* ---- signature ----
      The payment table only takes half the sheet, so the sign-off sits beside
@@ -566,6 +589,56 @@ export function generateBOQPdf(q, mode = "save") {
   ctx.y = Math.max(ctx.y, sigY);
 
   layout.pages = ctx.page;
+  ctx.closePage();
+  return { layout, stats: ctx.stats, bottom: ctx.bottom, top: ctx.top };
+}
+
+/* Finds one row height that suits the whole document.
+
+   Padding is added to every row equally, then the layout is re-measured: too
+   much and the rows spill onto an extra sheet. A binary search finds the
+   largest padding that keeps the page count where it started, which fills the
+   pages as far as they will go while every row on every page stays the same
+   height. */
+function findUniformPad(q, capacity) {
+  const measure = (pad) => {
+    const probe = new jsPDF({ unit: "pt", format: "a3", orientation: "portrait" });
+    const { layout, stats } = renderBOQ(probe, q, pad);
+    return { pages: layout.pages, stats };
+  };
+
+  const base = measure(0);
+  const rowsTotal = Object.values(base.stats).reduce((n, st) => n + st.rows, 0);
+  if (!rowsTotal || base.pages < 2) return 0;
+
+  /* Nothing to gain past the point where the spare space on the pages that
+     aren't last has been used up. */
+  const spare = Object.entries(base.stats)
+    .filter(([page]) => Number(page) < base.pages)
+    .reduce((n, [, st]) => n + Math.max(0, capacity - st.used), 0);
+  if (spare < 26) return 0;
+
+  let lo = 0;
+  let hi = Math.min(capacity / 12, spare / Math.max(1, rowsTotal) + 12);
+
+  for (let i = 0; i < 7 && hi - lo > 0.6; i++) {
+    const mid = (lo + hi) / 2;
+    if (measure(mid).pages === base.pages) lo = mid;
+    else hi = mid;
+  }
+  return Math.round(lo * 10) / 10;
+}
+
+export function generateBOQPdf(q, mode = "save") {
+  const fill = !(q.pageOptions && q.pageOptions.fillPages === false);
+
+  /* Worked out on throwaway documents first, so the row height is settled
+     before a single row is drawn for real. */
+  const capacity = PAGE.h - M.bottom - M.top;
+  const pad = fill && mode !== "measure" ? findUniformPad(q, capacity) : 0;
+
+  const doc = new jsPDF({ unit: "pt", format: "a3", orientation: "portrait" });
+  const { layout } = renderBOQ(doc, q, pad);
 
   const safe = (v) => String(v || "").replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim();
   const filename = `BOQ ${safe(q.quotationNo)} - ${safe(q.clientName) || "Client"}.pdf`;
