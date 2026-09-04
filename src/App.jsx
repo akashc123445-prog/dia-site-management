@@ -5723,6 +5723,29 @@ function FeedView({ data, currentUser, actions }) {
   );
 }
 
+/* Appears once the page has scrolled far enough to be worth going back up.
+   Sits above the calculator so the two never overlap, and clears the editor's
+   sticky action bar at the foot of the screen. */
+function BackToTop() {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setShow(window.scrollY > 500);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  if (!show) return null;
+  return (
+    <button type="button" title="Back to top"
+      onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+      className="fixed bottom-36 right-5 z-40 w-10 h-10 rounded-full bg-white border dia-border-gold-soft shadow-lg flex items-center justify-center text-stone-500 hover:dia-text-bronze hover:dia-border-gold transition-colors">
+      <ArrowLeft size={17} className="rotate-90" />
+    </button>
+  );
+}
+
 /* ---------------------------------------------------------------------- */
 /* Floating calculator                                                      */
 /* ---------------------------------------------------------------------- */
@@ -6287,6 +6310,7 @@ export default function App() {
       <style>{FONT_STYLE}</style>
       <UpdateBanner />
       <FloatingCalculator />
+      <BackToTop />
       <Sidebar user={currentUser} view={view} setView={setView} onLogout={handleLogout} pendingCount={pendingCount}
         openFeedCount={(data.feedPosts || []).filter(p => p.kind !== "update" && p.status === "open").length}
         mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
