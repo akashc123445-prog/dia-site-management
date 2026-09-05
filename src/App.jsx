@@ -1147,7 +1147,7 @@ function SiteReportForm({ onSave, reportType }) {
   );
 }
 
-function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO }) {
+function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO, onCreateVendor }) {
   const [showModal, setShowModal] = useState(false);
   const list = expenses
     .filter(e => e.projectId === project.id)
@@ -1193,7 +1193,7 @@ function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprov
         {list.length === 0 && <p className="text-sm text-stone-400 py-6 text-center">No expenses recorded for this project yet.</p>}
       </div>
       {showModal && <Modal title="Add Expense" onClose={() => setShowModal(false)}>
-        <ExpenseForm defaultProjectId={project.id} vendors={vendors} onSave={(exp) => { onAdd(exp); setShowModal(false); }} />
+        <ExpenseForm defaultProjectId={project.id} vendors={vendors} onCreateVendor={onCreateVendor} onSave={(exp) => { onAdd(exp); setShowModal(false); }} />
       </Modal>}
     </div>
   );
@@ -1284,24 +1284,61 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
   );
 }
 
-function ExpenseForm({ onSave, defaultProjectId, projects, vendors }) {
+function ExpenseForm({ onSave, defaultProjectId, projects, vendors, onCreateVendor }) {
   const [form, setForm] = useState({
     projectId: defaultProjectId || (projects && projects[0]?.id) || "",
     date: TODAY.toISOString().slice(0, 10), category: EXPENSE_CATEGORIES[0], description: "",
     amount: "", paymentMethod: PAYMENT_METHODS[0], vendorId: "", invoiceNo: "", notes: "",
     totalInvoiceValue: "", advancePaid: "", proof: null,
   });
+  /* A vendor met for the first time on site shouldn't force a detour through
+     the Vendors screen, so a name can be typed here and the vendor record is
+     created alongside the expense. */
+  const [newVendor, setNewVendor] = useState(null);   // null = pick existing
+  const [savingVendor, setSavingVendor] = useState(false);
+  const [vendorError, setVendorError] = useState("");
+
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
   const pending = (Number(form.totalInvoiceValue) || 0) - (Number(form.advancePaid) || 0);
   const selectedVendor = (vendors || []).find(v => v.id === form.vendorId);
-  const canSubmit = form.description && form.amount && form.projectId && form.vendorId && form.proof;
+  const vendorReady = newVendor ? String(newVendor.name || "").trim() : !!form.vendorId;
+  const canSubmit = form.description && form.amount && form.projectId && vendorReady && form.proof && !savingVendor;
 
-  const handleSave = () => {
-    const vendor = vendors.find(v => v.id === form.vendorId);
+  const handleSave = async () => {
+    let vendorId = form.vendorId;
+    let vendorName = (vendors || []).find(v => v.id === vendorId)?.name || "";
+
+    if (newVendor) {
+      const name = String(newVendor.name || "").trim();
+      /* Reuse an existing record rather than creating a duplicate under a
+         slightly different spelling. */
+      const existing = (vendors || []).find(v => v.name.trim().toLowerCase() === name.toLowerCase());
+      if (existing) {
+        vendorId = existing.id; vendorName = existing.name;
+      } else if (onCreateVendor) {
+        setSavingVendor(true); setVendorError("");
+        try {
+          const created = await onCreateVendor({
+            name, material: newVendor.material || "", phone: newVendor.phone || "",
+          });
+          vendorId = created?.id || "";
+          vendorName = name;
+        } catch (err) {
+          setVendorError(err.message || "Couldn't save that vendor.");
+          setSavingVendor(false);
+          return;
+        }
+        setSavingVendor(false);
+      } else {
+        vendorName = name;
+      }
+    }
+
     onSave({
       ...form,
+      vendorId,
       amount: Number(form.amount),
-      vendor: vendor?.name || "",
+      vendor: vendorName,
       totalInvoiceValue: form.totalInvoiceValue === "" ? null : Number(form.totalInvoiceValue),
       advancePaid: form.advancePaid === "" ? 0 : Number(form.advancePaid),
       proofUrl: form.proof?.dataUrl || null,
@@ -1335,16 +1372,42 @@ function ExpenseForm({ onSave, defaultProjectId, projects, vendors }) {
         </Field>
       </div>
       <Field label="Vendor">
-        {(vendors || []).length > 0 ? (
-          <select className={inputCls} value={form.vendorId} onChange={set("vendorId")}>
-            <option value="">Select a vendor…</option>
-            {vendors.map(v => <option key={v.id} value={v.id}>{v.name}{v.material ? ` — ${v.material}` : ""}</option>)}
-          </select>
+        {!newVendor ? (
+          <>
+            <div className="flex items-center gap-2">
+              <select className={inputCls} value={form.vendorId} onChange={set("vendorId")}>
+                <option value="">{(vendors || []).length ? "Select a vendor…" : "No vendors yet"}</option>
+                {(vendors || []).map(v => <option key={v.id} value={v.id}>{v.name}{v.material ? ` — ${v.material}` : ""}</option>)}
+              </select>
+              <button type="button" onClick={() => { setNewVendor({ name: "", material: "", phone: "" }); setForm(f => ({ ...f, vendorId: "" })); }}
+                className="shrink-0 flex items-center gap-1.5 px-3 py-2.5 rounded-lg border border-stone-300 text-xs font-semibold text-stone-600 hover:dia-border-gold hover:dia-text-bronze whitespace-nowrap">
+                <Plus size={14} /> New
+              </button>
+            </div>
+            {selectedVendor && !selectedVendor.bankAccountNumber && (
+              <p className="text-[11px] text-amber-600 mt-1">This vendor has no bank details on file yet — Accounts won't be able to pay them until that's added.</p>
+            )}
+          </>
         ) : (
-          <p className="text-xs text-stone-400 border border-dashed border-stone-300 rounded-lg py-2.5 px-3">No vendors added yet — ask an Admin or Accounts to add one under Vendors first.</p>
-        )}
-        {selectedVendor && !selectedVendor.bankAccountNumber && (
-          <p className="text-[11px] text-amber-600 mt-1">This vendor has no bank details on file yet — Accounts won't be able to pay them until that's added.</p>
+          <div className="border dia-border-gold-soft rounded-xl p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold dia-text-bronze">New vendor</span>
+              <button type="button" onClick={() => { setNewVendor(null); setVendorError(""); }}
+                className="text-xs text-stone-500 hover:text-stone-800">Pick an existing one</button>
+            </div>
+            <input className={inputCls} autoFocus value={newVendor.name}
+              onChange={e => setNewVendor(v => ({ ...v, name: e.target.value }))} placeholder="Vendor name *" />
+            <div className="grid grid-cols-2 gap-2">
+              <input className={inputCls} value={newVendor.material}
+                onChange={e => setNewVendor(v => ({ ...v, material: e.target.value }))} placeholder="Material or trade" />
+              <input className={inputCls} value={newVendor.phone}
+                onChange={e => setNewVendor(v => ({ ...v, phone: e.target.value }))} placeholder="Phone" />
+            </div>
+            <p className="text-[11px] text-stone-500">
+              Saved to the vendor directory with the expense. Add bank and GST details under Vendors before a payment is made.
+            </p>
+            {vendorError && <p className="text-[11px] text-rose-600">{vendorError}</p>}
+          </div>
         )}
       </Field>
       <Field label="Bill / invoice number"><input className={inputCls} value={form.invoiceNo} onChange={set("invoiceNo")} /></Field>
@@ -2157,6 +2220,7 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
       {tab === "expenses" && <ExpensesTab project={project} expenses={data.expenses} users={data.users} vendors={data.vendors} currentUser={currentUser}
         canApprove={isFinance} canAdd={isFinance || isAssignedSupervisor || isAssignedArchitect}
         onAdd={(exp) => actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id })}
+        onCreateVendor={actions.addVendorReturning}
         onApprove={(id) => actions.approveExpense(id, currentUser.id)} onReject={(id, reason) => actions.rejectExpense(id, currentUser.id, reason)}
         onDelete={(id) => actions.deleteExpense(id)}
         onMarkPaid={(id, paid) => actions.markExpensePaid(id, currentUser.id, paid)}
@@ -4856,7 +4920,8 @@ function SupervisorHome({ data, currentUser, actions, setView }) {
         <SiteReportForm onSave={(rep) => { actions.addSiteReport(project.id, currentUser.id, rep); setModal(null); }} />
       </Modal>}
       {modal === "expense" && <Modal title="Add Expense" onClose={() => setModal(null)}>
-        <ExpenseForm defaultProjectId={project.id} vendors={data.vendors} onSave={(exp) => { actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id }); setModal(null); }} />
+        <ExpenseForm defaultProjectId={project.id} vendors={data.vendors} onCreateVendor={actions.addVendorReturning}
+          onSave={(exp) => { actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id }); setModal(null); }} />
       </Modal>}
       {modal === "photo" && <Modal title="Upload Site Photo" onClose={() => setModal(null)}>
         <PhotoForm onSave={(p) => { actions.addPhoto(project.id, p, currentUser.id); setModal(null); }} />
@@ -6226,6 +6291,13 @@ export default function App() {
     deleteBoqLibraryItem: (id) => dbDeleteBoqLibraryItem(id).then(reload),
     touchBoqLibraryItem: (id, timesUsed) => dbTouchBoqLibraryItem(id, timesUsed),
     addVendor: (v) => dbAddVendor(v).then(reload),
+    /* Returns the created vendor rather than only refreshing, so an expense
+       saved in the same breath can be linked to it straight away. */
+    addVendorReturning: async (v) => {
+      const created = await dbAddVendor(v);
+      await reload();
+      return created;
+    },
     updateVendor: (id, v) => dbUpdateVendor(id, v).then(reload),
     deleteVendor: (id) => dbDeleteVendor(id).then(reload),
     addMaterialRequest: (projectId, requestedBy, req, autoApprove) => dbAddMaterialRequest(projectId, requestedBy, req, autoApprove).then(reload),
