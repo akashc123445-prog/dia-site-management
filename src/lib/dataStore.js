@@ -513,14 +513,17 @@ export async function dbGeneratePO(expenseId, generatedBy) {
 
 /* ---- vendors ------------------------------------------------------------ */
 
+/* Returns the created vendor: an expense saved in the same step needs the new
+   id to link against, and there's nothing to link to otherwise. */
 export async function dbAddVendor(v) {
-  const { error } = await supabase.from("vendors").insert({
+  const { data, error } = await supabase.from("vendors").insert({
     name: v.name, material: v.material, gst_number: v.gstNumber, address: v.address,
     phone: v.phone, email: v.email,
     bank_account_name: v.bankAccountName, bank_account_number: v.bankAccountNumber,
     bank_ifsc: v.bankIfsc, bank_name: v.bankName,
-  });
+  }).select().single();
   if (error) throw error;
+  return mapVendor(data);
 }
 
 export async function dbUpdateVendor(id, v) {
