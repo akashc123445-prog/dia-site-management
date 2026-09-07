@@ -457,7 +457,10 @@ export async function dbAddExpense(exp) {
   const { error } = await supabase.from("expenses").insert({
     project_id: exp.projectId, submitted_by: exp.submittedBy, date: exp.date, category: exp.category,
     description: exp.description, amount: exp.amount, payment_method: exp.paymentMethod,
-    vendor: exp.vendor, vendor_id: exp.vendorId,
+    vendor: exp.vendor,
+    /* Empty string would fail the uuid column; a one-off shop simply has no
+       vendor record to point at. */
+    vendor_id: exp.vendorId || null,
     total_invoice_value: exp.totalInvoiceValue === "" || exp.totalInvoiceValue === undefined ? null : exp.totalInvoiceValue,
     advance_paid: exp.advancePaid || 0,
     proof_url: exp.proofUrl,
