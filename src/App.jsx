@@ -1147,7 +1147,7 @@ function SiteReportForm({ onSave, reportType }) {
   );
 }
 
-function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO, onCreateVendor }) {
+function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO }) {
   const [showModal, setShowModal] = useState(false);
   const list = expenses
     .filter(e => e.projectId === project.id)
@@ -1193,7 +1193,7 @@ function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprov
         {list.length === 0 && <p className="text-sm text-stone-400 py-6 text-center">No expenses recorded for this project yet.</p>}
       </div>
       {showModal && <Modal title="Add Expense" onClose={() => setShowModal(false)}>
-        <ExpenseForm defaultProjectId={project.id} vendors={vendors} onCreateVendor={onCreateVendor} onSave={(exp) => { onAdd(exp); setShowModal(false); }} />
+        <ExpenseForm defaultProjectId={project.id} vendors={vendors} onSave={(exp) => { onAdd(exp); setShowModal(false); }} />
       </Modal>}
     </div>
   );
@@ -1284,53 +1284,33 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
   );
 }
 
-function ExpenseForm({ onSave, defaultProjectId, projects, vendors, onCreateVendor }) {
+function ExpenseForm({ onSave, defaultProjectId, projects, vendors }) {
   const [form, setForm] = useState({
     projectId: defaultProjectId || (projects && projects[0]?.id) || "",
     date: TODAY.toISOString().slice(0, 10), category: EXPENSE_CATEGORIES[0], description: "",
     amount: "", paymentMethod: PAYMENT_METHODS[0], vendorId: "", invoiceNo: "", notes: "",
     totalInvoiceValue: "", advancePaid: "", proof: null,
   });
-  /* The vendor is typed, not picked. Existing names are offered as
-     suggestions and matched on the way in; anything else becomes a new vendor
-     record when the expense is saved, so a supplier met on site this morning
-     doesn't send someone off to the Vendors screen first. */
+  /* The shop is recorded by name on the expense itself — no vendor record is
+     created. Only Admin and Accounts may add to the vendor directory, so
+     asking a supervisor or architect to create one mid-expense would always
+     have been refused. Where the name matches a vendor already on file, the
+     expense is linked to it so a PO can still be raised. */
   const [vendorName, setVendorName] = useState("");
-  const [vendorExtra, setVendorExtra] = useState({ material: "", phone: "" });
-  const [savingVendor, setSavingVendor] = useState(false);
-  const [vendorError, setVendorError] = useState("");
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
   const pending = (Number(form.totalInvoiceValue) || 0) - (Number(form.advancePaid) || 0);
 
   const typedName = vendorName.trim();
   const matchedVendor = (vendors || []).find(v => v.name.trim().toLowerCase() === typedName.toLowerCase());
-  const isNewVendor = !!typedName && !matchedVendor;
-  const canSubmit = form.description && form.amount && form.projectId && typedName && form.proof && !savingVendor;
+  const canSubmit = form.description && form.amount && form.projectId && typedName && form.proof;
 
-  const handleSave = async () => {
-    let vendorId = matchedVendor?.id || "";
-    let name = matchedVendor?.name || typedName;
-
-    if (isNewVendor && onCreateVendor) {
-      setSavingVendor(true); setVendorError("");
-      try {
-        const created = await onCreateVendor({ name: typedName, ...vendorExtra });
-        vendorId = created?.id || "";
-        name = typedName;
-      } catch (err) {
-        setVendorError(err.message || "Couldn't save that vendor.");
-        setSavingVendor(false);
-        return;
-      }
-      setSavingVendor(false);
-    }
-
+  const handleSave = () => {
     onSave({
       ...form,
-      vendorId,
+      vendorId: matchedVendor?.id || null,
       amount: Number(form.amount),
-      vendor: name,
+      vendor: matchedVendor?.name || typedName,
       totalInvoiceValue: form.totalInvoiceValue === "" ? null : Number(form.totalInvoiceValue),
       advancePaid: form.advancePaid === "" ? 0 : Number(form.advancePaid),
       proofUrl: form.proof?.dataUrl || null,
@@ -1363,39 +1343,28 @@ function ExpenseForm({ onSave, defaultProjectId, projects, vendors, onCreateVend
           </select>
         </Field>
       </div>
-      <Field label="Vendor">
+      <Field label="Shop or vendor name">
         <input className={inputCls} list="expense-vendor-names" value={vendorName}
           onChange={e => setVendorName(e.target.value)}
-          placeholder="Type the vendor's name" autoComplete="off" />
+          placeholder="Where was this bought from?" autoComplete="off" />
         <datalist id="expense-vendor-names">
           {(vendors || []).map(v => <option key={v.id} value={v.name}>{v.material || ""}</option>)}
         </datalist>
 
-        {matchedVendor && (
-          <p className="text-[11px] text-stone-500 mt-1">
-            Matched to <span className="font-semibold text-stone-700">{matchedVendor.name}</span>
-            {matchedVendor.material ? ` — ${matchedVendor.material}` : ""} in the vendor directory.
-          </p>
-        )}
-        {matchedVendor && !matchedVendor.bankAccountNumber && (
-          <p className="text-[11px] text-amber-600 mt-1">This vendor has no bank details on file yet — Accounts won't be able to pay them until that's added.</p>
-        )}
-
-        {isNewVendor && (
-          <div className="border dia-border-gold-soft rounded-xl p-3 mt-2 space-y-2">
-            <p className="text-[11px] dia-text-bronze font-semibold">
-              New vendor — "{typedName}" will be added to the directory with this expense.
+        {matchedVendor ? (
+          <>
+            <p className="text-[11px] text-stone-500 mt-1">
+              Linked to <span className="font-semibold text-stone-700">{matchedVendor.name}</span> in the vendor directory, so a PO can be raised against it.
             </p>
-            <div className="grid grid-cols-2 gap-2">
-              <input className={inputCls} value={vendorExtra.material}
-                onChange={e => setVendorExtra(v => ({ ...v, material: e.target.value }))} placeholder="Material or trade" />
-              <input className={inputCls} value={vendorExtra.phone}
-                onChange={e => setVendorExtra(v => ({ ...v, phone: e.target.value }))} placeholder="Phone" />
-            </div>
-            <p className="text-[11px] text-stone-500">Add bank and GST details under Vendors before a payment is made.</p>
-          </div>
-        )}
-        {vendorError && <p className="text-[11px] text-rose-600 mt-1">{vendorError}</p>}
+            {!matchedVendor.bankAccountNumber && (
+              <p className="text-[11px] text-amber-600 mt-1">This vendor has no bank details on file yet — Accounts won't be able to pay them until that's added.</p>
+            )}
+          </>
+        ) : typedName ? (
+          <p className="text-[11px] text-stone-400 mt-1">
+            Recorded as a one-off purchase. Add "{typedName}" under Vendors if you'll buy from them again and want to raise POs.
+          </p>
+        ) : null}
       </Field>
       <Field label="Bill / invoice number"><input className={inputCls} value={form.invoiceNo} onChange={set("invoiceNo")} /></Field>
       <div className="grid sm:grid-cols-2 gap-x-4">
@@ -1409,7 +1378,7 @@ function ExpenseForm({ onSave, defaultProjectId, projects, vendors, onCreateVend
       <ProofAttachment proof={form.proof} onChange={(p) => setForm(f => ({ ...f, proof: p }))} required pathPrefix="expenses" />
       <button onClick={handleSave} disabled={!canSubmit}
         className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">
-        {savingVendor ? "Saving vendor…" : "Submit expense"}
+        Submit expense
       </button>
       {!canSubmit && <p className="text-[11px] text-stone-400 mt-2 text-center">A vendor name and a receipt/invoice attachment are required to submit.</p>}
     </div>
@@ -2209,7 +2178,6 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
       {tab === "expenses" && <ExpensesTab project={project} expenses={data.expenses} users={data.users} vendors={data.vendors} currentUser={currentUser}
         canApprove={isFinance} canAdd={isFinance || isAssignedSupervisor || isAssignedArchitect}
         onAdd={(exp) => actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id })}
-        onCreateVendor={actions.addVendorReturning}
         onApprove={(id) => actions.approveExpense(id, currentUser.id)} onReject={(id, reason) => actions.rejectExpense(id, currentUser.id, reason)}
         onDelete={(id) => actions.deleteExpense(id)}
         onMarkPaid={(id, paid) => actions.markExpensePaid(id, currentUser.id, paid)}
@@ -4909,7 +4877,7 @@ function SupervisorHome({ data, currentUser, actions, setView }) {
         <SiteReportForm onSave={(rep) => { actions.addSiteReport(project.id, currentUser.id, rep); setModal(null); }} />
       </Modal>}
       {modal === "expense" && <Modal title="Add Expense" onClose={() => setModal(null)}>
-        <ExpenseForm defaultProjectId={project.id} vendors={data.vendors} onCreateVendor={actions.addVendorReturning}
+        <ExpenseForm defaultProjectId={project.id} vendors={data.vendors}
           onSave={(exp) => { actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id }); setModal(null); }} />
       </Modal>}
       {modal === "photo" && <Modal title="Upload Site Photo" onClose={() => setModal(null)}>
