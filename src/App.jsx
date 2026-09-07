@@ -6258,7 +6258,10 @@ export default function App() {
       throw err;
     }),
     markExpensePaid: (id, userId, paid) => dbMarkExpensePaid(id, userId, paid).then(reload),
-    generatePO: (id, userId) => dbGeneratePO(id, userId).then(reload),
+    generatePO: (id) => dbGeneratePO(id).then(reload).catch((err) => {
+      window.alert(`Couldn't raise the purchase order.\n\n${err.message || err}`);
+      throw err;
+    }),
     addQuotation: (q) => dbAddQuotation(q, profile?.id).then(reload),
     updateQuotation: (id, q) => dbUpdateQuotation(id, q).then(reload),
     updateQuotationStatus: (id, status) => dbUpdateQuotationStatus(id, status).then(reload),
