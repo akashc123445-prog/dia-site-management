@@ -435,7 +435,9 @@ export function blankBOQ(project) {
     totalFee: 0,
     /* unused by this document type, kept so one row shape covers all three */
     serviceLine: QUOTATION_SERVICE_LINES[0],
-    area: 0, floors: "", feeMode: "lumpsum", ratePerSqft: 0, gstNote: "",
+    /* gstNote is set above — it is a real BOQ field, not one of the unused
+       carry-overs, so it must not be blanked here. */
+    area: 0, floors: "", feeMode: "lumpsum", ratePerSqft: 0,
     introParas: [], scopeStages: [], milestoneNotes: [], revisionPolicy: [],
     closingParas: [], paymentTerms: [], lineItems: [], discount: 0, workTerms: [],
     salutation: "",
