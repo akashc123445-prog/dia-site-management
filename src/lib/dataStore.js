@@ -504,21 +504,15 @@ export async function dbMarkExpensePaid(id, paidBy, paid) {
    called for an expense, and returns the full expense row so the PDF can be
    built immediately from it. Calling again on an expense that already has a
    PO number just returns the existing one rather than issuing a new one. */
-export async function dbGeneratePO(expenseId, generatedBy) {
-  const { data: existing, error: fetchErr } = await supabase.from("expenses").select("*").eq("id", expenseId).single();
-  if (fetchErr) throw fetchErr;
-  if (existing.po_number) return mapExpense(existing);
-
-  const { data: seqRow, error: seqErr } = await supabase.rpc("nextval_po_number");
-  if (seqErr) throw seqErr;
-  const year = new Date().getFullYear();
-  const poNumber = `PO-${year}-${String(seqRow).padStart(4, "0")}`;
-
-  const { data: updated, error: updateErr } = await supabase.from("expenses").update({
-    po_number: poNumber, po_generated_at: new Date().toISOString(), po_generated_by: generatedBy,
-  }).eq("id", expenseId).select().single();
-  if (updateErr) throw updateErr;
-  return mapExpense(updated);
+export async function dbGeneratePO(expenseId) {
+  /* Done in the database rather than as a plain update: the expenses update
+     policy blocks anyone touching a row they submitted, which is right for
+     approvals but wrongly stopped someone raising a PO against their own
+     expense. The routine applies its own checks — staff only, approved only. */
+  const { data, error } = await supabase.rpc("generate_po", { p_expense_id: expenseId });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return mapExpense(row);
 }
 
 /* ---- vendors ------------------------------------------------------------ */
