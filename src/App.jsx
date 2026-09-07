@@ -1291,54 +1291,46 @@ function ExpenseForm({ onSave, defaultProjectId, projects, vendors, onCreateVend
     amount: "", paymentMethod: PAYMENT_METHODS[0], vendorId: "", invoiceNo: "", notes: "",
     totalInvoiceValue: "", advancePaid: "", proof: null,
   });
-  /* A vendor met for the first time on site shouldn't force a detour through
-     the Vendors screen, so a name can be typed here and the vendor record is
-     created alongside the expense. */
-  const [newVendor, setNewVendor] = useState(null);   // null = pick existing
+  /* The vendor is typed, not picked. Existing names are offered as
+     suggestions and matched on the way in; anything else becomes a new vendor
+     record when the expense is saved, so a supplier met on site this morning
+     doesn't send someone off to the Vendors screen first. */
+  const [vendorName, setVendorName] = useState("");
+  const [vendorExtra, setVendorExtra] = useState({ material: "", phone: "" });
   const [savingVendor, setSavingVendor] = useState(false);
   const [vendorError, setVendorError] = useState("");
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
   const pending = (Number(form.totalInvoiceValue) || 0) - (Number(form.advancePaid) || 0);
-  const selectedVendor = (vendors || []).find(v => v.id === form.vendorId);
-  const vendorReady = newVendor ? String(newVendor.name || "").trim() : !!form.vendorId;
-  const canSubmit = form.description && form.amount && form.projectId && vendorReady && form.proof && !savingVendor;
+
+  const typedName = vendorName.trim();
+  const matchedVendor = (vendors || []).find(v => v.name.trim().toLowerCase() === typedName.toLowerCase());
+  const isNewVendor = !!typedName && !matchedVendor;
+  const canSubmit = form.description && form.amount && form.projectId && typedName && form.proof && !savingVendor;
 
   const handleSave = async () => {
-    let vendorId = form.vendorId;
-    let vendorName = (vendors || []).find(v => v.id === vendorId)?.name || "";
+    let vendorId = matchedVendor?.id || "";
+    let name = matchedVendor?.name || typedName;
 
-    if (newVendor) {
-      const name = String(newVendor.name || "").trim();
-      /* Reuse an existing record rather than creating a duplicate under a
-         slightly different spelling. */
-      const existing = (vendors || []).find(v => v.name.trim().toLowerCase() === name.toLowerCase());
-      if (existing) {
-        vendorId = existing.id; vendorName = existing.name;
-      } else if (onCreateVendor) {
-        setSavingVendor(true); setVendorError("");
-        try {
-          const created = await onCreateVendor({
-            name, material: newVendor.material || "", phone: newVendor.phone || "",
-          });
-          vendorId = created?.id || "";
-          vendorName = name;
-        } catch (err) {
-          setVendorError(err.message || "Couldn't save that vendor.");
-          setSavingVendor(false);
-          return;
-        }
+    if (isNewVendor && onCreateVendor) {
+      setSavingVendor(true); setVendorError("");
+      try {
+        const created = await onCreateVendor({ name: typedName, ...vendorExtra });
+        vendorId = created?.id || "";
+        name = typedName;
+      } catch (err) {
+        setVendorError(err.message || "Couldn't save that vendor.");
         setSavingVendor(false);
-      } else {
-        vendorName = name;
+        return;
       }
+      setSavingVendor(false);
     }
 
     onSave({
       ...form,
       vendorId,
       amount: Number(form.amount),
-      vendor: vendorName,
+      vendor: name,
       totalInvoiceValue: form.totalInvoiceValue === "" ? null : Number(form.totalInvoiceValue),
       advancePaid: form.advancePaid === "" ? 0 : Number(form.advancePaid),
       proofUrl: form.proof?.dataUrl || null,
@@ -1372,43 +1364,38 @@ function ExpenseForm({ onSave, defaultProjectId, projects, vendors, onCreateVend
         </Field>
       </div>
       <Field label="Vendor">
-        {!newVendor ? (
-          <>
-            <div className="flex items-center gap-2">
-              <select className={inputCls} value={form.vendorId} onChange={set("vendorId")}>
-                <option value="">{(vendors || []).length ? "Select a vendor…" : "No vendors yet"}</option>
-                {(vendors || []).map(v => <option key={v.id} value={v.id}>{v.name}{v.material ? ` — ${v.material}` : ""}</option>)}
-              </select>
-              <button type="button" onClick={() => { setNewVendor({ name: "", material: "", phone: "" }); setForm(f => ({ ...f, vendorId: "" })); }}
-                className="shrink-0 flex items-center gap-1.5 px-3 py-2.5 rounded-lg border border-stone-300 text-xs font-semibold text-stone-600 hover:dia-border-gold hover:dia-text-bronze whitespace-nowrap">
-                <Plus size={14} /> New
-              </button>
-            </div>
-            {selectedVendor && !selectedVendor.bankAccountNumber && (
-              <p className="text-[11px] text-amber-600 mt-1">This vendor has no bank details on file yet — Accounts won't be able to pay them until that's added.</p>
-            )}
-          </>
-        ) : (
-          <div className="border dia-border-gold-soft rounded-xl p-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold dia-text-bronze">New vendor</span>
-              <button type="button" onClick={() => { setNewVendor(null); setVendorError(""); }}
-                className="text-xs text-stone-500 hover:text-stone-800">Pick an existing one</button>
-            </div>
-            <input className={inputCls} autoFocus value={newVendor.name}
-              onChange={e => setNewVendor(v => ({ ...v, name: e.target.value }))} placeholder="Vendor name *" />
-            <div className="grid grid-cols-2 gap-2">
-              <input className={inputCls} value={newVendor.material}
-                onChange={e => setNewVendor(v => ({ ...v, material: e.target.value }))} placeholder="Material or trade" />
-              <input className={inputCls} value={newVendor.phone}
-                onChange={e => setNewVendor(v => ({ ...v, phone: e.target.value }))} placeholder="Phone" />
-            </div>
-            <p className="text-[11px] text-stone-500">
-              Saved to the vendor directory with the expense. Add bank and GST details under Vendors before a payment is made.
+        <input className={inputCls} list="expense-vendor-names" value={vendorName}
+          onChange={e => setVendorName(e.target.value)}
+          placeholder="Type the vendor's name" autoComplete="off" />
+        <datalist id="expense-vendor-names">
+          {(vendors || []).map(v => <option key={v.id} value={v.name}>{v.material || ""}</option>)}
+        </datalist>
+
+        {matchedVendor && (
+          <p className="text-[11px] text-stone-500 mt-1">
+            Matched to <span className="font-semibold text-stone-700">{matchedVendor.name}</span>
+            {matchedVendor.material ? ` — ${matchedVendor.material}` : ""} in the vendor directory.
+          </p>
+        )}
+        {matchedVendor && !matchedVendor.bankAccountNumber && (
+          <p className="text-[11px] text-amber-600 mt-1">This vendor has no bank details on file yet — Accounts won't be able to pay them until that's added.</p>
+        )}
+
+        {isNewVendor && (
+          <div className="border dia-border-gold-soft rounded-xl p-3 mt-2 space-y-2">
+            <p className="text-[11px] dia-text-bronze font-semibold">
+              New vendor — "{typedName}" will be added to the directory with this expense.
             </p>
-            {vendorError && <p className="text-[11px] text-rose-600">{vendorError}</p>}
+            <div className="grid grid-cols-2 gap-2">
+              <input className={inputCls} value={vendorExtra.material}
+                onChange={e => setVendorExtra(v => ({ ...v, material: e.target.value }))} placeholder="Material or trade" />
+              <input className={inputCls} value={vendorExtra.phone}
+                onChange={e => setVendorExtra(v => ({ ...v, phone: e.target.value }))} placeholder="Phone" />
+            </div>
+            <p className="text-[11px] text-stone-500">Add bank and GST details under Vendors before a payment is made.</p>
           </div>
         )}
+        {vendorError && <p className="text-[11px] text-rose-600 mt-1">{vendorError}</p>}
       </Field>
       <Field label="Bill / invoice number"><input className={inputCls} value={form.invoiceNo} onChange={set("invoiceNo")} /></Field>
       <div className="grid sm:grid-cols-2 gap-x-4">
@@ -1421,8 +1408,10 @@ function ExpenseForm({ onSave, defaultProjectId, projects, vendors, onCreateVend
       <Field label="Notes (optional)"><textarea className={inputCls} rows={2} value={form.notes} onChange={set("notes")} /></Field>
       <ProofAttachment proof={form.proof} onChange={(p) => setForm(f => ({ ...f, proof: p }))} required pathPrefix="expenses" />
       <button onClick={handleSave} disabled={!canSubmit}
-        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">Submit expense</button>
-      {!canSubmit && <p className="text-[11px] text-stone-400 mt-2 text-center">Vendor and a receipt/invoice attachment are required to submit.</p>}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">
+        {savingVendor ? "Saving vendor…" : "Submit expense"}
+      </button>
+      {!canSubmit && <p className="text-[11px] text-stone-400 mt-2 text-center">A vendor name and a receipt/invoice attachment are required to submit.</p>}
     </div>
   );
 }
@@ -6266,10 +6255,18 @@ export default function App() {
     addDrawingItem: (phaseId, name) => dbAddDrawing(phaseId, name).then(reload),
     removeDrawingItem: (phaseId, drawingId) => dbRemoveDrawing(drawingId).then(reload),
     addSiteReport: (projectId, supervisorId, rep) => dbAddSiteReport(projectId, supervisorId, rep).then(reload),
-    addExpense: (exp) => dbAddExpense(exp).then(reload),
+    addExpense: (exp) => dbAddExpense(exp).then(reload).catch((err) => {
+      window.alert(`Couldn't save that expense.\n\n${err.message || err}`);
+      throw err;
+    }),
     approveExpense: (id, approverId) => dbApproveExpense(id, approverId).then(reload),
     rejectExpense: (id, approverId, reason) => dbRejectExpense(id, approverId, reason).then(reload),
-    deleteExpense: (id) => dbDeleteExpense(id).then(reload),
+    /* Errors here used to disappear into an unhandled rejection, so a refused
+       delete looked like a button that did nothing. */
+    deleteExpense: (id) => dbDeleteExpense(id).then(reload).catch((err) => {
+      window.alert(`Couldn't delete that expense.\n\n${err.message || err}`);
+      throw err;
+    }),
     markExpensePaid: (id, userId, paid) => dbMarkExpensePaid(id, userId, paid).then(reload),
     generatePO: (id, userId) => dbGeneratePO(id, userId).then(reload),
     addQuotation: (q) => dbAddQuotation(q, profile?.id).then(reload),
