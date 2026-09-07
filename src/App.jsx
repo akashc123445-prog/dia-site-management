@@ -28,7 +28,7 @@ import {
   fetchAllData, dbUpdateProfile, dbRemoveUser, dbAdminCreateUser, dbAdminResetPassword, dbAddProject, dbUpdateProject, dbDeleteProject, dbUpdateTask,
   dbUpdateDesignPhase, dbUpdateDrawing, dbAddDrawing, dbRemoveDrawing,
   dbAddSiteReport, dbAddPhoto, dbAddExpense, dbApproveExpense, dbRejectExpense, dbDeleteExpense, dbMarkExpensePaid, dbGeneratePO, dbAddIssue,
-  dbAddVendor, dbUpdateVendor, dbDeleteVendor,
+  dbAddVendor, dbUpdateVendor, dbDeleteVendor, dbUpdateExpenseVendor,
   dbAddQuotation, dbUpdateQuotation, dbUpdateQuotationStatus, dbDeleteQuotation, dbDuplicateQuotation,
   dbAddBoqLibraryItem, dbUpdateBoqLibraryItem, dbDeleteBoqLibraryItem, dbTouchBoqLibraryItem,
   dbAddFeedPost, dbUpdateFeedPost, dbResolveFeedPost, dbDeleteFeedPost, dbAddFeedComment, dbDeleteFeedComment,
@@ -1147,6 +1147,15 @@ function SiteReportForm({ onSave, reportType }) {
   );
 }
 
+/* The vendor a PO is addressed to. Where the expense records only a shop name
+   — a one-off purchase with no directory entry — the PO is still raised
+   against that name, with the address and GST left blank. Refusing to raise
+   the PO at all would be worse: the purchase happened either way. */
+function poVendor(expense, vendors) {
+  return (vendors || []).find(v => v.id === expense.vendorId)
+    || (expense.vendor ? { name: expense.vendor } : null);
+}
+
 function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO }) {
   const [showModal, setShowModal] = useState(false);
   const list = expenses
@@ -1186,7 +1195,7 @@ function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprov
           <tbody>
             {list.map(e => (
               <ExpenseRow key={e.id} e={e} userName={userName} canApprove={canApprove} currentUserId={currentUser.id} onApprove={onApprove} onReject={onReject} onDelete={onDelete} onMarkPaid={onMarkPaid} onGeneratePO={onGeneratePO}
-                onDownloadPO={() => generatePOPdf({ expense: e, vendor: vendors.find(v => v.id === e.vendorId), project, generatedByName: userName(e.poGeneratedBy) })} />
+                onDownloadPO={() => generatePOPdf({ expense: e, vendor: poVendor(e, vendors), project, generatedByName: userName(e.poGeneratedBy) })} />
             ))}
           </tbody>
         </table>
@@ -1268,7 +1277,10 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
                 </button>
               )}
               {onGeneratePO && !e.poNumber && (
-                <button onClick={() => onGeneratePO(e.id)} disabled={!e.vendorId} title={!e.vendorId ? "Link a vendor to this expense first" : "Generate PO"}
+                <button onClick={() => onGeneratePO(e.id)} disabled={!e.vendorId && !e.vendor}
+                  title={!e.vendorId && !e.vendor ? "Add a vendor or shop name to this expense first"
+                    : !e.vendorId ? "Generate PO — address and GST will be blank until this shop is added under Vendors"
+                    : "Generate PO"}
                   className="text-[11px] font-semibold text-white bg-stone-800 hover:bg-stone-900 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded-md">
                   Generate PO
                 </button>
@@ -2194,7 +2206,7 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
         onGeneratePO={(expenseId) => {
           const exp = data.expenses.find(e => e.id === expenseId);
           if (!exp) return;
-          generatePOPdf({ expense: exp, vendor: data.vendors.find(v => v.id === exp.vendorId), project, generatedByName: currentUser.name });
+          generatePOPdf({ expense: exp, vendor: poVendor(exp, data.vendors), project, generatedByName: currentUser.name });
         }} />}
     </div>
   );
@@ -2321,7 +2333,8 @@ function ExpensesGlobal({ data, currentUser, actions }) {
                 onDelete={() => actions.deleteExpense(e.id)}
                 onMarkPaid={(paid) => actions.markExpensePaid(e.id, currentUser.id, paid)}
                 onGeneratePO={() => actions.generatePO(e.id, currentUser.id)}
-                onDownloadPO={() => generatePOPdf({ expense: e, vendor: vendors.find(v => v.id === e.vendorId), project: projects.find(p => p.id === e.projectId), generatedByName: userName(e.poGeneratedBy) })} />
+                onAdoptVendor={(exp) => actions.adoptVendorFromExpense(exp)}
+                onDownloadPO={() => generatePOPdf({ expense: e, vendor: poVendor(e, vendors), project: projects.find(p => p.id === e.projectId), generatedByName: userName(e.poGeneratedBy) })} />
             ))}
           </tbody>
         </table>
@@ -2331,7 +2344,7 @@ function ExpensesGlobal({ data, currentUser, actions }) {
   );
 }
 
-function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO, onDownloadPO }) {
+function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO, onDownloadPO, onAdoptVendor }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -2401,8 +2414,17 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
                 {e.paid ? "Mark unpaid" : "Mark paid"}
               </button>
             )}
+            {!e.vendorId && e.vendor && onAdoptVendor && (
+              <button onClick={() => onAdoptVendor(e)} title={`Add ${e.vendor} to the vendor directory and link this expense`}
+                className="text-[11px] dia-text-bronze font-semibold whitespace-nowrap">
+                Add to vendors
+              </button>
+            )}
             {onGeneratePO && !e.poNumber && (
-              <button onClick={onGeneratePO} disabled={!e.vendorId} title={!e.vendorId ? "Link a vendor to this expense first" : "Generate PO"}
+              <button onClick={onGeneratePO} disabled={!e.vendorId && !e.vendor}
+                title={!e.vendorId && !e.vendor ? "Add a vendor or shop name to this expense first"
+                  : !e.vendorId ? "Generate PO — address and GST will be blank until this shop is added under Vendors"
+                  : "Generate PO"}
                 className="text-[11px] font-semibold text-white bg-stone-800 hover:bg-stone-900 disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1 rounded-md">
                 Generate PO
               </button>
@@ -6258,6 +6280,22 @@ export default function App() {
     addVendor: (v) => dbAddVendor(v).then(reload),
     /* Returns the created vendor rather than only refreshing, so an expense
        saved in the same breath can be linked to it straight away. */
+    /* Promotes a shop typed on an expense into a proper vendor record and
+       links the expense to it, so its bank and GST details exist for the next
+       purchase and future POs are complete. Admin and Accounts only — the
+       vendors table refuses inserts from anyone else. */
+    adoptVendorFromExpense: async (expense) => {
+      try {
+        const name = String(expense.vendor || "").trim();
+        const existing = (data?.vendors || []).find(
+          v => v.name.trim().toLowerCase() === name.toLowerCase());
+        const vendor = existing || await dbAddVendor({ name });
+        await dbUpdateExpenseVendor(expense.id, vendor.id);
+        await reload();
+      } catch (err) {
+        window.alert(`Couldn't add that vendor.\n\n${err.message || err}`);
+      }
+    },
     addVendorReturning: async (v) => {
       const created = await dbAddVendor(v);
       await reload();
