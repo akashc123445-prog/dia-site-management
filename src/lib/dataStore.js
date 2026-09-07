@@ -486,6 +486,13 @@ export async function dbDeleteExpense(id) {
   if (error) throw error;
 }
 
+/* Links an expense to a vendor record after the fact — used when a shop that
+   was typed by name is added to the directory. */
+export async function dbUpdateExpenseVendor(expenseId, vendorId) {
+  const { error } = await supabase.from("expenses").update({ vendor_id: vendorId }).eq("id", expenseId);
+  if (error) throw error;
+}
+
 export async function dbMarkExpensePaid(id, paidBy, paid) {
   const { error } = await supabase.from("expenses")
     .update({ paid, paid_at: paid ? new Date().toISOString() : null, paid_by: paid ? paidBy : null })
