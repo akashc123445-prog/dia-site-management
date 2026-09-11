@@ -157,6 +157,34 @@ export function fillTokens(text, q) {
     .replace(/\{\{service\}\}/g, q.serviceLine || "Architectural Design, Interior Design & Project Co-ordination");
 }
 
+/* A proposal may cover more than one category of work — a showroom at one
+   rate and an office floor at another. Each line carries its own area and
+   rate; a line with no area is a flat amount. */
+export function feeLineAmount(line) {
+  const area = Number(line.area) || 0;
+  const rate = Number(line.rate) || 0;
+  if (area > 0 && rate > 0) return Math.round(area * rate);
+  /* No area means the figure in the rate column is the whole amount — a
+     category priced as a lump sum. Avoids a third box that is blank on most
+     lines and confusing on the rest. */
+  if (rate > 0) return Math.round(rate);
+  return Math.round(Number(line.amount) || 0);
+}
+
+export function feeLinesTotal(lines) {
+  return (lines || []).reduce((t, l) => t + feeLineAmount(l), 0);
+}
+
+/* The professional fee, however it was arrived at. One place, so the editor,
+   the PDF and the payment schedule always agree. */
+export function quotationFee(q) {
+  if (q.feeMode === "lines") return feeLinesTotal(q.feeLines);
+  if (q.feeMode === "rate") return Math.round((Number(q.area) || 0) * (Number(q.ratePerSqft) || 0));
+  return Math.round(Number(q.totalFee) || 0);
+}
+
+export const blankFeeLine = () => ({ label: "", area: 0, rate: 0, amount: "" });
+
 /* ---- money ------------------------------------------------------------ */
 
 /* Splits a rupee amount across the stage percentages, giving any rounding
@@ -218,6 +246,7 @@ export function blankQuotation(project) {
     floors: "",
     feeMode: "rate",
     ratePerSqft: 0,
+    feeLines: [],
     totalFee: 0,
     gstNote: "GST shall be applicable extra as per prevailing Government norms.",
     introParas: QUOTATION_INTRO_TEMPLATE,

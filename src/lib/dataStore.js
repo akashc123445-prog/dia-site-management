@@ -128,6 +128,7 @@ const mapQuotation = (r) => ({
   location: r.location, city: r.city, date: r.date, subject: r.subject,
   serviceLine: r.service_line, area: Number(r.area) || 0, floors: r.floors,
   feeMode: r.fee_mode || "rate", ratePerSqft: Number(r.rate_per_sqft) || 0,
+  feeLines: r.fee_lines || [],
   totalFee: Number(r.total_fee) || 0, gstNote: r.gst_note,
   introParas: r.intro_paras || [], scopeStages: r.scope_stages || [],
   paymentStages: r.payment_stages || [], milestoneNotes: r.milestone_notes || [],
@@ -580,6 +581,7 @@ const quotationPayload = (q) => ({
   area: Number(q.area) || 0,
   floors: q.floors,
   fee_mode: q.feeMode,
+  fee_lines: q.feeLines || [],
   rate_per_sqft: Number(q.ratePerSqft) || 0,
   total_fee: Number(q.totalFee) || 0,
   gst_note: q.gstNote,
@@ -826,10 +828,15 @@ export async function dbDeleteMaterialRequest(id) {
    paid, and a required delivery/receipt photo. Moves to "Received" — still
    needs Admin to confirm before it becomes a real expense. */
 export async function dbMarkMaterialReceived(id, receivedBy, { vendorId, amount, receiptPhotoUrl }) {
-  const { error } = await supabase.from("material_requests").update({
-    status: "Received", received_by: receivedBy, received_at: new Date().toISOString(),
-    vendor_id: vendorId, amount, receipt_photo_url: receiptPhotoUrl,
-  }).eq("id", id);
+  /* Through the database routine: the plain update policy is staff-only, but
+     the supervisor assigned to the site is the person who actually receives
+     the delivery. */
+  const { error } = await supabase.rpc("mark_material_received", {
+    p_request_id: id,
+    p_vendor_id: vendorId || null,
+    p_amount: amount ?? null,
+    p_receipt_photo_url: receiptPhotoUrl || null,
+  });
   if (error) throw error;
 }
 
