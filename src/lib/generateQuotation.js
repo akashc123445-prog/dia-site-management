@@ -357,12 +357,34 @@ export function generateQuotationPdf(q, mode = "save") {
   doc.text(fmtDate(q.date), PAGE.w - M.right, ctx.y, { align: "right" });
   doc.text(q.city || "Bengaluru", PAGE.w - M.right, ctx.y + 13, { align: "right" });
 
-  const addressLines = ["To", `${q.clientName || ""},`, ...String(q.clientAddress || "").split("\n").filter(Boolean).map((l) => l.trim() + ",")];
-  addressLines.forEach((ln, i) => {
-    doc.setFont(i === 1 ? DISPLAY : BODY, i === 1 ? "bold" : "normal");
-    doc.text(ln, M.left, ctx.y + i * 13);
+  /* The addressee block wraps inside its own column. A client's full postal
+     address on one line would otherwise run under the date and off the sheet,
+     with no error to show for it. */
+  const addressW = CONTENT_W * 0.66;
+  let ay = ctx.y;
+
+  doc.setFont(BODY, "normal");
+  doc.setFontSize(9.6);
+  doc.text("To", M.left, ay);
+  ay += 13;
+
+  doc.setFont(DISPLAY, "bold");
+  doc.setFontSize(10);
+  doc.splitTextToSize(`${q.clientName || ""},`, addressW).forEach((line) => {
+    doc.text(line, M.left, ay);
+    ay += 13;
   });
-  ctx.y += Math.max(addressLines.length * 13, 26) + 16;
+
+  doc.setFont(BODY, "normal");
+  doc.setFontSize(9.6);
+  String(q.clientAddress || "").split("\n").map((l) => l.trim()).filter(Boolean).forEach((entry) => {
+    doc.splitTextToSize(entry + ",", addressW).forEach((line) => {
+      doc.text(line, M.left, ay);
+      ay += 12.5;
+    });
+  });
+
+  ctx.y = Math.max(ay, ctx.y + 26) + 16;
 
   heading(ctx, "Subject:", 10);
   para(ctx, T(q.subject || `Proposal for ${q.serviceLine} Services for the Proposed ${q.projectTitle || "Jewellery Store"} at ${q.location || ""}.`), { bold: true, size: 10, lead: 14, gap: 12 });
