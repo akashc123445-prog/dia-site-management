@@ -2,7 +2,7 @@ import { jsPDF } from "jspdf";
 import { DIA, COMPANY_INFO, LOGO_LETTERHEAD, BODY_IN_TRAJAN } from "./constants";
 import { TRAJAN, registerBrandFonts } from "./brandFonts";
 import { fmtDate } from "./helpers";
-import { amountInWords, computeStageAmounts, fillTokens } from "./quotationDefaults";
+import { amountInWords, computeStageAmounts, fillTokens, feeLineAmount } from "./quotationDefaults";
 
 /* ------------------------------------------------------------------------
    Design proposal / quotation PDF.
@@ -187,7 +187,11 @@ export function bullets(ctx, items, opts = {}) {
     const lines = doc.splitTextToSize(String(item), CONTENT_W - indent - 8);
     lines.forEach((ln, i) => {
       ctx.need(lead);
+      /* The size has to be restated as well as the face: a bullet that lands
+         first on a new page would otherwise inherit the footer's 6pt type,
+         which is how "Feature Wall Elevations" came out tiny mid-list. */
       doc.setFont(BODY, "normal");
+      doc.setFontSize(size);
       doc.setTextColor(...INK);
       if (i === 0) {
         doc.setFillColor(...MAROON);
@@ -337,6 +341,80 @@ export function drawSignature(ctx, q, x, width = 170, opts = {}) {
   if (opts.showCompany !== false) { doc.text(COMPANY_INFO.name, x, ctx.y); ctx.y += 12; }
 }
 
+/* Breaks the professional fee down by category of work — printed only when a
+   proposal covers more than one scope. */
+function feeLinesTable(ctx, lines, total) {
+  const { doc } = ctx;
+  const cols = [
+    { label: "Category of work", w: CONTENT_W * 0.46, align: "left" },
+    { label: "Area (sq.ft.)", w: CONTENT_W * 0.16, align: "center" },
+    { label: "Rate", w: CONTENT_W * 0.16, align: "right" },
+    { label: "Amount", w: CONTENT_W * 0.22, align: "right" },
+  ];
+  const colX = (i) => M.left + cols.slice(0, i).reduce((t, c) => t + c.w, 0);
+
+  const headH = 22;
+  ctx.need(headH + lines.length * 24 + 30);
+  doc.setFillColor(...MAROON_DEEP);
+  doc.rect(M.left, ctx.y, CONTENT_W, headH, "F");
+  doc.setFont(DISPLAY, "bold");
+  doc.setFontSize(7.4);
+  doc.setTextColor(...CREAM);
+  cols.forEach((c, i) => {
+    const x = c.align === "left" ? colX(i) + 7 : c.align === "right" ? colX(i) + c.w - 7 : colX(i) + c.w / 2;
+    doc.text(c.label, x, ctx.y + 14, { align: c.align });
+  });
+  ctx.y += headH;
+
+  lines.forEach((line, i) => {
+    doc.setFont(BODY, "normal");
+    doc.setFontSize(8.8);
+    const nameLines = doc.splitTextToSize(String(line.label || "—"), cols[0].w - 14);
+    const h = Math.max(22, nameLines.length * 11 + 11);
+    if (ctx.y + h > ctx.bottom) ctx.newPage();
+    const top = ctx.y;
+
+    if (i % 2 === 1) {
+      doc.setFillColor(247, 243, 236);
+      doc.rect(M.left, top, CONTENT_W, h, "F");
+    }
+    doc.setTextColor(...INK);
+    const mid = top + h / 2 + 3;
+
+    doc.setFont(BODY, "normal");
+    doc.setFontSize(8.8);
+    let ty = top + (h - nameLines.length * 11) / 2 + 8;
+    nameLines.forEach((l) => { doc.text(l, colX(0) + 7, ty); ty += 11; });
+
+    const area = Number(line.area) || 0;
+    const rate = Number(line.rate) || 0;
+    doc.text(area ? area.toLocaleString("en-IN") : "—", colX(1) + cols[1].w / 2, mid, { align: "center" });
+    /* With no area there is no per-sq.ft rate to show — the figure belongs in
+       the amount column alone. */
+    doc.text(area > 0 && rate > 0 ? rs(rate) : "Lump sum", colX(2) + cols[2].w - 7, mid, { align: "right" });
+    doc.setFont(DISPLAY, "bold");
+    doc.text(rs(feeLineAmount(line)), colX(3) + cols[3].w - 7, mid, { align: "right" });
+
+    doc.setDrawColor(...RULE);
+    doc.setLineWidth(0.6);
+    cols.forEach((c, ci) => doc.line(colX(ci), top, colX(ci), top + h));
+    doc.line(PAGE.w - M.right, top, PAGE.w - M.right, top + h);
+    doc.line(M.left, top + h, PAGE.w - M.right, top + h);
+    ctx.y += h;
+  });
+
+  const totalH = 26;
+  ctx.need(totalH);
+  doc.setFillColor(...MAROON);
+  doc.rect(M.left, ctx.y, CONTENT_W, totalH, "F");
+  doc.setFont(DISPLAY, "bold");
+  doc.setFontSize(9.4);
+  doc.setTextColor(...CREAM);
+  doc.text("TOTAL PROFESSIONAL FEE", colX(2) + cols[2].w - 7, ctx.y + 17, { align: "right" });
+  doc.text(rs(total), colX(3) + cols[3].w - 7, ctx.y + 17, { align: "right" });
+  ctx.y += totalH + 12;
+}
+
 /* ---- main ------------------------------------------------------------- */
 
 /* mode "save" downloads the file; "preview" returns a blob URL the UI can
@@ -433,6 +511,10 @@ export function generateQuotationPdf(q, mode = "save") {
   para(ctx, `${rs(total)}/- (${amountInWords(total)})`, { bold: true, size: 10.5, gap: 2 });
   if (q.feeMode === "rate" && Number(q.ratePerSqft) > 0) {
     para(ctx, `Calculated at ${rs(q.ratePerSqft)} per sq.ft. on ${Number(q.area).toLocaleString("en-IN")} sq.ft. of built-up area.`, { size: 9, color: GREY, gap: 4 });
+  }
+  if (q.feeMode === "lines" && (q.feeLines || []).length) {
+    ctx.y += 4;
+    feeLinesTable(ctx, q.feeLines, total);
   }
   para(ctx, "The above fee is on a Lump Sum basis and is exclusive of applicable GST.", { bold: true, size: 9.8, gap: 6 });
   para(ctx, "The built-up area is approximate and subject to final site measurements. Any substantial variation in the project area or scope of work beyond the agreed parameters may necessitate a proportionate revision of the professional fee, subject to mutual discussion and written approval.", { gap: 16 });
