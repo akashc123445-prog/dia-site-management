@@ -55,6 +55,7 @@ import {
   QUOTATION_SIGNATORY, WORK_QUOTE_TERMS, WORK_QUOTE_UNITS,
   BOQ_MATERIAL_SPECS, BOQ_EXCLUSIONS, BOQ_PAYMENT_TEMPLATE, BOQ_UNITS, BOQ_GST_NOTES,
   blankQuotation, blankWorkQuote, blankBOQ, computeStageAmounts, amountInWords,
+  quotationFee, feeLineAmount, blankFeeLine,
   boqItemQty, boqItemAmount, boqItemIsOverridden, boqSectionTotal, boqTotals, sectionCode,
 } from "./lib/quotationDefaults";
 
@@ -1270,7 +1271,12 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
                   <button onClick={() => { onReject(e.id, reason || "Not specified"); setRejecting(false); }} className="text-xs font-semibold text-rose-700 shrink-0">Confirm</button>
                 </div>
               )}
-              {e.status === "Approved" && onMarkPaid && (
+              {e.status === "Approved" && onMarkPaid && isOwn && (
+                <span className="text-[11px] text-stone-400 italic" title="Marking a payment on your own expense needs another approver">
+                  Paid status set by another approver
+                </span>
+              )}
+              {e.status === "Approved" && onMarkPaid && !isOwn && (
                 <button onClick={() => onMarkPaid(e.id, !e.paid)}
                   className={`text-[11px] font-semibold px-2 py-1 rounded-md ${e.paid ? "text-stone-500 border border-stone-200 hover:bg-stone-50" : "text-white bg-amber-600 hover:bg-amber-700"}`}>
                   {e.paid ? "Mark unpaid" : "Mark paid"}
@@ -2408,7 +2414,12 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
                 <button onClick={() => { setRejecting(false); setReason(""); }} className="text-xs font-semibold text-stone-400 shrink-0">Cancel</button>
               </div>
             )}
-            {e.status === "Approved" && onMarkPaid && (
+            {e.status === "Approved" && onMarkPaid && isOwn && (
+              <span className="text-[11px] text-stone-400 italic" title="Marking a payment on your own expense needs another approver">
+                Paid status set by another approver
+              </span>
+            )}
+            {e.status === "Approved" && onMarkPaid && !isOwn && (
               <button onClick={() => onMarkPaid(!e.paid)}
                 className={`text-[11px] font-semibold px-2 py-1 rounded-md ${e.paid ? "text-stone-500 border border-stone-200 hover:bg-stone-50" : "text-white bg-amber-600 hover:bg-amber-700"}`}>
                 {e.paid ? "Mark unpaid" : "Mark paid"}
@@ -2928,11 +2939,15 @@ function QuotationEditor({ quotation, data, currentUser, onSave, onCancel, savin
   const [form, setForm] = useState(() => quotation ? { ...quotation } : blankQuotation(null));
   const set = (patch) => setForm(f => ({ ...f, ...patch }));
 
-  /* Fee is derived from area x rate unless the person switches to a lump sum,
-     in which case they type the figure directly. */
-  const computedTotal = form.feeMode === "rate"
-    ? Math.round((Number(form.area) || 0) * (Number(form.ratePerSqft) || 0))
-    : Math.round(Number(form.totalFee) || 0);
+  /* Area x rate, a flat lump sum, or several categories of work added up —
+     worked out by the same helper the PDF uses, so the two cannot disagree. */
+  const computedTotal = quotationFee(form);
+  const feeLines = form.feeLines || [];
+  const setFeeLine = (i, patch) => {
+    const next = [...feeLines];
+    next[i] = { ...next[i], ...patch };
+    set({ feeLines: next });
+  };
 
   const stageAmounts = computeStageAmounts(computedTotal, form.paymentStages || []);
   const pctTotal = (form.paymentStages || []).reduce((s, st) => s + (Number(st.percentage) || 0), 0);
@@ -3061,27 +3076,75 @@ function QuotationEditor({ quotation, data, currentUser, onSave, onCancel, savin
           </Field>
           <Field label="How is the fee calculated?">
             <div className="flex gap-2">
-              {[["rate", "Rate per sq.ft."], ["lumpsum", "Lump sum"]].map(([val, label]) => (
-                <button key={val} type="button" onClick={() => set({ feeMode: val, totalFee: computedTotal })}
-                  className={`flex-1 py-2 rounded-lg text-sm font-semibold border transition-colors ${
+              {[["rate", "Rate per sq.ft."], ["lumpsum", "Lump sum"], ["lines", "Several categories"]].map(([val, label]) => (
+                <button key={val} type="button"
+                  onClick={() => set({
+                    feeMode: val,
+                    totalFee: val === "lumpsum" ? computedTotal : form.totalFee,
+                    /* Starting a breakdown carries the single rate across as the
+                       first line, so nothing already typed is lost. */
+                    feeLines: val === "lines" && !feeLines.length
+                      ? [{ label: form.floors || "Ground Floor", area: Number(form.area) || 0, rate: Number(form.ratePerSqft) || 0, amount: "" }, blankFeeLine()]
+                      : form.feeLines,
+                  })}
+                  className={`flex-1 py-2 rounded-lg text-xs font-semibold border transition-colors ${
                     form.feeMode === val ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
                   {label}
                 </button>
               ))}
             </div>
           </Field>
-          {form.feeMode === "rate" ? (
+          {form.feeMode === "rate" && (
             <Field label="Design cost per sq.ft. (₹)">
               <input type="number" className={inputCls} value={form.ratePerSqft}
                 onChange={e => set({ ratePerSqft: e.target.value })} placeholder="250" />
             </Field>
-          ) : (
+          )}
+          {form.feeMode === "lumpsum" && (
             <Field label="Total professional fee (₹)">
               <input type="number" className={inputCls} value={form.totalFee}
                 onChange={e => set({ totalFee: e.target.value })} placeholder="1394250" />
             </Field>
           )}
         </div>
+
+        {form.feeMode === "lines" && (
+          <div className="mb-4">
+            <div className="hidden sm:grid grid-cols-12 gap-2 px-1 pb-1.5 text-[10px] uppercase tracking-wide text-stone-400 font-semibold">
+              <div className="col-span-5">Category of work</div>
+              <div className="col-span-2">Area (sq.ft.)</div>
+              <div className="col-span-2">Rate (₹)</div>
+              <div className="col-span-2 text-right">Amount</div>
+            </div>
+            <div className="space-y-2">
+              {feeLines.map((line, i) => (
+                <div key={i} className="grid grid-cols-12 gap-2 items-center">
+                  <input className={`${inputCls} col-span-12 sm:col-span-5`} value={line.label || ""}
+                    onChange={e => setFeeLine(i, { label: e.target.value })}
+                    placeholder="e.g. Ground Floor — showroom" />
+                  <input type="number" className={`${inputCls} col-span-4 sm:col-span-2`} value={line.area || ""}
+                    onChange={e => setFeeLine(i, { area: e.target.value })} placeholder="Area" />
+                  <input type="number" className={`${inputCls} col-span-4 sm:col-span-2`} value={line.rate || ""}
+                    onChange={e => setFeeLine(i, { rate: e.target.value })} placeholder="Rate" />
+                  <div className="col-span-3 sm:col-span-2 text-sm font-semibold text-stone-800 text-right tabular-nums">
+                    {fmtINR(feeLineAmount(line))}
+                  </div>
+                  <button type="button" onClick={() => set({ feeLines: feeLines.filter((_, x) => x !== i) })}
+                    className="col-span-1 text-stone-300 hover:text-rose-600 flex justify-center">
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={() => set({ feeLines: [...feeLines, blankFeeLine()] })}
+              className="flex items-center gap-1.5 text-sm dia-text-bronze font-semibold mt-3">
+              <Plus size={14} /> Add a category
+            </button>
+            <p className="text-[11px] text-stone-500 mt-2">
+              Leave the area blank and type the amount in the rate column for a category priced as a lump sum.
+            </p>
+          </div>
+        )}
 
         <div className="dia-bg-cream-soft rounded-xl p-4 mt-1">
           <div className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">Total professional fee</div>
@@ -3090,6 +3153,11 @@ function QuotationEditor({ quotation, data, currentUser, onSave, onCancel, savin
           {form.feeMode === "rate" && Number(form.area) > 0 && Number(form.ratePerSqft) > 0 && (
             <div className="text-[11px] text-stone-500 mt-2">
               {Number(form.area).toLocaleString("en-IN")} sq.ft. × {fmtINR(form.ratePerSqft)} per sq.ft.
+            </div>
+          )}
+          {form.feeMode === "lines" && feeLines.length > 0 && (
+            <div className="text-[11px] text-stone-500 mt-2">
+              {feeLines.filter(l => l.label).length} categor{feeLines.filter(l => l.label).length === 1 ? "y" : "ies"} of work
             </div>
           )}
         </div>
@@ -6257,7 +6325,10 @@ export default function App() {
       window.alert(`Couldn't delete that expense.\n\n${err.message || err}`);
       throw err;
     }),
-    markExpensePaid: (id, userId, paid) => dbMarkExpensePaid(id, userId, paid).then(reload),
+    markExpensePaid: (id, userId, paid) => dbMarkExpensePaid(id, userId, paid).then(reload).catch((err) => {
+      window.alert(`Couldn't update the payment status.\n\n${err.message || err}`);
+      throw err;
+    }),
     generatePO: (id) => dbGeneratePO(id).then(reload).catch((err) => {
       window.alert(`Couldn't raise the purchase order.\n\n${err.message || err}`);
       throw err;
