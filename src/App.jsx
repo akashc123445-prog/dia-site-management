@@ -1403,6 +1403,109 @@ function ExpenseForm({ onSave, defaultProjectId, projects, vendors }) {
   );
 }
 
+/* Everything about a project except its team, which has its own form. The
+   database has always allowed these edits — only the interface was missing,
+   so a contract value typed at 2am stayed wrong forever. */
+function EditProjectForm({ project, onSave }) {
+  const [form, setForm] = useState({
+    name: project.name || "",
+    client: project.client || "",
+    location: project.location || "",
+    type: project.type || PROJECT_TYPES[0],
+    contractType: project.contractType || CONTRACT_TYPES[0],
+    area: project.area ?? "",
+    startDate: project.startDate || "",
+    plannedEnd: project.plannedEnd || "",
+    pm: project.pm || "",
+    contractValue: project.contractValue ?? "",
+    estimatedCost: project.estimatedCost ?? "",
+    status: project.status || PROJECT_STATUSES[0],
+  });
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  const contractValue = Number(form.contractValue) || 0;
+  const estimatedCost = Number(form.estimatedCost) || 0;
+  const margin = contractValue > 0 ? ((contractValue - estimatedCost) / contractValue) * 100 : 0;
+  const canSubmit = form.name && form.client && form.location && form.startDate && form.plannedEnd;
+
+  return (
+    <div>
+      <Field label="Project name"><input className={inputCls} value={form.name} onChange={set("name")} /></Field>
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Client"><input className={inputCls} value={form.client} onChange={set("client")} /></Field>
+        <Field label="Category">
+          <select className={inputCls} value={form.type} onChange={set("type")}>
+            {PROJECT_TYPES.map(t => <option key={t}>{t}</option>)}
+          </select>
+        </Field>
+      </div>
+      <Field label="Contract type">
+        <div className="flex gap-2">
+          {CONTRACT_TYPES.map(ct => (
+            <button key={ct} type="button" onClick={() => setForm(f => ({ ...f, contractType: ct }))}
+              className={`flex-1 px-3 py-2.5 rounded-lg text-sm font-semibold border transition-colors ${
+                form.contractType === ct ? "bg-stone-900 text-white border-stone-900" : "bg-white text-stone-600 border-stone-200 hover:border-stone-400"}`}>
+              {ct}
+            </button>
+          ))}
+        </div>
+        {form.contractType !== project.contractType && (
+          <p className="text-[11px] text-amber-600 mt-1">
+            Changing this changes which design phases and tabs the project uses. Existing phases stay as they are.
+          </p>
+        )}
+      </Field>
+      <Field label="Location"><input className={inputCls} value={form.location} onChange={set("location")} /></Field>
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Start date"><input type="date" className={inputCls} value={form.startDate} onChange={set("startDate")} /></Field>
+        <Field label="Planned end date"><input type="date" className={inputCls} value={form.plannedEnd} onChange={set("plannedEnd")} /></Field>
+      </div>
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Area (sq.ft.)"><input type="number" className={inputCls} value={form.area} onChange={set("area")} /></Field>
+        <Field label="Project manager"><input className={inputCls} value={form.pm} onChange={set("pm")} /></Field>
+      </div>
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Contract value (₹)"><input type="number" className={inputCls} value={form.contractValue} onChange={set("contractValue")} /></Field>
+        <Field label="Estimated cost (₹)"><input type="number" className={inputCls} value={form.estimatedCost} onChange={set("estimatedCost")} /></Field>
+      </div>
+
+      {/* The margin isn't typed — it follows from the two figures above, and
+          showing it here stops a cost being entered that quietly wipes it. */}
+      <div className="dia-bg-cream-soft rounded-xl p-3 mb-3 flex items-center justify-between">
+        <div>
+          <div className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">Estimated margin</div>
+          <div className="text-[11px] text-stone-500 mt-0.5">
+            {fmtINR(contractValue)} contract − {fmtINR(estimatedCost)} cost
+          </div>
+        </div>
+        <div className="text-right">
+          <div className={`font-display text-2xl font-semibold ${margin < 0 ? "text-rose-600" : "text-stone-900"}`}>
+            {margin.toFixed(1)}%
+          </div>
+          <div className="text-[11px] text-stone-500">{fmtINR(contractValue - estimatedCost)}</div>
+        </div>
+      </div>
+
+      <Field label="Status">
+        <select className={inputCls} value={form.status} onChange={set("status")}>
+          {PROJECT_STATUSES.map(st => <option key={st}>{st}</option>)}
+        </select>
+      </Field>
+
+      <button onClick={() => onSave({
+        ...form,
+        area: form.area === "" ? null : Number(form.area),
+        contractValue: form.contractValue === "" ? null : Number(form.contractValue),
+        estimatedCost: form.estimatedCost === "" ? null : Number(form.estimatedCost),
+      })} disabled={!canSubmit}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">
+        Save changes
+      </button>
+      {!canSubmit && <p className="text-[11px] text-stone-400 mt-2 text-center">Name, client, location and both dates are required.</p>}
+    </div>
+  );
+}
+
 function EditProjectTeamForm({ project, users, onSave }) {
   const architectOptions = users.filter(u => u.role === "Architect" && u.active !== false && !u.removed)
     .sort((a, b) => ARCHITECT_RANKS.indexOf(a.rank) - ARCHITECT_RANKS.indexOf(b.rank));
@@ -2052,6 +2155,7 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
   const project = data.projects.find(p => p.id === projectId);
   const [tab, setTab] = useState(sub || "overview");
   const [showEditTeam, setShowEditTeam] = useState(false);
+  const [showEditProject, setShowEditProject] = useState(false);
   if (!project) return <div className="p-8">Project not found.</div>;
 
   const isAdmin = currentUser.role === "Admin";
@@ -2144,13 +2248,26 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
             <div><span className="font-semibold text-stone-600">Supervisors:</span> {(project.supervisors || []).length ? project.supervisors.map(userName).join(", ") : "None assigned"}</div>
           </div>
           {isAdmin && (
-            <button onClick={() => setShowEditTeam(true)}
-              className="flex items-center gap-1.5 text-xs font-semibold dia-text-bronze dia-hover-bronze-dark border dia-border-gold-soft rounded-lg px-3 py-1.5 shrink-0 self-start sm:self-auto">
-              <Pencil size={12} /> Edit team
-            </button>
+            <div className="flex gap-2 shrink-0 self-start sm:self-auto">
+              <button onClick={() => setShowEditProject(true)}
+                className="flex items-center gap-1.5 text-xs font-semibold dia-text-bronze dia-hover-bronze-dark border dia-border-gold-soft rounded-lg px-3 py-1.5">
+                <Pencil size={12} /> Edit project
+              </button>
+              <button onClick={() => setShowEditTeam(true)}
+                className="flex items-center gap-1.5 text-xs font-semibold dia-text-bronze dia-hover-bronze-dark border dia-border-gold-soft rounded-lg px-3 py-1.5">
+                <Users size={12} /> Edit team
+              </button>
+            </div>
           )}
         </div>
       </Card>
+
+      {showEditProject && (
+        <Modal title="Edit Project" onClose={() => setShowEditProject(false)} wide>
+          <EditProjectForm project={project}
+            onSave={(updates) => { actions.updateProject(project.id, updates); setShowEditProject(false); }} />
+        </Modal>
+      )}
 
       {showEditTeam && (
         <Modal title="Edit Assigned Team" onClose={() => setShowEditTeam(false)}>
@@ -6306,6 +6423,10 @@ export default function App() {
     adminResetPassword: (userId, password) => dbAdminResetPassword(userId, password),
     addProject: (proj) => dbAddProject(proj, data?.users || []).then(reload),
     updateProjectTeam: (projectId, updates) => dbUpdateProject(projectId, updates).then(reload),
+    updateProject: (projectId, updates) => dbUpdateProject(projectId, updates).then(reload).catch((err) => {
+      window.alert(`Couldn't save the project.\n\n${err.message || err}`);
+      throw err;
+    }),
     deleteProject: (projectId) => dbDeleteProject(projectId).then(reload),
     updateTask: (taskId, updates) => dbUpdateTask(taskId, updates).then(reload),
     updateDesignPhase: (phaseId, updates) => dbUpdateDesignPhase(phaseId, updates).then(reload),
