@@ -33,6 +33,7 @@ import {
   dbAddBoqLibraryItem, dbUpdateBoqLibraryItem, dbDeleteBoqLibraryItem, dbTouchBoqLibraryItem,
   dbAddFeedPost, dbUpdateFeedPost, dbResolveFeedPost, dbDeleteFeedPost, dbAddFeedComment, dbDeleteFeedComment,
   dbAddSchedule, dbUpdateSchedule, dbDeleteSchedule,
+  dbAddWorkTask, dbUpdateWorkTask, dbDeleteWorkTask, dbClearDoneWorkTasks, dbAddWorkTasksBulk,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
   dbMarkMaterialReceived, dbFulfillMaterialRequest,
   dbStartSiteVisit, dbEndSiteVisit,
@@ -297,13 +298,14 @@ function LoginScreen() {
 /* App Shell (Sidebar + Header)                                             */
 /* ---------------------------------------------------------------------- */
 
-function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, mobileOpen, onCloseMobile }) {
+function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, openWorkCount, mobileOpen, onCloseMobile }) {
   /* The feed carries an open-item count so a pending approval is visible from
      whatever screen someone is on. */
   const feedItem = { key: "feed", label: "Team Feed", icon: MessageSquare, badge: openFeedCount };
   const scheduleItem = { key: "schedules", label: "Schedules", icon: CalendarDays };
   const adminNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { key: "tracker", label: "Work Tracker", icon: ListChecks, badge: openWorkCount },
     feedItem,
     { key: "updates", label: "Updates", icon: ImageIcon },
     { key: "projects", label: "Projects", icon: Building2 },
@@ -5648,6 +5650,297 @@ function SchedulesView({ data, currentUser, actions }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Work tracker                                                             */
+/* ---------------------------------------------------------------------- */
+
+const WORK_STATUSES = ["Not started", "In progress", "Done"];
+const WORK_STATUS_STYLE = {
+  "Not started": "bg-stone-100 text-stone-600",
+  "In progress": "bg-amber-50 text-amber-700",
+  "Done": "bg-emerald-50 text-emerald-700",
+};
+
+/* The list as it stood when the tracker was first set up — offered once, on an
+   empty tracker, so the existing workload doesn't have to be retyped. */
+const WORK_STARTER_LIST = [
+  ["Surya", "Exterior civil drawings"],
+  ["Surya", "Brass vendor"],
+  ["Surya", "Heritage drawings"],
+  ["Erode", "BOQ"],
+  ["Erode", "Front porch design with car parking"],
+  ["Erode", "Marble first floor inlay corrections"],
+  ["Erode", "Bathroom marble selection and procurement"],
+  ["Erode", "SS kitchen procurement"],
+  ["Barlotta", "Client vendor follow-ups"],
+  ["Barlotta", "Restroom renders"],
+  ["Barlotta", "Kitchen and wardrobe drawings — 5th floor"],
+  ["Barlotta", "Residence interior design"],
+  ["Riyora", "1st floor — silver articles"],
+  ["Riyora", "1st floor — men's jewellery"],
+  ["Riyora", "1st floor — counters for floor counter"],
+  ["CSC", "Second floor"],
+  ["MP Diamonds", "Elevation"],
+  ["Anand", "Exhibition stall"],
+  ["Ramanagara", "Elevation"],
+  ["Legend Saravana", "Follow up"],
+  ["Diahart Cbe", "Marking — Arul"],
+  ["Pooja", "Elevation"],
+  ["Sunrise", "Quotation"],
+  ["Gautham", "Quotation"],
+  ["SK", "Elevation"],
+  ["RJ Jewellers", "Follow up"],
+  ["Shimoga", "Site visit"],
+  ["Shimoga", "Drawings (Mathews)"],
+  ["Antony", "Follow up"],
+  ["Minus 2 Cents Bengaluru", "Colour change"],
+  ["Akash Necks", "Design"],
+];
+
+function WorkTaskRow({ task, projects, actions }) {
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState(task.note || "");
+  const [moving, setMoving] = useState(false);
+  const [moveTo, setMoveTo] = useState("");
+  const isDone = task.status === "Done";
+
+  /* Notes are saved a moment after typing stops rather than on every
+     keystroke, which would be a database write per character. */
+  useEffect(() => {
+    if (note === (task.note || "")) return;
+    const t = setTimeout(() => actions.updateWorkTask(task.id, { note }), 700);
+    return () => clearTimeout(t);
+  }, [note]);
+
+  return (
+    <div className={`border-l-4 rounded-r-xl border border-stone-200 bg-white ${
+      task.urgent && !isDone ? "border-l-rose-500" : "border-l-transparent"} ${isDone ? "opacity-70" : ""}`}>
+      <div className="flex items-start gap-3 p-3">
+        <button type="button" onClick={() => setOpen(o => !o)}
+          className="min-w-0 flex-1 text-left">
+          <div className={`text-sm font-medium text-stone-800 ${isDone ? "line-through text-stone-400" : ""}`}>
+            {task.title}
+          </div>
+          {task.note && !open && (
+            <div className="text-xs text-stone-500 mt-0.5 truncate">{task.note}</div>
+          )}
+          {task.doneOn && (
+            <div className="text-[11px] text-emerald-700 mt-0.5">Done on {fmtDate(task.doneOn)}</div>
+          )}
+        </button>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {task.urgent && !isDone && (
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700">Urgent</span>
+          )}
+          <select value={task.status} onChange={e => actions.updateWorkTask(task.id, { status: e.target.value })}
+            className={`text-xs font-semibold rounded-lg px-2 py-1.5 border-0 cursor-pointer ${WORK_STATUS_STYLE[task.status]}`}>
+            {WORK_STATUSES.map(st => <option key={st}>{st}</option>)}
+          </select>
+          <ChevronDown size={15} onClick={() => setOpen(o => !o)}
+            className={`text-stone-400 cursor-pointer transition-transform ${open ? "rotate-180" : ""}`} />
+        </div>
+      </div>
+
+      {open && (
+        <div className="px-3 pb-3 pt-1 border-t border-stone-100 space-y-2">
+          <textarea rows={2} className={`${inputCls} text-xs`} value={note}
+            onChange={e => setNote(e.target.value)} placeholder="Notes — who you're waiting on, what's next" />
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="button" onClick={() => actions.updateWorkTask(task.id, { urgent: !task.urgent })}
+              className={`text-xs font-semibold ${task.urgent ? "text-rose-600" : "text-stone-500 hover:text-stone-800"}`}>
+              {task.urgent ? "Remove urgent flag" : "Flag as urgent"}
+            </button>
+            <button type="button" onClick={() => { setMoving(m => !m); setMoveTo(""); }}
+              className="text-xs text-stone-500 hover:text-stone-800">
+              {moving ? "Cancel move" : "Move to another project"}
+            </button>
+            <span className="flex-1" />
+            <button type="button" onClick={() => actions.deleteWorkTask(task.id)}
+              className="text-xs text-stone-400 hover:text-rose-600">Delete</button>
+          </div>
+
+          {moving && (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <div className="flex flex-wrap gap-1.5">
+                {projects.filter(p => p !== task.project).slice(0, 6).map(p => (
+                  <button key={p} type="button"
+                    onClick={() => { actions.updateWorkTask(task.id, { project: p }); setMoving(false); }}
+                    className="text-[11px] px-2.5 py-1 rounded-lg border border-stone-200 text-stone-600 hover:dia-border-gold hover:dia-text-bronze">
+                    {p}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 flex-1 min-w-[220px]">
+                <input className={`${inputCls} text-xs`} value={moveTo} onChange={e => setMoveTo(e.target.value)}
+                  placeholder="Or type a new project name" />
+                <button type="button" disabled={!moveTo.trim()}
+                  onClick={() => { actions.updateWorkTask(task.id, { project: moveTo }); setMoving(false); }}
+                  className="dia-btn-gold px-3 py-2 rounded-lg text-xs font-semibold disabled:opacity-40 shrink-0">Move</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorkTrackerView({ data, currentUser, actions }) {
+  const [filter, setFilter] = useState("Open");
+  const [query, setQuery] = useState("");
+  const [newTitle, setNewTitle] = useState("");
+  const [newProject, setNewProject] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const tasks = data.workTasks || [];
+  const projects = [...new Set(tasks.map(t => t.project))].sort();
+  /* Projects in the system are offered alongside the tracker's own names, so a
+     real site and a loose end can share a heading. */
+  const suggestions = [...new Set([...projects, ...(data.projects || []).map(p => p.name)])].sort();
+
+  const done = tasks.filter(t => t.status === "Done").length;
+  const inProgress = tasks.filter(t => t.status === "In progress").length;
+  const urgent = tasks.filter(t => t.urgent && t.status !== "Done").length;
+
+  const visible = tasks.filter(t => {
+    if (filter === "Open" && t.status === "Done") return false;
+    if (filter === "Done" && t.status !== "Done") return false;
+    if (filter === "Urgent" && (!t.urgent || t.status === "Done")) return false;
+    if (query.trim()) {
+      const hay = `${t.title} ${t.project} ${t.note}`.toLowerCase();
+      if (!hay.includes(query.trim().toLowerCase())) return false;
+    }
+    return true;
+  });
+
+  const grouped = [];
+  visible.forEach(t => {
+    const g = grouped.find(x => x.project === t.project);
+    if (g) g.tasks.push(t);
+    else grouped.push({ project: t.project, tasks: [t] });
+  });
+  grouped.sort((a, b) => a.project.localeCompare(b.project));
+
+  const add = async () => {
+    if (!newTitle.trim()) return;
+    setBusy(true);
+    try {
+      await actions.addWorkTask({ project: newProject, title: newTitle });
+      setNewTitle("");
+    } catch (err) { alert(err.message || "Couldn't add that task."); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="p-4 sm:p-8 space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <KPI label="Open" value={tasks.length - done} sub="still to do" icon={ListChecks} />
+        <KPI label="In progress" value={inProgress} sub="under way" icon={Clock} />
+        <KPI label="Urgent" value={urgent} sub="needs attention now" icon={AlertCircle} />
+        <KPI label="Done" value={done} sub="completed" icon={CheckCircle2} />
+      </div>
+
+      {tasks.length > 0 && (
+        <Card className="p-4">
+          <div className="flex items-center justify-between text-xs text-stone-500 mb-2">
+            <span>{done} of {tasks.length} complete</span>
+            <span>{Math.round((done / tasks.length) * 100)}%</span>
+          </div>
+          <div className="h-2 rounded-full bg-stone-100 overflow-hidden">
+            <div className="h-full dia-bg-gold transition-all" style={{ width: `${(done / tasks.length) * 100}%` }} />
+          </div>
+        </Card>
+      )}
+
+      <Card className="p-4">
+        <div className="flex flex-col sm:flex-row gap-2">
+          <div className="sm:w-52">
+            <input className={inputCls} list="work-projects" value={newProject}
+              onChange={e => setNewProject(e.target.value)} placeholder="Project" />
+            <datalist id="work-projects">
+              {suggestions.map(p => <option key={p} value={p} />)}
+            </datalist>
+          </div>
+          <input className={`${inputCls} flex-1`} value={newTitle} onChange={e => setNewTitle(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") add(); }} placeholder="What needs doing?" />
+          <button onClick={add} disabled={!newTitle.trim() || busy}
+            className="dia-btn-gold px-5 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40 shrink-0">
+            {busy ? "Adding…" : "Add"}
+          </button>
+        </div>
+        <p className="text-[11px] text-stone-400 mt-2">Leave the project blank and it goes under General.</p>
+      </Card>
+
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="relative flex-1">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search tasks, projects or notes"
+            className={`${inputCls} pl-9`} />
+        </div>
+        <div className="flex gap-1.5">
+          {["Open", "Urgent", "Done", "All"].map(f => (
+            <button key={f} type="button" onClick={() => setFilter(f)}
+              className={`px-3.5 py-2 rounded-lg text-sm font-semibold border transition-colors ${
+                filter === f ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+              {f}
+            </button>
+          ))}
+        </div>
+        {done > 0 && (
+          <button type="button"
+            onClick={() => { if (window.confirm(`Delete all ${done} completed task${done === 1 ? "" : "s"}?`)) actions.clearDoneWorkTasks(); }}
+            className="text-xs text-stone-400 hover:text-rose-600 shrink-0">Clear done</button>
+        )}
+      </div>
+
+      {tasks.length === 0 && (
+        <Card className="p-10 text-center">
+          <ListChecks size={26} className="mx-auto text-stone-300 mb-3" />
+          <p className="text-sm text-stone-500 mb-4">
+            Nothing on the list yet. Add a task above, or start from the list you were already keeping.
+          </p>
+          <button type="button" onClick={async () => {
+            setBusy(true);
+            try { await actions.addWorkTasksBulk(WORK_STARTER_LIST); }
+            catch (err) { alert(err.message || "Couldn't load the starter list."); }
+            setBusy(false);
+          }} disabled={busy}
+            className="dia-btn-gold px-4 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+            {busy ? "Loading…" : `Load my starting list (${WORK_STARTER_LIST.length} tasks)`}
+          </button>
+        </Card>
+      )}
+
+      {tasks.length > 0 && visible.length === 0 && (
+        <Card className="p-10 text-center">
+          <p className="text-sm text-stone-400">Nothing matches this filter.</p>
+        </Card>
+      )}
+
+      <div className="space-y-5">
+        {grouped.map(group => (
+          <div key={group.project}>
+            <div className="flex items-center gap-3 mb-2">
+              <span className="font-display text-base font-semibold text-stone-800">{group.project}</span>
+              <div className="flex-1 h-px bg-stone-200" />
+              <span className="text-[11px] text-stone-400">
+                {group.tasks.filter(t => t.status !== "Done").length} open of {group.tasks.length}
+              </span>
+            </div>
+            <div className="space-y-2">
+              {group.tasks.map(task => (
+                <WorkTaskRow key={task.id} task={task} projects={suggestions} actions={actions} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Project feed                                                             */
 /* ---------------------------------------------------------------------- */
 
@@ -6459,6 +6752,11 @@ export default function App() {
     updateQuotationStatus: (id, status) => dbUpdateQuotationStatus(id, status).then(reload),
     duplicateQuotation: (q) => dbDuplicateQuotation(q, profile?.id).then(reload),
     deleteQuotation: (id) => dbDeleteQuotation(id).then(reload),
+    addWorkTask: (t) => dbAddWorkTask(t, profile?.id).then(reload),
+    updateWorkTask: (id, patch) => dbUpdateWorkTask(id, patch).then(reload),
+    deleteWorkTask: (id) => dbDeleteWorkTask(id).then(reload),
+    clearDoneWorkTasks: () => dbClearDoneWorkTasks().then(reload),
+    addWorkTasksBulk: (rows) => dbAddWorkTasksBulk(rows, profile?.id).then(reload),
     addSchedule: (s) => dbAddSchedule(s, profile?.id).then(reload),
     updateSchedule: (id, s) => dbUpdateSchedule(id, s).then(reload),
     deleteSchedule: (id) => dbDeleteSchedule(id).then(reload),
@@ -6561,6 +6859,7 @@ export default function App() {
     dashboard: ["Company Dashboard", "Real-time visibility across every project"],
     projects: ["Projects", "All active and completed projects"],
     expenses: ["Expenses", "Review, filter and approve project expenses"],
+    tracker: ["Work Tracker", "Everything outstanding, grouped by project"],
     feed: ["Team Feed", "Daily updates, follow-ups and approvals across every site"],
     schedules: ["Schedules", "Client welcome packs and the programme of works"],
     quotations: ["Quotations", "Design proposals, fee schedules and client-ready PDFs"],
@@ -6583,6 +6882,7 @@ export default function App() {
       <BackToTop />
       <Sidebar user={currentUser} view={view} setView={setView} onLogout={handleLogout} pendingCount={pendingCount}
         openFeedCount={(data.feedPosts || []).filter(p => p.kind !== "update" && p.status === "open").length}
+        openWorkCount={(data.workTasks || []).filter(t => t.urgent && t.status !== "Done").length}
         mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
       <div className="flex-1 min-w-0">
         {view.tab !== "project" && view.tab !== "sup-home" && view.tab !== "arch-home" && (
@@ -6595,6 +6895,7 @@ export default function App() {
         {view.tab === "projects" && (isStaffOnly ? <ProjectsList data={data} setView={setView} actions={actions} currentUser={currentUser} /> : <AccessDenied />)}
         {view.tab === "project" && <ProjectDetail data={data} projectId={view.projectId} sub={view.sub} setView={setView} currentUser={currentUser} actions={actions} onMenuClick={() => setMobileNavOpen(true)} />}
         {view.tab === "expenses" && (isStaffOnly ? <ExpensesGlobal data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
+        {view.tab === "tracker" && (isAdmin ? <WorkTrackerView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "feed" && <FeedView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "schedules" && <SchedulesView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "quotations" && (isStaffOnly ? <QuotationsView data={data} currentUser={currentUser} actions={actions} setView={setView} /> : <AccessDenied />)}
