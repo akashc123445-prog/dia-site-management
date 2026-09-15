@@ -5761,23 +5761,31 @@ function WorkTaskRow({ task, projects, actions }) {
           </div>
 
           {moving && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <div className="flex flex-wrap gap-1.5">
-                {projects.filter(p => p !== task.project).slice(0, 6).map(p => (
-                  <button key={p} type="button"
-                    onClick={() => { actions.updateWorkTask(task.id, { project: p }); setMoving(false); }}
-                    className="text-[11px] px-2.5 py-1 rounded-lg border border-stone-200 text-stone-600 hover:dia-border-gold hover:dia-text-bronze">
-                    {p}
-                  </button>
-                ))}
-              </div>
-              <div className="flex items-center gap-2 flex-1 min-w-[220px]">
-                <input className={`${inputCls} text-xs`} value={moveTo} onChange={e => setMoveTo(e.target.value)}
-                  placeholder="Or type a new project name" />
+            <div className="pt-1 space-y-2">
+              <div className="flex items-center gap-2">
+                {/* Typing filters every project, existing or new — the buttons
+                    below are a shortcut, not the whole list. */}
+                <input className={`${inputCls} text-xs`} list={`move-targets-${task.id}`}
+                  value={moveTo} onChange={e => setMoveTo(e.target.value)}
+                  placeholder="Type or pick a project" autoFocus />
+                <datalist id={`move-targets-${task.id}`}>
+                  {projects.filter(p => p !== task.project).map(p => <option key={p} value={p} />)}
+                </datalist>
                 <button type="button" disabled={!moveTo.trim()}
                   onClick={() => { actions.updateWorkTask(task.id, { project: moveTo }); setMoving(false); }}
                   className="dia-btn-gold px-3 py-2 rounded-lg text-xs font-semibold disabled:opacity-40 shrink-0">Move</button>
               </div>
+              {projects.filter(p => p !== task.project).length > 0 && (
+                <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto pr-1">
+                  {projects.filter(p => p !== task.project).map(p => (
+                    <button key={p} type="button"
+                      onClick={() => { actions.updateWorkTask(task.id, { project: p }); setMoving(false); }}
+                      className="text-[11px] px-2.5 py-1 rounded-lg border border-stone-200 text-stone-600 hover:dia-border-gold hover:dia-text-bronze">
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
