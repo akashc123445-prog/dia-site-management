@@ -87,6 +87,12 @@ const mapVendor = (r) => ({
   bankIfsc: r.bank_ifsc, bankName: r.bank_name, createdAt: r.created_at,
 });
 
+const mapWorkTask = (r) => ({
+  id: r.id, project: r.project, title: r.title, status: r.status,
+  urgent: !!r.urgent, note: r.note || "", doneOn: r.done_on,
+  createdAt: r.created_at,
+});
+
 const mapSchedule = (r) => ({
   id: r.id, projectId: r.project_id, quotationId: r.quotation_id,
   clientName: r.client_name, projectTitle: r.project_title, location: r.location,
@@ -168,7 +174,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -190,6 +196,8 @@ export async function fetchAllData() {
       supabase.from("feed_posts").select("*").order("created_at", { ascending: false }).limit(400),
       supabase.from("feed_comments").select("*").order("created_at", { ascending: true }),
       supabase.from("schedules").select("*").order("created_at", { ascending: false }),
+      // Admin-only at the RLS level, so this comes back empty for everyone else.
+      supabase.from("work_tasks").select("*").order("created_at", { ascending: false }),
     ]);
 
   const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw };
@@ -207,6 +215,10 @@ export async function fetchAllData() {
   if (boqLibraryRaw.error) {
     // eslint-disable-next-line no-console
     console.warn("BOQ library unavailable:", boqLibraryRaw.error.message);
+  }
+  if (workTasksRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("Work tracker unavailable:", workTasksRaw.error.message);
   }
   if (schedulesRaw.error) {
     // eslint-disable-next-line no-console
@@ -232,6 +244,7 @@ export async function fetchAllData() {
     quotations: (quotationsRaw.data || []).map(mapQuotation),
     boqLibrary: (boqLibraryRaw.data || []).map(mapBoqLibraryItem),
     schedules: (schedulesRaw.data || []).map(mapSchedule),
+    workTasks: (workTasksRaw.data || []).map(mapWorkTask),
     feedPosts: (feedPostsRaw.data || []).map(mapFeedPost),
     feedComments: (feedCommentsRaw.data || []).map(mapFeedComment),
   };
@@ -645,6 +658,52 @@ export async function dbDeleteQuotation(id) {
    the usual way a revised price goes out to the same client. */
 export async function dbDuplicateQuotation(source, createdBy) {
   return dbAddQuotation({ ...source, quotationNo: "", status: "Draft" }, createdBy);
+}
+
+/* ---- work tracker -------------------------------------------------------- */
+
+export async function dbAddWorkTask(task, createdBy) {
+  const { error } = await supabase.from("work_tasks").insert({
+    project: (task.project || "General").trim() || "General",
+    title: task.title.trim(),
+    urgent: !!task.urgent,
+    note: task.note || null,
+    created_by: createdBy,
+  });
+  if (error) throw error;
+}
+
+/* Marking a task done stamps the date; reopening clears it, so a "done on"
+   line can never outlive the status it describes. */
+export async function dbUpdateWorkTask(id, patch) {
+  const payload = {};
+  if (patch.project !== undefined) payload.project = (patch.project || "General").trim() || "General";
+  if (patch.title !== undefined) payload.title = patch.title;
+  if (patch.urgent !== undefined) payload.urgent = patch.urgent;
+  if (patch.note !== undefined) payload.note = patch.note;
+  if (patch.status !== undefined) {
+    payload.status = patch.status;
+    payload.done_on = patch.status === "Done" ? new Date().toISOString().slice(0, 10) : null;
+  }
+  const { error } = await supabase.from("work_tasks").update(payload).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteWorkTask(id) {
+  const { error } = await supabase.from("work_tasks").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbClearDoneWorkTasks() {
+  const { error } = await supabase.from("work_tasks").delete().eq("status", "Done");
+  if (error) throw error;
+}
+
+export async function dbAddWorkTasksBulk(rows, createdBy) {
+  const { error } = await supabase.from("work_tasks").insert(
+    rows.map(([project, title]) => ({ project, title, created_by: createdBy }))
+  );
+  if (error) throw error;
 }
 
 /* ---- project schedules --------------------------------------------------- */
