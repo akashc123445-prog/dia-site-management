@@ -87,6 +87,22 @@ const mapVendor = (r) => ({
   bankIfsc: r.bank_ifsc, bankName: r.bank_name, createdAt: r.created_at,
 });
 
+const mapAttendance = (r) => ({
+  id: r.id, userId: r.user_id, date: r.date,
+  checkInAt: r.check_in_at, checkInPhotoUrl: r.check_in_photo_url, checkInNote: r.check_in_note,
+  location: r.location, lat: r.lat, lng: r.lng,
+  checkOutAt: r.check_out_at, checkOutNote: r.check_out_note,
+});
+
+const mapOfficeExpense = (r) => ({
+  id: r.id, office: r.office, category: r.category, purpose: r.purpose,
+  amount: Number(r.amount) || 0, paymentMethod: r.payment_method, date: r.date,
+  proofUrl: r.proof_url, notes: r.notes, status: r.status,
+  rejectionReason: r.rejection_reason,
+  submittedBy: r.submitted_by, approvedBy: r.approved_by, approvedAt: r.approved_at,
+  paid: !!r.paid, paidAt: r.paid_at, paidBy: r.paid_by, createdAt: r.created_at,
+});
+
 const mapWorkTask = (r) => ({
   id: r.id, project: r.project, title: r.title, status: r.status,
   urgent: !!r.urgent, note: r.note || "", doneOn: r.done_on,
@@ -174,7 +190,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, attendanceRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -198,6 +214,12 @@ export async function fetchAllData() {
       supabase.from("schedules").select("*").order("created_at", { ascending: false }),
       // Admin-only at the RLS level, so this comes back empty for everyone else.
       supabase.from("work_tasks").select("*").order("created_at", { ascending: false }),
+      supabase.from("office_expenses").select("*").order("date", { ascending: false }),
+      // Last few weeks only: the board is about today, and the history view
+      // never looks further back than a month.
+      supabase.from("attendance").select("*")
+        .gte("date", new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10))
+        .order("date", { ascending: false }),
     ]);
 
   const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw };
@@ -215,6 +237,14 @@ export async function fetchAllData() {
   if (boqLibraryRaw.error) {
     // eslint-disable-next-line no-console
     console.warn("BOQ library unavailable:", boqLibraryRaw.error.message);
+  }
+  if (attendanceRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("Attendance unavailable:", attendanceRaw.error.message);
+  }
+  if (officeExpensesRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("Office expenses unavailable:", officeExpensesRaw.error.message);
   }
   if (workTasksRaw.error) {
     // eslint-disable-next-line no-console
@@ -245,6 +275,8 @@ export async function fetchAllData() {
     boqLibrary: (boqLibraryRaw.data || []).map(mapBoqLibraryItem),
     schedules: (schedulesRaw.data || []).map(mapSchedule),
     workTasks: (workTasksRaw.data || []).map(mapWorkTask),
+    officeExpenses: (officeExpensesRaw.data || []).map(mapOfficeExpense),
+    attendance: (attendanceRaw.data || []).map(mapAttendance),
     feedPosts: (feedPostsRaw.data || []).map(mapFeedPost),
     feedComments: (feedCommentsRaw.data || []).map(mapFeedComment),
   };
@@ -660,6 +692,73 @@ export async function dbDuplicateQuotation(source, createdBy) {
   return dbAddQuotation({ ...source, quotationNo: "", status: "Draft" }, createdBy);
 }
 
+/* ---- attendance ---------------------------------------------------------- */
+
+const todayISO = () => {
+  /* The device's own date, not UTC — a 9pm check-in in India must not land on
+     tomorrow's board. */
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+};
+
+export async function dbCheckIn(userId, { photoUrl, note, location, lat, lng }) {
+  const { error } = await supabase.from("attendance").insert({
+    user_id: userId, date: todayISO(),
+    check_in_photo_url: photoUrl, check_in_note: note,
+    location: location || null, lat: lat ?? null, lng: lng ?? null,
+  });
+  if (error) throw error;
+}
+
+export async function dbCheckOut(attendanceId, note) {
+  const { error } = await supabase.from("attendance")
+    .update({ check_out_at: new Date().toISOString(), check_out_note: note })
+    .eq("id", attendanceId);
+  if (error) throw error;
+}
+
+export const attendanceToday = todayISO;
+
+/* ---- office petty expenses ----------------------------------------------- */
+
+export async function dbAddOfficeExpense(exp, submittedBy) {
+  const { error } = await supabase.from("office_expenses").insert({
+    office: exp.office, category: exp.category, purpose: exp.purpose,
+    amount: Number(exp.amount) || 0, payment_method: exp.paymentMethod,
+    date: exp.date, proof_url: exp.proofUrl || null, notes: exp.notes || null,
+    submitted_by: submittedBy,
+  });
+  if (error) throw error;
+}
+
+export async function dbApproveOfficeExpense(id, approverId) {
+  const { error } = await supabase.from("office_expenses").update({
+    status: "Approved", approved_by: approverId, approved_at: new Date().toISOString(),
+    rejection_reason: null,
+  }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbRejectOfficeExpense(id, approverId, reason) {
+  const { error } = await supabase.from("office_expenses").update({
+    status: "Rejected", approved_by: approverId, approved_at: new Date().toISOString(),
+    rejection_reason: reason || null,
+  }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbMarkOfficeExpensePaid(id, paidBy, paid) {
+  const { error } = await supabase.from("office_expenses").update({
+    paid, paid_at: paid ? new Date().toISOString() : null, paid_by: paid ? paidBy : null,
+  }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteOfficeExpense(id) {
+  const { error } = await supabase.from("office_expenses").delete().eq("id", id);
+  if (error) throw error;
+}
+
 /* ---- work tracker -------------------------------------------------------- */
 
 export async function dbAddWorkTask(task, createdBy) {
@@ -699,9 +798,14 @@ export async function dbClearDoneWorkTasks() {
   if (error) throw error;
 }
 
+/* Accepts either [project, title] pairs (the starter list) or full objects
+   with an urgent flag (the WhatsApp import). */
 export async function dbAddWorkTasksBulk(rows, createdBy) {
   const { error } = await supabase.from("work_tasks").insert(
-    rows.map(([project, title]) => ({ project, title, created_by: createdBy }))
+    rows.map((r) => Array.isArray(r)
+      ? { project: r[0], title: r[1], created_by: createdBy }
+      : { project: (r.project || "General").trim() || "General", title: r.title.trim(),
+          urgent: !!r.urgent, created_by: createdBy })
   );
   if (error) throw error;
 }
@@ -971,3 +1075,4 @@ export async function uploadFile(bucket, file, pathPrefix) {
 export const uploadProofFile = (file, pathPrefix) => uploadFile(PROOF_BUCKET, file, pathPrefix);
 export const uploadSitePhoto = (file, pathPrefix) => uploadFile(SITE_PHOTOS_BUCKET, file, pathPrefix);
 export const uploadSignature = (file) => uploadFile(PROOF_BUCKET, file, "signatures");
+export const uploadAttendancePhoto = (file) => uploadFile(PROOF_BUCKET, file, "attendance");
