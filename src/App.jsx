@@ -14,7 +14,7 @@ import {
 
 import { supabase } from "./lib/supabaseClient";
 import {
-  PHASE_TEMPLATE, EXPENSE_CATEGORIES, PAYMENT_METHODS, PROJECT_STATUSES, PROJECT_TYPES,
+  PHASE_TEMPLATE, EXPENSE_CATEGORIES, OFFICE_EXPENSE_CATEGORIES, OFFICES, PAYMENT_METHODS, PROJECT_STATUSES, PROJECT_TYPES,
   ARCHITECT_RANKS, DESIGN_PHASES, CONTRACT_TYPES, DRAWING_STATUSES,
   TODAY, DIA, FONT_STYLE, LOGO_MARK, LOGO_FULL,
 } from "./lib/constants";
@@ -34,6 +34,8 @@ import {
   dbAddFeedPost, dbUpdateFeedPost, dbResolveFeedPost, dbDeleteFeedPost, dbAddFeedComment, dbDeleteFeedComment,
   dbAddSchedule, dbUpdateSchedule, dbDeleteSchedule,
   dbAddWorkTask, dbUpdateWorkTask, dbDeleteWorkTask, dbClearDoneWorkTasks, dbAddWorkTasksBulk,
+  dbAddOfficeExpense, dbApproveOfficeExpense, dbRejectOfficeExpense, dbMarkOfficeExpensePaid, dbDeleteOfficeExpense,
+  dbCheckIn, dbCheckOut, uploadAttendancePhoto,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
   dbMarkMaterialReceived, dbFulfillMaterialRequest,
   dbStartSiteVisit, dbEndSiteVisit,
@@ -46,6 +48,7 @@ import { generateBOQPdf } from "./lib/generateBOQ";
 import { exportBOQExcel } from "./lib/exportBOQExcel";
 import { parseBOQFile } from "./lib/importBOQ";
 import { parseScheduleFile } from "./lib/importSchedule";
+import { parseWhatsAppTasks } from "./lib/parseWhatsApp";
 import { generateSchedulePdf } from "./lib/generateSchedule";
 import {
   SCHEDULE_STATUSES, SCHEDULE_TASK_TEMPLATE, TASK_STATUSES,
@@ -298,18 +301,23 @@ function LoginScreen() {
 /* App Shell (Sidebar + Header)                                             */
 /* ---------------------------------------------------------------------- */
 
-function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, openWorkCount, mobileOpen, onCloseMobile }) {
+function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, openWorkCount, pendingOfficeCount, needsCheckIn, mobileOpen, onCloseMobile }) {
   /* The feed carries an open-item count so a pending approval is visible from
      whatever screen someone is on. */
   const feedItem = { key: "feed", label: "Team Feed", icon: MessageSquare, badge: openFeedCount };
   const scheduleItem = { key: "schedules", label: "Schedules", icon: CalendarDays };
+  const officeItem = { key: "office", label: "Office Expenses", icon: Landmark, badge: pendingOfficeCount };
+  /* A dot rather than a number: a reminder to mark in, not a count of work. */
+  const attendanceItem = { key: "attendance", label: "Attendance", icon: CheckCircle2, badge: needsCheckIn ? "•" : undefined };
   const adminNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    attendanceItem,
     { key: "tracker", label: "Work Tracker", icon: ListChecks, badge: openWorkCount },
     feedItem,
     { key: "updates", label: "Updates", icon: ImageIcon },
     { key: "projects", label: "Projects", icon: Building2 },
     { key: "expenses", label: "Expenses", icon: Receipt, badge: pendingCount },
+    officeItem,
     { key: "quotations", label: "Quotations", icon: FileText },
     scheduleItem,
     { key: "vendors", label: "Vendors", icon: Store },
@@ -317,22 +325,28 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
   ];
   const accountsNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+    attendanceItem,
     feedItem,
     { key: "projects", label: "Projects", icon: Building2 },
     { key: "expenses", label: "Expenses", icon: Receipt, badge: pendingCount },
+    officeItem,
     { key: "quotations", label: "Quotations", icon: FileText },
     scheduleItem,
     { key: "vendors", label: "Vendors", icon: Store },
   ];
   const supNav = [
     { key: "sup-home", label: "My Sites", icon: LayoutDashboard },
+    attendanceItem,
     feedItem,
     scheduleItem,
+    officeItem,
   ];
   const archNav = [
     { key: "arch-home", label: "My Design Work", icon: PenTool },
+    attendanceItem,
     feedItem,
     scheduleItem,
+    officeItem,
   ];
   const nav = user.role === "Admin" ? adminNav : user.role === "Accounts" ? accountsNav : user.role === "Architect" ? archNav : supNav;
 
@@ -5650,6 +5664,588 @@ function SchedulesView({ data, currentUser, actions }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Attendance                                                               */
+/* ---------------------------------------------------------------------- */
+
+const localToday = () => {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+};
+
+const clockTime = (iso) => iso
+  ? new Date(iso).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true })
+  : "—";
+
+/* Marking yourself in takes an image of the work being started and a line
+   about the day. Photographing the screen, screenshotting it, or shooting the
+   work on site all prove the same thing; a switch proves nothing. */
+function CheckInForm({ onDone, currentUser }) {
+  const [photo, setPhoto] = useState(null);
+  const [preview, setPreview] = useState("");
+  const [note, setNote] = useState("");
+  const [where, setWhere] = useState("");
+  const [coords, setCoords] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const pick = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { setError("That needs to be an image — a screenshot or a photo."); return; }
+    setError("");
+    setPhoto(file);
+    setPreview(URL.createObjectURL(file));
+  };
+
+  /* Offered, never demanded: a supervisor on a basement site may have no
+     signal, and a blocked location shouldn't stop them marking in. */
+  const addLocation = () => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => setError("Couldn't read your location — carry on without it."),
+      { timeout: 8000 }
+    );
+  };
+
+  const submit = async () => {
+    if (!photo || !note.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const url = await uploadAttendancePhoto(photo);
+      await onDone({ photoUrl: url, note: note.trim(), location: where.trim(), ...(coords || {}) });
+    } catch (err) {
+      setError(err.message || "Couldn't mark you in. Try again.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <Field label="What you're starting on">
+        {preview ? (
+          <div className="flex items-start gap-3">
+            <img src={preview} alt="Check-in" className="w-40 h-28 object-cover rounded-xl border border-stone-200" />
+            <button type="button" onClick={() => { setPhoto(null); setPreview(""); }}
+              className="text-xs text-stone-500 hover:text-rose-600">Replace it</button>
+          </div>
+        ) : (
+          <label className="flex flex-col items-center justify-center gap-2 border border-dashed border-stone-300 rounded-xl py-7 cursor-pointer hover:dia-border-gold hover:dia-text-bronze text-stone-500">
+            <ImageIcon size={22} />
+            <span className="text-sm font-medium">Take a photo or attach one</span>
+            <span className="text-[11px] text-center px-4">
+              The drawing, sheet or model you're opening first. Photograph your screen, attach a
+              screenshot, or on site shoot the work itself — whichever is to hand.
+            </span>
+            {/* Deliberately no capture attribute: with it, the phone forces the
+                camera open, and with none it offers camera or files — which is
+                what's wanted when someone may photograph their desktop screen
+                or pick up a screenshot they already took. */}
+            <input type="file" accept="image/*" hidden onChange={pick} />
+          </label>
+        )}
+      </Field>
+
+      <Field label="What are you working on today?">
+        <textarea rows={3} className={inputCls} value={note} onChange={e => setNote(e.target.value)}
+          placeholder="e.g. Riyora first floor counters — working drawings, then site by 3pm" />
+      </Field>
+
+      <Field label="Where are you working from? (optional)">
+        <input className={inputCls} value={where} onChange={e => setWhere(e.target.value)}
+          placeholder="Bengaluru office, Erode site, working from home" />
+      </Field>
+
+      <button type="button" onClick={addLocation}
+        className="text-xs dia-text-bronze font-semibold mb-3">
+        {coords ? "Location attached ✓" : "Attach my location"}
+      </button>
+
+      {error && <p className="text-xs text-rose-600 mb-2">{error}</p>}
+
+      <button onClick={submit} disabled={!photo || !note.trim() || busy}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
+        {busy ? "Marking you in…" : "Mark me present"}
+      </button>
+      {(!photo || !note.trim()) && (
+        <p className="text-[11px] text-stone-400 mt-2 text-center">Both the photo and the day's work are needed.</p>
+      )}
+    </div>
+  );
+}
+
+function CheckOutForm({ onDone }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  return (
+    <div>
+      <Field label="What did you get done today?">
+        <textarea rows={4} className={inputCls} value={note} onChange={e => setNote(e.target.value)}
+          placeholder="Two or three lines. This is what the office reads tomorrow morning." />
+      </Field>
+      <button onClick={async () => { setBusy(true); await onDone(note.trim()); }}
+        disabled={!note.trim() || busy}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
+        {busy ? "Saving…" : "Sign off for the day"}
+      </button>
+    </div>
+  );
+}
+
+function AttendanceView({ data, currentUser, actions }) {
+  const [showIn, setShowIn] = useState(false);
+  const [showOut, setShowOut] = useState(false);
+  const [day, setDay] = useState(localToday());
+  const [photo, setPhoto] = useState(null);
+
+  const records = data.attendance || [];
+  const users = (data.users || []).filter(u => u.active && !u.removed);
+  const today = localToday();
+
+  const forDay = records.filter(r => r.date === day);
+  const mine = records.find(r => r.date === today && r.userId === currentUser.id);
+
+  const present = users.filter(u => forDay.some(r => r.userId === u.id));
+  const absent = users.filter(u => !forDay.some(r => r.userId === u.id));
+
+  /* Your own last two weeks, so a missed day is obvious at a glance. */
+  const myFortnight = [];
+  for (let i = 0; i < 14; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const iso = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    myFortnight.push({ iso, record: records.find(r => r.date === iso && r.userId === currentUser.id) });
+  }
+
+  const dayLabel = day === today ? "Today" : fmtDate(day);
+  const days = [...new Set(records.map(r => r.date))].sort().reverse().slice(0, 30);
+
+  return (
+    <div className="p-4 sm:p-8 space-y-5">
+      {/* Your own state first: the thing you came here to do. */}
+      <Card className="p-5">
+        {!mine ? (
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+            <div className="min-w-0 flex-1">
+              <h3 className="font-display text-xl font-semibold text-stone-900">Good morning, {currentUser.name.split(" ")[0]}</h3>
+              <p className="text-sm text-stone-500 mt-1">
+                Mark yourself present with a photo of what you're starting on, and a line about the day.
+              </p>
+            </div>
+            <button onClick={() => setShowIn(true)}
+              className="dia-btn-gold px-5 py-2.5 rounded-lg text-sm font-semibold shrink-0">Mark me present</button>
+          </div>
+        ) : (
+          <div className="flex flex-col sm:flex-row gap-4">
+            <img src={mine.checkInPhotoUrl} alt="Your check-in"
+              className="w-28 h-20 object-cover rounded-lg border border-stone-200 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
+                  Present since {clockTime(mine.checkInAt)}
+                </span>
+                {mine.location && <span className="text-[11px] text-stone-500">{mine.location}</span>}
+                {mine.checkOutAt && (
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">
+                    Signed off {clockTime(mine.checkOutAt)}
+                  </span>
+                )}
+              </div>
+              <p className="text-sm text-stone-700 mt-2 whitespace-pre-wrap">{mine.checkInNote}</p>
+              {mine.checkOutNote && (
+                <p className="text-xs text-stone-500 mt-2 border-t border-stone-100 pt-2 whitespace-pre-wrap">
+                  <span className="font-semibold">Done today: </span>{mine.checkOutNote}
+                </p>
+              )}
+            </div>
+            {!mine.checkOutAt && (
+              <button onClick={() => setShowOut(true)}
+                className="px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 shrink-0 self-start">
+                Sign off for the day
+              </button>
+            )}
+          </div>
+        )}
+      </Card>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <KPI label="Present" value={present.length} sub={`of ${users.length} on the team`} icon={Users} />
+        <KPI label="Not yet in" value={absent.length} sub={dayLabel.toLowerCase()} icon={Clock} />
+        <KPI label="Signed off" value={forDay.filter(r => r.checkOutAt).length} sub="finished for the day" icon={CheckCircle2} />
+        <KPI label="Your fortnight" value={myFortnight.filter(d => d.record).length} sub="days marked in 14" icon={ListChecks} />
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <select value={day} onChange={e => setDay(e.target.value)} className={`${inputCls} sm:w-56`}>
+          <option value={today}>Today — {fmtDate(today)}</option>
+          {days.filter(d => d !== today).map(d => <option key={d} value={d}>{fmtDate(d)}</option>)}
+        </select>
+        <div className="flex gap-1 flex-wrap">
+          {myFortnight.slice().reverse().map(d => (
+            <span key={d.iso} title={`${fmtDate(d.iso)} — ${d.record ? "present" : "no record"}`}
+              className={`w-5 h-5 rounded ${d.record ? "dia-bg-gold" : "bg-stone-200"}`} />
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="flex items-center gap-3 mb-3">
+          <span className="font-display text-base font-semibold text-stone-800">Present — {dayLabel}</span>
+          <div className="flex-1 h-px bg-stone-200" />
+          <span className="text-[11px] text-stone-400">{present.length} of {users.length}</span>
+        </div>
+
+        {forDay.length === 0 && (
+          <Card className="p-8 text-center">
+            <p className="text-sm text-stone-400">Nobody has marked in {day === today ? "yet today" : "on this day"}.</p>
+          </Card>
+        )}
+
+        <div className="grid sm:grid-cols-2 gap-3">
+          {forDay.map(r => {
+            const person = users.find(u => u.id === r.userId) || (data.users || []).find(u => u.id === r.userId);
+            return (
+              <Card key={r.id} className="p-4">
+                <div className="flex gap-3">
+                  <button type="button" onClick={() => setPhoto(r)} className="shrink-0">
+                    <img src={r.checkInPhotoUrl} alt={person?.name || "Check-in"}
+                      className="w-24 h-16 object-cover rounded-lg border border-stone-200 hover:dia-border-gold" />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2">
+                      <span className="text-sm font-semibold text-stone-900">{person?.name || "Unknown"}</span>
+                      <span className="text-[11px] text-stone-400">{person?.role}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">
+                        In {clockTime(r.checkInAt)}
+                      </span>
+                      {r.checkOutAt && (
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">
+                          Out {clockTime(r.checkOutAt)}
+                        </span>
+                      )}
+                      {r.location && <span className="text-[11px] text-stone-500">{r.location}</span>}
+                      {r.lat && (
+                        <a href={`https://maps.google.com/?q=${r.lat},${r.lng}`} target="_blank" rel="noreferrer"
+                          className="text-[11px] dia-text-bronze">Map</a>
+                      )}
+                    </div>
+                    <p className="text-xs text-stone-600 mt-1.5 whitespace-pre-wrap">{r.checkInNote}</p>
+                    {r.checkOutNote && (
+                      <p className="text-xs text-stone-500 mt-1.5 pt-1.5 border-t border-stone-100 whitespace-pre-wrap">
+                        <span className="font-semibold">Done: </span>{r.checkOutNote}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+
+        {absent.length > 0 && (
+          <div className="mt-5">
+            <div className="flex items-center gap-3 mb-2">
+              <span className="text-xs font-semibold text-stone-500 font-label uppercase tracking-wide">No record</span>
+              <div className="flex-1 h-px bg-stone-200" />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {absent.map(u => (
+                <span key={u.id} className="text-xs px-3 py-1.5 rounded-lg bg-stone-100 text-stone-500">
+                  {u.name} <span className="text-stone-400">· {u.role}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {showIn && (
+        <Modal title="Mark Yourself Present" onClose={() => setShowIn(false)}>
+          <CheckInForm currentUser={currentUser}
+            onDone={async (payload) => { await actions.checkIn(payload); setShowIn(false); }} />
+        </Modal>
+      )}
+
+      {showOut && mine && (
+        <Modal title="Sign Off For The Day" onClose={() => setShowOut(false)}>
+          <CheckOutForm onDone={async (note) => { await actions.checkOut(mine.id, note); setShowOut(false); }} />
+        </Modal>
+      )}
+
+      {photo && (
+        <Modal title={(users.find(u => u.id === photo.userId)?.name || "Check-in") + " — " + fmtDate(photo.date)}
+          onClose={() => setPhoto(null)} wide>
+          <img src={photo.checkInPhotoUrl} alt="Check-in" className="w-full rounded-xl" />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Office petty expenses                                                    */
+/* ---------------------------------------------------------------------- */
+
+function OfficeExpenseForm({ onSave, currentUser }) {
+  const [form, setForm] = useState({
+    office: OFFICES[0], category: OFFICE_EXPENSE_CATEGORIES[0], purpose: "",
+    amount: "", paymentMethod: PAYMENT_METHODS[0],
+    date: TODAY.toISOString().slice(0, 10), notes: "", proof: null,
+  });
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+  const canSubmit = form.purpose.trim() && Number(form.amount) > 0;
+
+  return (
+    <div>
+      <Field label="Which office is this for?">
+        <div className="flex gap-2">
+          {OFFICES.map(o => (
+            <button key={o} type="button" onClick={() => setForm(f => ({ ...f, office: o }))}
+              className={`flex-1 py-2.5 rounded-lg text-sm font-semibold border transition-colors ${
+                form.office === o ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+              {o}
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Date"><input type="date" className={inputCls} value={form.date} onChange={set("date")} /></Field>
+        <Field label="Category">
+          <select className={inputCls} value={form.category} onChange={set("category")}>
+            {OFFICE_EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      <Field label="What was it for?">
+        <input className={inputCls} value={form.purpose} onChange={set("purpose")}
+          placeholder="e.g. Tea and coffee for the studio, printer cartridges" />
+      </Field>
+
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Amount (₹)">
+          <input type="number" className={inputCls} value={form.amount} onChange={set("amount")} />
+        </Field>
+        <Field label="Paid by">
+          <select className={inputCls} value={form.paymentMethod} onChange={set("paymentMethod")}>
+            {PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      <Field label="Notes (optional)">
+        <textarea rows={2} className={inputCls} value={form.notes} onChange={set("notes")} />
+      </Field>
+
+      {/* Optional here, unlike site expenses: a ₹40 auto fare rarely comes
+          with a bill, and demanding one would just stop it being recorded. */}
+      <ProofAttachment proof={form.proof} onChange={(p) => setForm(f => ({ ...f, proof: p }))} pathPrefix="office" />
+      <p className="text-[11px] text-stone-400 -mt-2 mb-3">Attach the bill if you have one — helpful, but not required.</p>
+
+      <button onClick={() => onSave({ ...form, amount: Number(form.amount), proofUrl: form.proof?.dataUrl || null })}
+        disabled={!canSubmit}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">
+        Submit expense
+      </button>
+      {!canSubmit && <p className="text-[11px] text-stone-400 mt-2 text-center">A purpose and an amount are required.</p>}
+    </div>
+  );
+}
+
+function OfficeExpensesView({ data, currentUser, actions }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [office, setOffice] = useState("All");
+  const [category, setCategory] = useState("All");
+  const [status, setStatus] = useState("All");
+  const [month, setMonth] = useState(TODAY.toISOString().slice(0, 7));
+  const [rejecting, setRejecting] = useState(null);
+  const [reason, setReason] = useState("");
+
+  const all = data.officeExpenses || [];
+  const users = data.users || [];
+  const userName = (id) => users.find(u => u.id === id)?.name || "—";
+  const isFinance = currentUser.role === "Admin" || currentUser.role === "Accounts";
+
+  const inMonth = all.filter(e => (e.date || "").slice(0, 7) === month && e.status !== "Rejected");
+  const monthTotal = inMonth.reduce((s, e) => s + e.amount, 0);
+  const byOffice = (name) => inMonth.filter(e => e.office === name).reduce((s, e) => s + e.amount, 0);
+  const pending = all.filter(e => e.status === "Pending");
+
+  const visible = all.filter(e => {
+    if (office !== "All" && e.office !== office) return false;
+    if (category !== "All" && e.category !== category) return false;
+    if (status !== "All" && e.status !== status) return false;
+    if (month !== "All" && (e.date || "").slice(0, 7) !== month) return false;
+    return true;
+  });
+  const visibleTotal = visible.filter(e => e.status !== "Rejected").reduce((s, e) => s + e.amount, 0);
+
+  /* Where the month's money went, largest first — the question anyone asks of
+     a petty cash book. */
+  const byCategory = [];
+  inMonth.forEach(e => {
+    const row = byCategory.find(r => r.category === e.category);
+    if (row) row.total += e.amount;
+    else byCategory.push({ category: e.category, total: e.amount });
+  });
+  byCategory.sort((a, b) => b.total - a.total);
+
+  const monthLabel = (m) => new Date(m + "-01").toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  const months = [...new Set(all.map(e => (e.date || "").slice(0, 7)).filter(Boolean))].sort().reverse();
+
+  return (
+    <div className="p-4 sm:p-8 space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <KPI label={monthLabel(month)} value={fmtINR(monthTotal)} sub="spent this month" icon={Receipt} />
+        <KPI label="Bengaluru" value={fmtINR(byOffice("Bengaluru"))} sub="this month" icon={Landmark} />
+        <KPI label="Chennai" value={fmtINR(byOffice("Chennai"))} sub="this month" icon={Landmark} />
+        <KPI label="Awaiting approval" value={pending.length} sub={fmtINR(pending.reduce((s, e) => s + e.amount, 0))} icon={Clock} />
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <select value={month} onChange={e => setMonth(e.target.value)} className={`${inputCls} sm:w-48`}>
+          <option value="All">Every month</option>
+          {months.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
+        </select>
+        <select value={office} onChange={e => setOffice(e.target.value)} className={`${inputCls} sm:w-40`}>
+          <option value="All">Both offices</option>
+          {OFFICES.map(o => <option key={o}>{o}</option>)}
+        </select>
+        <select value={category} onChange={e => setCategory(e.target.value)} className={`${inputCls} sm:w-52`}>
+          <option value="All">All categories</option>
+          {OFFICE_EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+        </select>
+        <select value={status} onChange={e => setStatus(e.target.value)} className={`${inputCls} sm:w-36`}>
+          <option value="All">Any status</option>
+          {["Pending", "Approved", "Rejected"].map(s => <option key={s}>{s}</option>)}
+        </select>
+        <button onClick={() => setShowAdd(true)}
+          className="flex items-center justify-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg shrink-0">
+          <Plus size={16} /> Add expense
+        </button>
+      </div>
+
+      {byCategory.length > 0 && (
+        <Card className="p-4">
+          <h3 className="font-display text-base font-semibold text-stone-900 mb-3">
+            Where it went — {monthLabel(month)}
+          </h3>
+          <div className="space-y-2">
+            {byCategory.map(row => (
+              <div key={row.category} className="flex items-center gap-3">
+                <span className="text-xs text-stone-600 w-48 shrink-0 truncate">{row.category}</span>
+                <div className="flex-1 h-2 rounded-full bg-stone-100 overflow-hidden">
+                  <div className="h-full dia-bg-gold" style={{ width: `${(row.total / monthTotal) * 100}%` }} />
+                </div>
+                <span className="text-xs font-semibold text-stone-800 w-24 text-right tabular-nums">{fmtINR(row.total)}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <Card className="p-4 flex items-center justify-between">
+        <span className="text-sm text-stone-600">{visible.length} expense{visible.length !== 1 ? "s" : ""} shown</span>
+        <span className="font-display text-xl font-semibold text-stone-900">{fmtINR(visibleTotal)}</span>
+      </Card>
+
+      {visible.length === 0 && (
+        <Card className="p-10 text-center">
+          <Receipt size={26} className="mx-auto text-stone-300 mb-2" />
+          <p className="text-sm text-stone-400">
+            {all.length === 0 ? "No office expenses recorded yet." : "Nothing matches these filters."}
+          </p>
+        </Card>
+      )}
+
+      <div className="space-y-2">
+        {visible.map(e => {
+          const isOwn = e.submittedBy === currentUser.id;
+          const canDelete = currentUser.role === "Admin" || (isOwn && e.status === "Pending");
+          return (
+            <Card key={e.id} className="p-4">
+              <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full dia-bg-cream-soft dia-text-bronze">{e.office}</span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">{e.category}</span>
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                      e.status === "Approved" ? "bg-emerald-50 text-emerald-700"
+                        : e.status === "Rejected" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>
+                      {e.status}
+                    </span>
+                    {e.paid && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">Reimbursed</span>}
+                  </div>
+                  <div className="text-sm font-medium text-stone-800 mt-1.5">{e.purpose}</div>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-xs text-stone-500">
+                    <span>{fmtDate(e.date)}</span>
+                    <span>{e.paymentMethod}</span>
+                    <span>By {userName(e.submittedBy)}</span>
+                    {e.proofUrl && <a href={e.proofUrl} target="_blank" rel="noreferrer" className="dia-text-bronze">Attachment</a>}
+                  </div>
+                  {e.notes && <div className="text-xs text-stone-500 mt-1 italic">{e.notes}</div>}
+                  {e.status === "Rejected" && e.rejectionReason && (
+                    <div className="text-xs text-rose-600 mt-1">Rejected: {e.rejectionReason}</div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="font-display text-lg font-semibold text-stone-900">{fmtINR(e.amount)}</span>
+                  {isFinance && e.status === "Pending" && !isOwn && (
+                    <>
+                      <button onClick={() => actions.approveOfficeExpense(e.id)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white">Approve</button>
+                      <button onClick={() => { setRejecting(e.id); setReason(""); }}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-stone-300 text-stone-600 hover:bg-stone-50">Reject</button>
+                    </>
+                  )}
+                  {isFinance && e.status === "Pending" && isOwn && (
+                    <span className="text-[11px] text-stone-400 italic">Needs another approver</span>
+                  )}
+                  {isFinance && e.status === "Approved" && !isOwn && (
+                    <button onClick={() => actions.markOfficeExpensePaid(e.id, !e.paid)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+                        e.paid ? "border border-stone-300 text-stone-600 hover:bg-stone-50" : "dia-btn-gold"}`}>
+                      {e.paid ? "Mark unreimbursed" : "Mark reimbursed"}
+                    </button>
+                  )}
+                  {canDelete && (
+                    <button onClick={() => { if (window.confirm("Delete this expense?")) actions.deleteOfficeExpense(e.id); }}
+                      className="text-stone-300 hover:text-rose-600"><Trash2 size={15} /></button>
+                  )}
+                </div>
+              </div>
+
+              {rejecting === e.id && (
+                <div className="flex items-center gap-2 mt-3 pt-3 border-t border-stone-100">
+                  <input className={`${inputCls} text-xs`} value={reason} onChange={ev => setReason(ev.target.value)}
+                    placeholder="Why is this being rejected?" autoFocus />
+                  <button onClick={() => { actions.rejectOfficeExpense(e.id, reason); setRejecting(null); }}
+                    disabled={!reason.trim()}
+                    className="px-3 py-2 rounded-lg text-xs font-semibold bg-rose-600 text-white disabled:opacity-40 shrink-0">Reject</button>
+                  <button onClick={() => setRejecting(null)} className="text-xs text-stone-500 shrink-0">Cancel</button>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+
+      {showAdd && (
+        <Modal title="Add Office Expense" onClose={() => setShowAdd(false)}>
+          <OfficeExpenseForm currentUser={currentUser}
+            onSave={(exp) => { actions.addOfficeExpense(exp); setShowAdd(false); }} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Work tracker                                                             */
 /* ---------------------------------------------------------------------- */
 
@@ -5695,6 +6291,90 @@ const WORK_STARTER_LIST = [
   ["Minus 2 Cents Bengaluru", "Colour change"],
   ["Akash Necks", "Design"],
 ];
+
+/* Paste a WhatsApp list, check the rows, add them. The parser makes a first
+   pass at project names and urgency; the person corrects it here, which is
+   quicker than typing twenty tasks and safer than trusting the guess. */
+function WhatsAppImportPanel({ suggestions, onAdd, onClose }) {
+  const [text, setText] = useState("");
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const parse = () => setRows(parseWhatsAppTasks(text, suggestions));
+  const setRow = (i, patch) => setRows(rs => rs.map((r, x) => x === i ? { ...r, ...patch } : r));
+  const removeRow = (i) => setRows(rs => rs.filter((_, x) => x !== i));
+
+  /* One project name applied to every row at once — for a message that was
+     all about a single site but never said so. */
+  const [applyAll, setApplyAll] = useState("");
+
+  const add = async () => {
+    const valid = (rows || []).filter(r => r.title.trim());
+    if (!valid.length) return;
+    setBusy(true);
+    try { await onAdd(valid); onClose(); }
+    catch (err) { alert(err.message || "Couldn't add those tasks."); setBusy(false); }
+  };
+
+  return (
+    <div>
+      {!rows ? (
+        <>
+          <textarea rows={10} className={`${inputCls} font-mono text-xs leading-relaxed`} value={text}
+            onChange={e => setText(e.target.value)} autoFocus
+            placeholder={"Paste the message here, for example:\n\n1. Surya - brass vendor follow up\n2. Erode: marble inlay corrections\n3. Riyora — first floor counters URGENT\n\nBarlotta:\n- restroom renders\n- kitchen drawings"} />
+          <p className="text-[11px] text-stone-500 mt-2">
+            Numbering, bullets and WhatsApp timestamps are stripped. "Project - task" on a line, or a heading ending in a colon, sets the project. Words like <em>urgent</em> or <em>asap</em> flag the task.
+          </p>
+          <button onClick={parse} disabled={!text.trim()}
+            className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-3">
+            Read the list
+          </button>
+        </>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <span className="text-sm text-stone-600">{rows.length} task{rows.length !== 1 ? "s" : ""} found</span>
+            <span className="flex-1" />
+            <input className={`${inputCls} text-xs max-w-[180px]`} list="wa-projects" value={applyAll}
+              onChange={e => setApplyAll(e.target.value)} placeholder="Set all to project…" />
+            <datalist id="wa-projects">{suggestions.map(p => <option key={p} value={p} />)}</datalist>
+            <button type="button" disabled={!applyAll.trim()}
+              onClick={() => { setRows(rs => rs.map(r => ({ ...r, project: applyAll.trim() }))); setApplyAll(""); }}
+              className="text-xs dia-text-bronze font-semibold disabled:opacity-40">Apply</button>
+          </div>
+
+          <div className="space-y-1.5 max-h-[50vh] overflow-y-auto pr-1">
+            {rows.map((r, i) => (
+              <div key={i} className="grid grid-cols-12 gap-2 items-center">
+                <input className={`${inputCls} col-span-4 text-xs`} list="wa-projects" value={r.project}
+                  onChange={e => setRow(i, { project: e.target.value })} />
+                <input className={`${inputCls} col-span-6 text-xs`} value={r.title}
+                  onChange={e => setRow(i, { title: e.target.value })} />
+                <button type="button" onClick={() => setRow(i, { urgent: !r.urgent })} title="Urgent"
+                  className={`col-span-1 text-[10px] font-semibold py-2 rounded-lg border ${
+                    r.urgent ? "bg-rose-50 text-rose-700 border-rose-200" : "border-stone-200 text-stone-400"}`}>
+                  !
+                </button>
+                <button type="button" onClick={() => removeRow(i)}
+                  className="col-span-1 text-stone-300 hover:text-rose-600 flex justify-center"><Trash2 size={14} /></button>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex gap-2 mt-4">
+            <button type="button" onClick={() => setRows(null)}
+              className="px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-600 hover:bg-stone-50">Back</button>
+            <button onClick={add} disabled={busy || !rows.some(r => r.title.trim())}
+              className="flex-1 dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
+              {busy ? "Adding…" : `Add ${rows.filter(r => r.title.trim()).length} task${rows.length !== 1 ? "s" : ""}`}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 function WorkTaskRow({ task, projects, actions }) {
   const [open, setOpen] = useState(false);
@@ -5800,6 +6480,7 @@ function WorkTrackerView({ data, currentUser, actions }) {
   const [newTitle, setNewTitle] = useState("");
   const [newProject, setNewProject] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   const tasks = data.workTasks || [];
   const projects = [...new Set(tasks.map(t => t.project))].sort();
@@ -5876,9 +6557,20 @@ function WorkTrackerView({ data, currentUser, actions }) {
             className="dia-btn-gold px-5 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40 shrink-0">
             {busy ? "Adding…" : "Add"}
           </button>
+          <button onClick={() => setShowImport(true)} title="Paste a list from WhatsApp"
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 shrink-0">
+            <MessageSquare size={15} /> <span className="hidden sm:inline">Paste list</span>
+          </button>
         </div>
-        <p className="text-[11px] text-stone-400 mt-2">Leave the project blank and it goes under General.</p>
+        <p className="text-[11px] text-stone-400 mt-2">Leave the project blank and it goes under General. Paste list takes a whole WhatsApp message at once.</p>
       </Card>
+
+      {showImport && (
+        <Modal title="Paste a list from WhatsApp" onClose={() => setShowImport(false)} wide>
+          <WhatsAppImportPanel suggestions={suggestions} onClose={() => setShowImport(false)}
+            onAdd={(rows) => actions.addWorkTasksBulk(rows)} />
+        </Modal>
+      )}
 
       <div className="flex flex-col sm:flex-row sm:items-center gap-3">
         <div className="relative flex-1">
@@ -6760,6 +7452,25 @@ export default function App() {
     updateQuotationStatus: (id, status) => dbUpdateQuotationStatus(id, status).then(reload),
     duplicateQuotation: (q) => dbDuplicateQuotation(q, profile?.id).then(reload),
     deleteQuotation: (id) => dbDeleteQuotation(id).then(reload),
+    checkIn: (payload) => dbCheckIn(profile?.id, payload).then(reload).catch((err) => {
+      window.alert(`Couldn't mark you present.\n\n${err.message || err}`);
+      throw err;
+    }),
+    checkOut: (id, note) => dbCheckOut(id, note).then(reload).catch((err) => {
+      window.alert(`Couldn't sign you off.\n\n${err.message || err}`);
+      throw err;
+    }),
+    addOfficeExpense: (e) => dbAddOfficeExpense(e, profile?.id).then(reload).catch((err) => {
+      window.alert(`Couldn't save that expense.\n\n${err.message || err}`);
+      throw err;
+    }),
+    approveOfficeExpense: (id) => dbApproveOfficeExpense(id, profile?.id).then(reload),
+    rejectOfficeExpense: (id, reason) => dbRejectOfficeExpense(id, profile?.id, reason).then(reload),
+    markOfficeExpensePaid: (id, paid) => dbMarkOfficeExpensePaid(id, profile?.id, paid).then(reload),
+    deleteOfficeExpense: (id) => dbDeleteOfficeExpense(id).then(reload).catch((err) => {
+      window.alert(`Couldn't delete that expense.\n\n${err.message || err}`);
+      throw err;
+    }),
     addWorkTask: (t) => dbAddWorkTask(t, profile?.id).then(reload),
     updateWorkTask: (id, patch) => dbUpdateWorkTask(id, patch).then(reload),
     deleteWorkTask: (id) => dbDeleteWorkTask(id).then(reload),
@@ -6868,6 +7579,8 @@ export default function App() {
     projects: ["Projects", "All active and completed projects"],
     expenses: ["Expenses", "Review, filter and approve project expenses"],
     tracker: ["Work Tracker", "Everything outstanding, grouped by project"],
+    office: ["Office Expenses", "Petty cash for the Bengaluru and Chennai offices"],
+    attendance: ["Attendance", "Who is in today, and what they are working on"],
     feed: ["Team Feed", "Daily updates, follow-ups and approvals across every site"],
     schedules: ["Schedules", "Client welcome packs and the programme of works"],
     quotations: ["Quotations", "Design proposals, fee schedules and client-ready PDFs"],
@@ -6891,6 +7604,8 @@ export default function App() {
       <Sidebar user={currentUser} view={view} setView={setView} onLogout={handleLogout} pendingCount={pendingCount}
         openFeedCount={(data.feedPosts || []).filter(p => p.kind !== "update" && p.status === "open").length}
         openWorkCount={(data.workTasks || []).filter(t => t.urgent && t.status !== "Done").length}
+        pendingOfficeCount={(data.officeExpenses || []).filter(e => e.status === "Pending").length}
+        needsCheckIn={!(data.attendance || []).some(r => r.userId === currentUser.id && r.date === localToday())}
         mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
       <div className="flex-1 min-w-0">
         {view.tab !== "project" && view.tab !== "sup-home" && view.tab !== "arch-home" && (
@@ -6904,6 +7619,8 @@ export default function App() {
         {view.tab === "project" && <ProjectDetail data={data} projectId={view.projectId} sub={view.sub} setView={setView} currentUser={currentUser} actions={actions} onMenuClick={() => setMobileNavOpen(true)} />}
         {view.tab === "expenses" && (isStaffOnly ? <ExpensesGlobal data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "tracker" && (isAdmin ? <WorkTrackerView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
+        {view.tab === "attendance" && <AttendanceView data={data} currentUser={currentUser} actions={actions} />}
+        {view.tab === "office" && <OfficeExpensesView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "feed" && <FeedView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "schedules" && <SchedulesView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "quotations" && (isStaffOnly ? <QuotationsView data={data} currentUser={currentUser} actions={actions} setView={setView} /> : <AccessDenied />)}
