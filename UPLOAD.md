@@ -18,6 +18,7 @@ files in the wrong place before.
 - `quotationDefaults.js`
 - `generateQuotation.js`
 - `parseWhatsApp.js` — new
+- `generateClientScope.js` — new
 
 Steps for each folder: open it on GitHub → **Add file → Upload files** → drag
 the files in → **Commit changes**.
@@ -45,6 +46,12 @@ be changed after a project is created. Margin is shown live as you type.
 with its own area and rate, printed as a breakdown table. Long client addresses
 wrap instead of running off the page. A bullet landing first on a new page no
 longer prints in the footer's tiny type.
+
+**Client scope** — a tab on every project listing what the client has to
+arrange themselves (their vendors, materials, approvals, payments, site
+readiness), each with a needed-by date. Exports a letter on the letterhead with
+a real, tickable checkbox per item, and copies a WhatsApp reminder listing
+what's open and overdue.
 
 ## After uploading
 
