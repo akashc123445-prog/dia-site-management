@@ -87,6 +87,12 @@ const mapVendor = (r) => ({
   bankIfsc: r.bank_ifsc, bankName: r.bank_name, createdAt: r.created_at,
 });
 
+const mapClientScopeItem = (r) => ({
+  id: r.id, projectId: r.project_id, title: r.title, details: r.details || "",
+  category: r.category, dueDate: r.due_date, status: r.status, doneOn: r.done_on,
+  lastRemindedAt: r.last_reminded_at, notes: r.notes || "", sortOrder: r.sort_order,
+});
+
 const mapAttendance = (r) => ({
   id: r.id, userId: r.user_id, date: r.date,
   checkInAt: r.check_in_at, checkInPhotoUrl: r.check_in_photo_url, checkInNote: r.check_in_note,
@@ -190,7 +196,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, attendanceRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, clientScopeRaw, attendanceRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -217,6 +223,7 @@ export async function fetchAllData() {
       supabase.from("office_expenses").select("*").order("date", { ascending: false }),
       // Last few weeks only: the board is about today, and the history view
       // never looks further back than a month.
+      supabase.from("client_scope_items").select("*").order("sort_order").order("created_at"),
       supabase.from("attendance").select("*")
         .gte("date", new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10))
         .order("date", { ascending: false }),
@@ -237,6 +244,10 @@ export async function fetchAllData() {
   if (boqLibraryRaw.error) {
     // eslint-disable-next-line no-console
     console.warn("BOQ library unavailable:", boqLibraryRaw.error.message);
+  }
+  if (clientScopeRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("Client scope unavailable:", clientScopeRaw.error.message);
   }
   if (attendanceRaw.error) {
     // eslint-disable-next-line no-console
@@ -277,6 +288,7 @@ export async function fetchAllData() {
     workTasks: (workTasksRaw.data || []).map(mapWorkTask),
     officeExpenses: (officeExpensesRaw.data || []).map(mapOfficeExpense),
     attendance: (attendanceRaw.data || []).map(mapAttendance),
+    clientScope: (clientScopeRaw.data || []).map(mapClientScopeItem),
     feedPosts: (feedPostsRaw.data || []).map(mapFeedPost),
     feedComments: (feedCommentsRaw.data || []).map(mapFeedComment),
   };
@@ -690,6 +702,43 @@ export async function dbDeleteQuotation(id) {
    the usual way a revised price goes out to the same client. */
 export async function dbDuplicateQuotation(source, createdBy) {
   return dbAddQuotation({ ...source, quotationNo: "", status: "Draft" }, createdBy);
+}
+
+/* ---- client scope --------------------------------------------------------- */
+
+export async function dbAddClientScopeItem(item, createdBy) {
+  const { error } = await supabase.from("client_scope_items").insert({
+    project_id: item.projectId, title: item.title.trim(), details: item.details || null,
+    category: item.category || "Vendor", due_date: item.dueDate || null,
+    notes: item.notes || null, sort_order: item.sortOrder || 0, created_by: createdBy,
+  });
+  if (error) throw error;
+}
+
+export async function dbUpdateClientScopeItem(id, patch) {
+  const payload = {};
+  ["title", "details", "category", "notes"].forEach((k) => { if (patch[k] !== undefined) payload[k] = patch[k]; });
+  if (patch.dueDate !== undefined) payload.due_date = patch.dueDate || null;
+  if (patch.status !== undefined) {
+    payload.status = patch.status;
+    payload.done_on = patch.status === "Done" ? new Date().toISOString().slice(0, 10) : null;
+  }
+  const { error } = await supabase.from("client_scope_items").update(payload).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteClientScopeItem(id) {
+  const { error } = await supabase.from("client_scope_items").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/* Stamps the items a reminder went out for, so "last chased on" is a fact
+   rather than a memory. */
+export async function dbMarkClientScopeReminded(ids) {
+  if (!ids.length) return;
+  const { error } = await supabase.from("client_scope_items")
+    .update({ last_reminded_at: new Date().toISOString() }).in("id", ids);
+  if (error) throw error;
 }
 
 /* ---- attendance ---------------------------------------------------------- */
