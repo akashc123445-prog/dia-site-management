@@ -6422,6 +6422,12 @@ function OfficeExpensesView({ data, currentUser, actions }) {
 /* ---------------------------------------------------------------------- */
 
 const WORK_STATUSES = ["Not started", "In progress", "Done"];
+const WORK_PRIORITIES = ["High", "Medium", "Low"];
+const WORK_PRIORITY_STYLE = {
+  High: "bg-rose-50 text-rose-700",
+  Medium: "bg-amber-50 text-amber-700",
+  Low: "bg-stone-100 text-stone-500",
+};
 const WORK_STATUS_STYLE = {
   "Not started": "bg-stone-100 text-stone-600",
   "In progress": "bg-amber-50 text-amber-700",
@@ -6496,7 +6502,7 @@ function WhatsAppImportPanel({ suggestions, onAdd, onClose }) {
             onChange={e => setText(e.target.value)} autoFocus
             placeholder={"Paste the message here, for example:\n\n1. Surya - brass vendor follow up\n2. Erode: marble inlay corrections\n3. Riyora — first floor counters URGENT\n\nBarlotta:\n- restroom renders\n- kitchen drawings"} />
           <p className="text-[11px] text-stone-500 mt-2">
-            Numbering, bullets and WhatsApp timestamps are stripped. "Project - task" on a line, or a heading ending in a colon, sets the project. Words like <em>urgent</em> or <em>asap</em> flag the task.
+            Numbering, bullets and WhatsApp timestamps are stripped. "Project - task" on a line, or a heading ending in a colon, sets the project. Words like <em>urgent</em> or <em>asap</em> set a task to high priority.
           </p>
           <button onClick={parse} disabled={!text.trim()}
             className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-3">
@@ -6523,11 +6529,12 @@ function WhatsAppImportPanel({ suggestions, onAdd, onClose }) {
                   onChange={e => setRow(i, { project: e.target.value })} />
                 <input className={`${inputCls} col-span-6 text-xs`} value={r.title}
                   onChange={e => setRow(i, { title: e.target.value })} />
-                <button type="button" onClick={() => setRow(i, { urgent: !r.urgent })} title="Urgent"
-                  className={`col-span-1 text-[10px] font-semibold py-2 rounded-lg border ${
-                    r.urgent ? "bg-rose-50 text-rose-700 border-rose-200" : "border-stone-200 text-stone-400"}`}>
-                  !
-                </button>
+                <select value={r.priority || (r.urgent ? "High" : "Medium")}
+                  onChange={e => setRow(i, { priority: e.target.value, urgent: e.target.value === "High" })}
+                  className={`col-span-1 text-[10px] font-semibold rounded-lg px-1 py-2 border-0 cursor-pointer ${
+                    WORK_PRIORITY_STYLE[r.priority || (r.urgent ? "High" : "Medium")]}`}>
+                  {WORK_PRIORITIES.map(p => <option key={p} value={p}>{p[0]}</option>)}
+                </select>
                 <button type="button" onClick={() => removeRow(i)}
                   className="col-span-1 text-stone-300 hover:text-rose-600 flex justify-center"><Trash2 size={14} /></button>
               </div>
@@ -6565,7 +6572,7 @@ function WorkTaskRow({ task, projects, actions }) {
 
   return (
     <div className={`border-l-4 rounded-r-xl border border-stone-200 bg-white ${
-      task.urgent && !isDone ? "border-l-rose-500" : "border-l-transparent"} ${isDone ? "opacity-70" : ""}`}>
+      task.priority === "High" && !isDone ? "border-l-rose-500" : task.priority === "Low" ? "border-l-stone-200" : "border-l-amber-300"} ${isDone ? "opacity-70" : ""}`}>
       <div className="flex items-start gap-3 p-3">
         <button type="button" onClick={() => setOpen(o => !o)}
           className="min-w-0 flex-1 text-left">
@@ -6581,9 +6588,11 @@ function WorkTaskRow({ task, projects, actions }) {
         </button>
 
         <div className="flex items-center gap-2 shrink-0">
-          {task.urgent && !isDone && (
-            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700">Urgent</span>
-          )}
+          <select value={task.priority || "Medium"} onChange={e => actions.updateWorkTask(task.id, { priority: e.target.value })}
+            title="Priority"
+            className={`text-xs font-semibold rounded-lg px-2 py-1.5 border-0 cursor-pointer ${WORK_PRIORITY_STYLE[task.priority] || WORK_PRIORITY_STYLE.Medium}`}>
+            {WORK_PRIORITIES.map(p => <option key={p} value={p}>{p} priority</option>)}
+          </select>
           <select value={task.status} onChange={e => actions.updateWorkTask(task.id, { status: e.target.value })}
             className={`text-xs font-semibold rounded-lg px-2 py-1.5 border-0 cursor-pointer ${WORK_STATUS_STYLE[task.status]}`}>
             {WORK_STATUSES.map(st => <option key={st}>{st}</option>)}
@@ -6599,10 +6608,6 @@ function WorkTaskRow({ task, projects, actions }) {
             onChange={e => setNote(e.target.value)} placeholder="Notes — who you're waiting on, what's next" />
 
           <div className="flex flex-wrap items-center gap-3">
-            <button type="button" onClick={() => actions.updateWorkTask(task.id, { urgent: !task.urgent })}
-              className={`text-xs font-semibold ${task.urgent ? "text-rose-600" : "text-stone-500 hover:text-stone-800"}`}>
-              {task.urgent ? "Remove urgent flag" : "Flag as urgent"}
-            </button>
             <button type="button" onClick={() => { setMoving(m => !m); setMoveTo(""); }}
               className="text-xs text-stone-500 hover:text-stone-800">
               {moving ? "Cancel move" : "Move to another project"}
@@ -6662,12 +6667,12 @@ function WorkTrackerView({ data, currentUser, actions }) {
 
   const done = tasks.filter(t => t.status === "Done").length;
   const inProgress = tasks.filter(t => t.status === "In progress").length;
-  const urgent = tasks.filter(t => t.urgent && t.status !== "Done").length;
+  const urgent = tasks.filter(t => t.priority === "High" && t.status !== "Done").length;
 
   const visible = tasks.filter(t => {
     if (filter === "Open" && t.status === "Done") return false;
     if (filter === "Done" && t.status !== "Done") return false;
-    if (filter === "Urgent" && (!t.urgent || t.status === "Done")) return false;
+    if (filter === "High" && (t.priority !== "High" || t.status === "Done")) return false;
     if (query.trim()) {
       const hay = `${t.title} ${t.project} ${t.note}`.toLowerCase();
       if (!hay.includes(query.trim().toLowerCase())) return false;
@@ -6682,6 +6687,8 @@ function WorkTrackerView({ data, currentUser, actions }) {
     else grouped.push({ project: t.project, tasks: [t] });
   });
   grouped.sort((a, b) => a.project.localeCompare(b.project));
+  const rank = { High: 0, Medium: 1, Low: 2 };
+  grouped.forEach(g => g.tasks.sort((a, b) => (rank[a.priority] ?? 1) - (rank[b.priority] ?? 1)));
 
   const add = async () => {
     if (!newTitle.trim()) return;
@@ -6698,7 +6705,7 @@ function WorkTrackerView({ data, currentUser, actions }) {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <KPI label="Open" value={tasks.length - done} sub="still to do" icon={ListChecks} />
         <KPI label="In progress" value={inProgress} sub="under way" icon={Clock} />
-        <KPI label="Urgent" value={urgent} sub="needs attention now" icon={AlertCircle} />
+        <KPI label="High priority" value={urgent} sub="needs attention now" icon={AlertCircle} />
         <KPI label="Done" value={done} sub="completed" icon={CheckCircle2} />
       </div>
 
@@ -6751,7 +6758,7 @@ function WorkTrackerView({ data, currentUser, actions }) {
             className={`${inputCls} pl-9`} />
         </div>
         <div className="flex gap-1.5">
-          {["Open", "Urgent", "Done", "All"].map(f => (
+          {["Open", "High", "Done", "All"].map(f => (
             <button key={f} type="button" onClick={() => setFilter(f)}
               className={`px-3.5 py-2 rounded-lg text-sm font-semibold border transition-colors ${
                 filter === f ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
@@ -7779,7 +7786,7 @@ export default function App() {
       <BackToTop />
       <Sidebar user={currentUser} view={view} setView={setView} onLogout={handleLogout} pendingCount={pendingCount}
         openFeedCount={(data.feedPosts || []).filter(p => p.kind !== "update" && p.status === "open").length}
-        openWorkCount={(data.workTasks || []).filter(t => t.urgent && t.status !== "Done").length}
+        openWorkCount={(data.workTasks || []).filter(t => t.priority === "High" && t.status !== "Done").length}
         pendingOfficeCount={(data.officeExpenses || []).filter(e => e.status === "Pending").length}
         needsCheckIn={!(data.attendance || []).some(r => r.userId === currentUser.id && r.date === localToday())}
         mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
