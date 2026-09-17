@@ -111,7 +111,9 @@ const mapOfficeExpense = (r) => ({
 
 const mapWorkTask = (r) => ({
   id: r.id, project: r.project, title: r.title, status: r.status,
-  urgent: !!r.urgent, note: r.note || "", doneOn: r.done_on,
+  priority: r.priority || (r.urgent ? "High" : "Medium"),
+  urgent: (r.priority || (r.urgent ? "High" : "Medium")) === "High",
+  note: r.note || "", doneOn: r.done_on,
   createdAt: r.created_at,
 });
 
@@ -814,7 +816,8 @@ export async function dbAddWorkTask(task, createdBy) {
   const { error } = await supabase.from("work_tasks").insert({
     project: (task.project || "General").trim() || "General",
     title: task.title.trim(),
-    urgent: !!task.urgent,
+    priority: task.priority || (task.urgent ? "High" : "Medium"),
+    urgent: (task.priority || (task.urgent ? "High" : "Medium")) === "High",
     note: task.note || null,
     created_by: createdBy,
   });
@@ -827,7 +830,8 @@ export async function dbUpdateWorkTask(id, patch) {
   const payload = {};
   if (patch.project !== undefined) payload.project = (patch.project || "General").trim() || "General";
   if (patch.title !== undefined) payload.title = patch.title;
-  if (patch.urgent !== undefined) payload.urgent = patch.urgent;
+  if (patch.priority !== undefined) { payload.priority = patch.priority; payload.urgent = patch.priority === "High"; }
+  if (patch.urgent !== undefined && patch.priority === undefined) { payload.urgent = patch.urgent; payload.priority = patch.urgent ? "High" : "Medium"; }
   if (patch.note !== undefined) payload.note = patch.note;
   if (patch.status !== undefined) {
     payload.status = patch.status;
@@ -854,7 +858,8 @@ export async function dbAddWorkTasksBulk(rows, createdBy) {
     rows.map((r) => Array.isArray(r)
       ? { project: r[0], title: r[1], created_by: createdBy }
       : { project: (r.project || "General").trim() || "General", title: r.title.trim(),
-          urgent: !!r.urgent, created_by: createdBy })
+          priority: r.priority || (r.urgent ? "High" : "Medium"),
+          urgent: (r.priority || (r.urgent ? "High" : "Medium")) === "High", created_by: createdBy })
   );
   if (error) throw error;
 }
