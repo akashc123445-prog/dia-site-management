@@ -36,6 +36,7 @@ import {
   dbAddWorkTask, dbUpdateWorkTask, dbDeleteWorkTask, dbClearDoneWorkTasks, dbAddWorkTasksBulk,
   dbAddOfficeExpense, dbApproveOfficeExpense, dbRejectOfficeExpense, dbMarkOfficeExpensePaid, dbDeleteOfficeExpense,
   dbCheckIn, dbCheckOut, uploadAttendancePhoto,
+  dbAddClientScopeItem, dbUpdateClientScopeItem, dbDeleteClientScopeItem, dbMarkClientScopeReminded,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
   dbMarkMaterialReceived, dbFulfillMaterialRequest,
   dbStartSiteVisit, dbEndSiteVisit,
@@ -49,6 +50,7 @@ import { exportBOQExcel } from "./lib/exportBOQExcel";
 import { parseBOQFile } from "./lib/importBOQ";
 import { parseScheduleFile } from "./lib/importSchedule";
 import { parseWhatsAppTasks } from "./lib/parseWhatsApp";
+import { generateClientScopePdf, clientScopeReminderText } from "./lib/generateClientScope";
 import { generateSchedulePdf } from "./lib/generateSchedule";
 import {
   SCHEDULE_STATUSES, SCHEDULE_TASK_TEMPLATE, TASK_STATUSES,
@@ -2211,6 +2213,7 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
     { key: "expenses", label: "Expenses" },
     ...(isDesigning ? [] : [{ key: "photos", label: "Photos" }]),
     ...(isDesigning ? [] : [{ key: "materials", label: "Materials" }]),
+    { key: "clientscope", label: "Client Scope" },
   ];
 
   return (
@@ -2326,6 +2329,10 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
         canLog={isAssignedArchitect}
         onStart={(entryPhotoUrl) => actions.startSiteVisit(project.id, currentUser.id, entryPhotoUrl)}
         onEnd={(visitId, fields) => actions.endSiteVisit(visitId, fields)} />}
+      {tab === "clientscope" && (
+        <ClientScopeTab project={project} currentUser={currentUser} canEdit={isFinance} actions={actions}
+          items={(data.clientScope || []).filter(i => i.projectId === project.id)} />
+      )}
       {tab === "expenses" && <ExpensesTab project={project} expenses={data.expenses} users={data.users} vendors={data.vendors} currentUser={currentUser}
         canApprove={isFinance} canAdd={isFinance || isAssignedSupervisor || isAssignedArchitect}
         onAdd={(exp) => actions.addExpense({ ...exp, projectId: project.id, submittedBy: currentUser.id })}
@@ -5664,6 +5671,158 @@ function SchedulesView({ data, currentUser, actions }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Client scope — what the client must arrange, and by when                */
+/* ---------------------------------------------------------------------- */
+
+const SCOPE_CATEGORIES = ["Vendor", "Material", "Approval", "Payment", "Site readiness", "Other"];
+const SCOPE_STATUS_STYLE = {
+  Pending: "bg-stone-100 text-stone-600",
+  "In progress": "bg-amber-50 text-amber-700",
+  Done: "bg-emerald-50 text-emerald-700",
+};
+
+function ClientScopeTab({ project, items, currentUser, canEdit, actions }) {
+  const [form, setForm] = useState({ title: "", details: "", category: "Vendor", dueDate: "" });
+  const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  const sorted = [...items].sort((a, b) => {
+    if ((a.status === "Done") !== (b.status === "Done")) return a.status === "Done" ? 1 : -1;
+    return (a.dueDate || "9999").localeCompare(b.dueDate || "9999");
+  });
+  const open = items.filter(i => i.status !== "Done");
+  const overdue = open.filter(i => i.dueDate && i.dueDate < today);
+  const dueSoon = open.filter(i => i.dueDate && i.dueDate >= today && (Date.parse(i.dueDate) - Date.parse(today)) / 86400000 <= 7);
+
+  const add = async () => {
+    if (!form.title.trim()) return;
+    setBusy(true);
+    try {
+      await actions.addClientScopeItem({ ...form, projectId: project.id, sortOrder: items.length });
+      setForm({ title: "", details: "", category: form.category, dueDate: "" });
+    } catch (err) { alert(err.message || "Couldn't add that item."); }
+    setBusy(false);
+  };
+
+  const copyReminder = async () => {
+    const text = clientScopeReminderText(project, items);
+    if (!text) return;
+    try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked */ }
+    await actions.markClientScopeReminded(open.map(i => i.id));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  };
+
+  const dueLabel = (item) => {
+    if (!item.dueDate) return null;
+    if (item.status === "Done") return <span className="text-stone-400">Done {item.doneOn ? fmtDate(item.doneOn) : ""}</span>;
+    const days = Math.round((Date.parse(item.dueDate) - Date.parse(today)) / 86400000);
+    if (days < 0) return <span className="text-rose-600 font-semibold">{-days} day{-days !== 1 ? "s" : ""} overdue</span>;
+    if (days === 0) return <span className="text-amber-700 font-semibold">Due today</span>;
+    if (days <= 7) return <span className="text-amber-700">Due in {days} day{days !== 1 ? "s" : ""}</span>;
+    return <span className="text-stone-500">Due {fmtDate(item.dueDate)}</span>;
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <KPI label="Client's items" value={items.length} sub="in their scope" icon={ListChecks} />
+        <KPI label="Still open" value={open.length} sub="not yet arranged" icon={Clock} />
+        <KPI label="Overdue" value={overdue.length} sub="past the needed-by date" icon={AlertCircle} />
+        <KPI label="Due this week" value={dueSoon.length} sub="within 7 days" icon={CalendarDays} />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={() => { const u = generateClientScopePdf({ project, items, preparedBy: currentUser.name }, "preview"); if (u) window.open(u, "_blank"); }}
+          disabled={!items.length}
+          className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40">
+          <Eye size={15} /> Preview PDF
+        </button>
+        <button onClick={() => generateClientScopePdf({ project, items, preparedBy: currentUser.name }, "save")}
+          disabled={!items.length}
+          className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40">
+          <Download size={15} /> Download for client
+        </button>
+        {canEdit && (
+          <button onClick={copyReminder} disabled={!open.length}
+            className="flex items-center gap-1.5 dia-btn-gold px-4 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+            <MessageSquare size={15} /> {copied ? "Copied — paste into WhatsApp" : `Copy reminder (${open.length} open)`}
+          </button>
+        )}
+      </div>
+
+      {canEdit && (
+        <Card className="p-4">
+          <div className="grid sm:grid-cols-12 gap-2">
+            <input className={`${inputCls} sm:col-span-5`} value={form.title} onChange={set("title")}
+              onKeyDown={e => { if (e.key === "Enter") add(); }}
+              placeholder="What the client needs to arrange, e.g. Appoint a glass vendor" />
+            <select className={`${inputCls} sm:col-span-3`} value={form.category} onChange={set("category")}>
+              {SCOPE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+            </select>
+            <input type="date" className={`${inputCls} sm:col-span-2`} value={form.dueDate} onChange={set("dueDate")} title="Needed by" />
+            <button onClick={add} disabled={!form.title.trim() || busy}
+              className="sm:col-span-2 dia-btn-gold px-4 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+              {busy ? "Adding…" : "Add"}
+            </button>
+          </div>
+          <input className={`${inputCls} mt-2 text-xs`} value={form.details} onChange={set("details")}
+            placeholder="Detail the client will see, e.g. 12mm toughened, as per drawing D-04 (optional)" />
+        </Card>
+      )}
+
+      {items.length === 0 && (
+        <Card className="p-10 text-center">
+          <ListChecks size={26} className="mx-auto text-stone-300 mb-2" />
+          <p className="text-sm text-stone-400">
+            Nothing in the client's scope yet. Add the vendors, materials and approvals they've undertaken to arrange, with the date each is needed on site.
+          </p>
+        </Card>
+      )}
+
+      <div className="space-y-2">
+        {sorted.map(item => {
+          const isOverdue = item.dueDate && item.dueDate < today && item.status !== "Done";
+          return (
+            <Card key={item.id} className={`p-4 ${item.status === "Done" ? "opacity-70" : ""} ${isOverdue ? "border-l-4 border-l-rose-500" : ""}`}>
+              <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full dia-bg-cream-soft dia-text-bronze">{item.category}</span>
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${SCOPE_STATUS_STYLE[item.status]}`}>{item.status}</span>
+                    {item.lastRemindedAt && item.status !== "Done" && (
+                      <span className="text-[10px] text-stone-400">reminded {fmtDate(item.lastRemindedAt)}</span>
+                    )}
+                  </div>
+                  <div className={`text-sm font-medium mt-1.5 ${item.status === "Done" ? "line-through text-stone-400" : "text-stone-800"}`}>{item.title}</div>
+                  {item.details && <div className="text-xs text-stone-500 mt-0.5">{item.details}</div>}
+                  <div className="text-xs mt-1.5">{dueLabel(item)}</div>
+                </div>
+                {canEdit && (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <input type="date" className={`${inputCls} text-xs w-36`} value={item.dueDate || ""}
+                      onChange={e => actions.updateClientScopeItem(item.id, { dueDate: e.target.value })} title="Needed by" />
+                    <select value={item.status} onChange={e => actions.updateClientScopeItem(item.id, { status: e.target.value })}
+                      className={`text-xs font-semibold rounded-lg px-2 py-2 border-0 cursor-pointer ${SCOPE_STATUS_STYLE[item.status]}`}>
+                      {Object.keys(SCOPE_STATUS_STYLE).map(st => <option key={st}>{st}</option>)}
+                    </select>
+                    <button onClick={() => { if (window.confirm("Remove this item?")) actions.deleteClientScopeItem(item.id); }}
+                      className="text-stone-300 hover:text-rose-600"><Trash2 size={15} /></button>
+                  </div>
+                )}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Attendance                                                               */
 /* ---------------------------------------------------------------------- */
 
@@ -7452,6 +7611,10 @@ export default function App() {
     updateQuotationStatus: (id, status) => dbUpdateQuotationStatus(id, status).then(reload),
     duplicateQuotation: (q) => dbDuplicateQuotation(q, profile?.id).then(reload),
     deleteQuotation: (id) => dbDeleteQuotation(id).then(reload),
+    addClientScopeItem: (item) => dbAddClientScopeItem(item, profile?.id).then(reload),
+    updateClientScopeItem: (id, patch) => dbUpdateClientScopeItem(id, patch).then(reload),
+    deleteClientScopeItem: (id) => dbDeleteClientScopeItem(id).then(reload),
+    markClientScopeReminded: (ids) => dbMarkClientScopeReminded(ids).then(reload),
     checkIn: (payload) => dbCheckIn(profile?.id, payload).then(reload).catch((err) => {
       window.alert(`Couldn't mark you present.\n\n${err.message || err}`);
       throw err;
