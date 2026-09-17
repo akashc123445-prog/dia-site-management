@@ -5890,19 +5890,32 @@ function CheckInForm({ onDone, currentUser }) {
               className="text-xs text-stone-500 hover:text-rose-600">Replace it</button>
           </div>
         ) : (
-          <label className="flex flex-col items-center justify-center gap-2 border border-dashed border-stone-300 rounded-xl py-7 cursor-pointer hover:dia-border-gold hover:dia-text-bronze text-stone-500">
-            <ImageIcon size={22} />
-            <span className="text-sm font-medium">Take a photo or attach one</span>
-            <span className="text-[11px] text-center px-4">
-              The drawing, sheet or model you're opening first. Photograph your screen, attach a
-              screenshot, or on site shoot the work itself — whichever is to hand.
-            </span>
-            {/* Deliberately no capture attribute: with it, the phone forces the
-                camera open, and with none it offers camera or files — which is
-                what's wanted when someone may photograph their desktop screen
-                or pick up a screenshot they already took. */}
-            <input type="file" accept="image/*" hidden onChange={pick} />
-          </label>
+          <div className="border border-dashed border-stone-300 rounded-xl py-5 px-4 text-stone-500">
+            <div className="flex flex-col items-center gap-1 mb-4">
+              <ImageIcon size={22} />
+              <span className="text-[11px] text-center">
+                The drawing, sheet or model you're opening first. Photograph your screen, attach a
+                screenshot, or on site shoot the work itself.
+              </span>
+            </div>
+            {/* Two buttons, two inputs. A single input without a capture
+                attribute is meant to offer camera or files, but several
+                Android browsers skip the choice and open the file picker —
+                so each route gets its own button and there's nothing to
+                guess. */}
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex flex-col items-center justify-center gap-1.5 border border-stone-200 rounded-xl py-3.5 cursor-pointer hover:dia-border-gold hover:dia-text-bronze bg-white">
+                <Camera size={20} />
+                <span className="text-xs font-semibold">Take a photo</span>
+                <input type="file" accept="image/*" capture="environment" hidden onChange={pick} />
+              </label>
+              <label className="flex flex-col items-center justify-center gap-1.5 border border-stone-200 rounded-xl py-3.5 cursor-pointer hover:dia-border-gold hover:dia-text-bronze bg-white">
+                <Upload size={20} />
+                <span className="text-xs font-semibold">From gallery or files</span>
+                <input type="file" accept="image/*" hidden onChange={pick} />
+              </label>
+            </div>
+          </div>
         )}
       </Field>
 
