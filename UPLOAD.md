@@ -19,6 +19,7 @@ files in the wrong place before.
 - `generateQuotation.js`
 - `parseWhatsApp.js` — new
 - `generateClientScope.js` — new
+- `exportRegisters.js` — new
 
 Steps for each folder: open it on GitHub → **Add file → Upload files** → drag
 the files in → **Commit changes**.
@@ -52,6 +53,15 @@ arrange themselves (their vendors, materials, approvals, payments, site
 readiness), each with a needed-by date. Exports a letter on the letterhead with
 a real, tickable checkbox per item, and copies a WhatsApp reminder listing
 what's open and overdue.
+
+**Leave & permissions** — a tab for every role. Ask for leave, a half day, a
+late check-in, an early leaving or a day working from home. Admin and Accounts
+approve or decline with a reason, and nobody decides their own. Days taken this
+year show per person, and the register exports to Excel.
+
+**Registers to Excel** — attendance with each person's plan and what they got
+done, office petty cash by month and office, and the leave register with a
+per-person summary.
 
 ## After uploading
 
