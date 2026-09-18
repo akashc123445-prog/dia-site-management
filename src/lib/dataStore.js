@@ -87,6 +87,14 @@ const mapVendor = (r) => ({
   bankIfsc: r.bank_ifsc, bankName: r.bank_name, createdAt: r.created_at,
 });
 
+const mapLeaveRequest = (r) => ({
+  id: r.id, userId: r.user_id, kind: r.kind,
+  fromDate: r.from_date, toDate: r.to_date, timeNote: r.time_note || "",
+  reason: r.reason, days: Number(r.days) || 0, status: r.status,
+  decidedBy: r.decided_by, decidedAt: r.decided_at, decisionNote: r.decision_note || "",
+  createdAt: r.created_at,
+});
+
 const mapClientScopeItem = (r) => ({
   id: r.id, projectId: r.project_id, title: r.title, details: r.details || "",
   category: r.category, dueDate: r.due_date, status: r.status, doneOn: r.done_on,
@@ -198,7 +206,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, clientScopeRaw, attendanceRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, clientScopeRaw, attendanceRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -225,6 +233,7 @@ export async function fetchAllData() {
       supabase.from("office_expenses").select("*").order("date", { ascending: false }),
       // Last few weeks only: the board is about today, and the history view
       // never looks further back than a month.
+      supabase.from("leave_requests").select("*").order("from_date", { ascending: false }),
       supabase.from("client_scope_items").select("*").order("sort_order").order("created_at"),
       supabase.from("attendance").select("*")
         .gte("date", new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10))
@@ -246,6 +255,10 @@ export async function fetchAllData() {
   if (boqLibraryRaw.error) {
     // eslint-disable-next-line no-console
     console.warn("BOQ library unavailable:", boqLibraryRaw.error.message);
+  }
+  if (leaveRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("Leave register unavailable:", leaveRaw.error.message);
   }
   if (clientScopeRaw.error) {
     // eslint-disable-next-line no-console
@@ -291,6 +304,7 @@ export async function fetchAllData() {
     officeExpenses: (officeExpensesRaw.data || []).map(mapOfficeExpense),
     attendance: (attendanceRaw.data || []).map(mapAttendance),
     clientScope: (clientScopeRaw.data || []).map(mapClientScopeItem),
+    leaveRequests: (leaveRaw.data || []).map(mapLeaveRequest),
     feedPosts: (feedPostsRaw.data || []).map(mapFeedPost),
     feedComments: (feedCommentsRaw.data || []).map(mapFeedComment),
   };
@@ -704,6 +718,29 @@ export async function dbDeleteQuotation(id) {
    the usual way a revised price goes out to the same client. */
 export async function dbDuplicateQuotation(source, createdBy) {
   return dbAddQuotation({ ...source, quotationNo: "", status: "Draft" }, createdBy);
+}
+
+/* ---- leave and permissions ----------------------------------------------- */
+
+export async function dbAddLeaveRequest(req, userId) {
+  const { error } = await supabase.from("leave_requests").insert({
+    user_id: userId, kind: req.kind, from_date: req.fromDate, to_date: req.toDate,
+    time_note: req.timeNote || null, reason: req.reason, days: req.days,
+  });
+  if (error) throw error;
+}
+
+export async function dbDecideLeaveRequest(id, deciderId, status, note) {
+  const { error } = await supabase.from("leave_requests").update({
+    status, decided_by: deciderId, decided_at: new Date().toISOString(),
+    decision_note: note || null,
+  }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteLeaveRequest(id) {
+  const { error } = await supabase.from("leave_requests").delete().eq("id", id);
+  if (error) throw error;
 }
 
 /* ---- client scope --------------------------------------------------------- */
