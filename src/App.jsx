@@ -37,6 +37,7 @@ import {
   dbAddOfficeExpense, dbApproveOfficeExpense, dbRejectOfficeExpense, dbMarkOfficeExpensePaid, dbDeleteOfficeExpense,
   dbCheckIn, dbCheckOut, uploadAttendancePhoto,
   dbAddClientScopeItem, dbUpdateClientScopeItem, dbDeleteClientScopeItem, dbMarkClientScopeReminded,
+  dbAddLeaveRequest, dbDecideLeaveRequest, dbDeleteLeaveRequest,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
   dbMarkMaterialReceived, dbFulfillMaterialRequest,
   dbStartSiteVisit, dbEndSiteVisit,
@@ -51,6 +52,7 @@ import { parseBOQFile } from "./lib/importBOQ";
 import { parseScheduleFile } from "./lib/importSchedule";
 import { parseWhatsAppTasks } from "./lib/parseWhatsApp";
 import { generateClientScopePdf, clientScopeReminderText } from "./lib/generateClientScope";
+import { exportAttendanceExcel, exportOfficeExpensesExcel, exportLeaveExcel } from "./lib/exportRegisters";
 import { generateSchedulePdf } from "./lib/generateSchedule";
 import {
   SCHEDULE_STATUSES, SCHEDULE_TASK_TEMPLATE, TASK_STATUSES,
@@ -303,7 +305,7 @@ function LoginScreen() {
 /* App Shell (Sidebar + Header)                                             */
 /* ---------------------------------------------------------------------- */
 
-function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, openWorkCount, pendingOfficeCount, needsCheckIn, mobileOpen, onCloseMobile }) {
+function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, openWorkCount, pendingOfficeCount, pendingLeaveCount, needsCheckIn, mobileOpen, onCloseMobile }) {
   /* The feed carries an open-item count so a pending approval is visible from
      whatever screen someone is on. */
   const feedItem = { key: "feed", label: "Team Feed", icon: MessageSquare, badge: openFeedCount };
@@ -311,9 +313,11 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
   const officeItem = { key: "office", label: "Office Expenses", icon: Landmark, badge: pendingOfficeCount };
   /* A dot rather than a number: a reminder to mark in, not a count of work. */
   const attendanceItem = { key: "attendance", label: "Attendance", icon: CheckCircle2, badge: needsCheckIn ? "•" : undefined };
+  const leaveItem = { key: "leave", label: "Leave & Permissions", icon: CalendarDays, badge: pendingLeaveCount };
   const adminNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     attendanceItem,
+    leaveItem,
     { key: "tracker", label: "Work Tracker", icon: ListChecks, badge: openWorkCount },
     feedItem,
     { key: "updates", label: "Updates", icon: ImageIcon },
@@ -328,6 +332,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
   const accountsNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     attendanceItem,
+    leaveItem,
     feedItem,
     { key: "projects", label: "Projects", icon: Building2 },
     { key: "expenses", label: "Expenses", icon: Receipt, badge: pendingCount },
@@ -339,6 +344,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
   const supNav = [
     { key: "sup-home", label: "My Sites", icon: LayoutDashboard },
     attendanceItem,
+    leaveItem,
     feedItem,
     scheduleItem,
     officeItem,
@@ -346,6 +352,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
   const archNav = [
     { key: "arch-home", label: "My Design Work", icon: PenTool },
     attendanceItem,
+    leaveItem,
     feedItem,
     scheduleItem,
     officeItem,
@@ -5683,6 +5690,7 @@ const SCOPE_STATUS_STYLE = {
 
 function ClientScopeTab({ project, items, currentUser, canEdit, actions }) {
   const [form, setForm] = useState({ title: "", details: "", category: "Vendor", dueDate: "" });
+  const [editing, setEditing] = useState(null);   // item being rewritten
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
@@ -5809,6 +5817,8 @@ function ClientScopeTab({ project, items, currentUser, canEdit, actions }) {
                       className={`text-xs font-semibold rounded-lg px-2 py-2 border-0 cursor-pointer ${SCOPE_STATUS_STYLE[item.status]}`}>
                       {Object.keys(SCOPE_STATUS_STYLE).map(st => <option key={st}>{st}</option>)}
                     </select>
+                    <button onClick={() => setEditing(item)} title="Edit"
+                      className="text-stone-400 hover:dia-text-bronze"><Pencil size={15} /></button>
                     <button onClick={() => { if (window.confirm("Remove this item?")) actions.deleteClientScopeItem(item.id); }}
                       className="text-stone-300 hover:text-rose-600"><Trash2 size={15} /></button>
                   </div>
@@ -5818,6 +5828,313 @@ function ClientScopeTab({ project, items, currentUser, canEdit, actions }) {
           );
         })}
       </div>
+
+      {editing && (
+        <Modal title="Edit Item" onClose={() => setEditing(null)}>
+          <ClientScopeEditForm item={editing}
+            onSave={async (patch) => { await actions.updateClientScopeItem(editing.id, patch); setEditing(null); }} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* The whole item, not just the date and status the row exposes inline. */
+function ClientScopeEditForm({ item, onSave }) {
+  const [form, setForm] = useState({
+    title: item.title || "", details: item.details || "",
+    category: item.category || "Vendor", dueDate: item.dueDate || "",
+    status: item.status || "Pending", notes: item.notes || "",
+  });
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  return (
+    <div>
+      <Field label="What the client needs to arrange">
+        <input className={inputCls} value={form.title} onChange={set("title")} autoFocus />
+      </Field>
+      <Field label="Detail the client will see">
+        <textarea rows={2} className={inputCls} value={form.details} onChange={set("details")} />
+      </Field>
+      <div className="grid grid-cols-2 gap-x-4">
+        <Field label="Category">
+          <select className={inputCls} value={form.category} onChange={set("category")}>
+            {SCOPE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label="Needed by">
+          <input type="date" className={inputCls} value={form.dueDate} onChange={set("dueDate")} />
+        </Field>
+      </div>
+      <Field label="Status">
+        <select className={inputCls} value={form.status} onChange={set("status")}>
+          {Object.keys(SCOPE_STATUS_STYLE).map(st => <option key={st}>{st}</option>)}
+        </select>
+      </Field>
+      <Field label="Internal notes (the client never sees these)">
+        <textarea rows={2} className={inputCls} value={form.notes} onChange={set("notes")} />
+      </Field>
+      <button onClick={async () => { setBusy(true); try { await onSave(form); } catch (err) { alert(err.message || "Couldn't save."); setBusy(false); } }}
+        disabled={!form.title.trim() || busy}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">
+        {busy ? "Saving…" : "Save changes"}
+      </button>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Leave and permissions                                                    */
+/* ---------------------------------------------------------------------- */
+
+const LEAVE_KINDS = {
+  "Leave": { label: "Leave", counts: true, spansDays: true },
+  "Half day": { label: "Half day", counts: true, spansDays: false },
+  "Late check-in": { label: "Late check-in", counts: false, spansDays: false },
+  "Early leaving": { label: "Early leaving", counts: false, spansDays: false },
+  "Work from home": { label: "Work from home", counts: false, spansDays: true },
+};
+
+const LEAVE_STATUS_STYLE = {
+  Pending: "bg-amber-50 text-amber-700",
+  Approved: "bg-emerald-50 text-emerald-700",
+  Rejected: "bg-rose-50 text-rose-700",
+};
+
+/* Inclusive span: the 3rd to the 5th is three days off, not two. */
+const spanDays = (from, to) =>
+  Math.max(1, Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1);
+
+function LeaveRequestForm({ onSave }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [form, setForm] = useState({ kind: "Leave", fromDate: today, toDate: today, timeNote: "", reason: "" });
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+  const spec = LEAVE_KINDS[form.kind];
+
+  const days = spec.counts ? (form.kind === "Half day" ? 0.5 : spanDays(form.fromDate, form.toDate)) : 0;
+  const canSubmit = form.reason.trim() && form.fromDate && form.toDate && form.toDate >= form.fromDate;
+
+  return (
+    <div>
+      <Field label="What are you asking for?">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {Object.keys(LEAVE_KINDS).map(k => (
+            <button key={k} type="button"
+              onClick={() => setForm(f => ({ ...f, kind: k, toDate: LEAVE_KINDS[k].spansDays ? f.toDate : f.fromDate }))}
+              className={`py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                form.kind === k ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+              {k}
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label={spec.spansDays ? "From" : "Date"}>
+          <input type="date" className={inputCls} value={form.fromDate}
+            onChange={e => setForm(f => ({ ...f, fromDate: e.target.value, toDate: spec.spansDays ? f.toDate : e.target.value }))} />
+        </Field>
+        {spec.spansDays && (
+          <Field label="To">
+            <input type="date" className={inputCls} value={form.toDate} min={form.fromDate} onChange={set("toDate")} />
+          </Field>
+        )}
+      </div>
+
+      {(form.kind === "Late check-in" || form.kind === "Early leaving") && (
+        <Field label={form.kind === "Late check-in" ? "What time will you be in?" : "What time will you leave?"}>
+          <input className={inputCls} value={form.timeNote} onChange={set("timeNote")} placeholder="e.g. 11:30 am" />
+        </Field>
+      )}
+
+      <Field label="Reason">
+        <textarea rows={2} className={inputCls} value={form.reason} onChange={set("reason")}
+          placeholder="Kept short is fine — it's read by whoever approves it" />
+      </Field>
+
+      {spec.counts && (
+        <p className="text-xs text-stone-500 mb-3">
+          This counts as <span className="font-semibold text-stone-800">{days} day{days === 1 ? "" : "s"}</span> against your leave once approved.
+        </p>
+      )}
+      {!spec.counts && (
+        <p className="text-xs text-stone-500 mb-3">A permission — it doesn't count against your leave days.</p>
+      )}
+
+      <button onClick={async () => { setBusy(true); try { await onSave({ ...form, days }); } catch (err) { alert(err.message || "Couldn't send that."); setBusy(false); } }}
+        disabled={!canSubmit || busy}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
+        {busy ? "Sending…" : "Send request"}
+      </button>
+    </div>
+  );
+}
+
+function LeaveView({ data, currentUser, actions }) {
+  const [showAsk, setShowAsk] = useState(false);
+  const [scope, setScope] = useState("mine");
+  const [deciding, setDeciding] = useState(null);
+  const [note, setNote] = useState("");
+
+  const all = data.leaveRequests || [];
+  const users = data.users || [];
+  const userName = (id) => users.find(u => u.id === id)?.name || "—";
+  const isFinance = currentUser.role === "Admin" || currentUser.role === "Accounts";
+  const year = new Date().getFullYear();
+
+  const mine = all.filter(r => r.userId === currentUser.id);
+  const myYear = mine.filter(r => r.status === "Approved" && (r.fromDate || "").startsWith(String(year)));
+  const myLeaveDays = myYear.filter(r => LEAVE_KINDS[r.kind]?.counts).reduce((s, r) => s + r.days, 0);
+  const myPermissions = myYear.filter(r => !LEAVE_KINDS[r.kind]?.counts).length;
+  const pending = all.filter(r => r.status === "Pending");
+
+  const visible = scope === "mine" ? mine : scope === "pending" ? pending : all;
+
+  /* Days taken per person, this year, approved only — the figure that belongs
+     under someone's name. */
+  const perPerson = users.filter(u => u.active && !u.removed).map(u => {
+    const theirs = all.filter(r => r.userId === u.id && r.status === "Approved" && (r.fromDate || "").startsWith(String(year)));
+    return {
+      user: u,
+      days: theirs.filter(r => LEAVE_KINDS[r.kind]?.counts).reduce((s, r) => s + r.days, 0),
+      permissions: theirs.filter(r => !LEAVE_KINDS[r.kind]?.counts).length,
+    };
+  }).sort((a, b) => b.days - a.days);
+
+  return (
+    <div className="p-4 sm:p-8 space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <KPI label={`Your leave in ${year}`} value={myLeaveDays} sub="days taken" icon={CalendarDays} />
+        <KPI label="Your permissions" value={myPermissions} sub="late or early, this year" icon={Clock} />
+        <KPI label="Awaiting a decision" value={pending.length} sub="across the team" icon={AlertCircle} />
+        <KPI label="Off today" value={all.filter(r => r.status === "Approved" && r.kind === "Leave"
+          && r.fromDate <= new Date().toISOString().slice(0, 10)
+          && r.toDate >= new Date().toISOString().slice(0, 10)).length} sub="on approved leave" icon={Users} />
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="flex gap-1.5">
+          {[["mine", "Mine"], ["pending", `Pending (${pending.length})`], ["all", "Everyone"]].map(([v, label]) => (
+            <button key={v} type="button" onClick={() => setScope(v)}
+              className={`px-3.5 py-2 rounded-lg text-sm font-semibold border transition-colors ${
+                scope === v ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <span className="flex-1" />
+        {isFinance && (
+          <button onClick={() => exportLeaveExcel({ requests: all, users, label: String(year) })}
+            disabled={!all.length}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40">
+            <FileSpreadsheet size={15} /> Export Excel
+          </button>
+        )}
+        <button onClick={() => setShowAsk(true)}
+          className="flex items-center justify-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg">
+          <Plus size={16} /> Ask for leave or permission
+        </button>
+      </div>
+
+      {visible.length === 0 && (
+        <Card className="p-10 text-center">
+          <CalendarDays size={26} className="mx-auto text-stone-300 mb-2" />
+          <p className="text-sm text-stone-400">
+            {scope === "mine" ? "You haven't asked for anything yet." : "Nothing here."}
+          </p>
+        </Card>
+      )}
+
+      <div className="space-y-2">
+        {visible.map(r => {
+          const isOwn = r.userId === currentUser.id;
+          const canDecide = isFinance && !isOwn && r.status === "Pending";
+          const canWithdraw = isOwn && r.status === "Pending";
+          return (
+            <Card key={r.id} className="p-4">
+              <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full dia-bg-cream-soft dia-text-bronze">{r.kind}</span>
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${LEAVE_STATUS_STYLE[r.status]}`}>{r.status}</span>
+                    {!isOwn && <span className="text-xs font-semibold text-stone-700">{userName(r.userId)}</span>}
+                    {LEAVE_KINDS[r.kind]?.counts && (
+                      <span className="text-[11px] text-stone-500">{r.days} day{r.days === 1 ? "" : "s"}</span>
+                    )}
+                  </div>
+                  <div className="text-sm text-stone-800 mt-1.5">
+                    {r.fromDate === r.toDate ? fmtDate(r.fromDate) : `${fmtDate(r.fromDate)} → ${fmtDate(r.toDate)}`}
+                    {r.timeNote && <span className="text-stone-500"> · {r.timeNote}</span>}
+                  </div>
+                  <div className="text-xs text-stone-600 mt-1">{r.reason}</div>
+                  {r.status !== "Pending" && (
+                    <div className="text-[11px] text-stone-400 mt-1">
+                      {r.status} by {userName(r.decidedBy)}{r.decidedAt ? ` on ${fmtDate(r.decidedAt)}` : ""}
+                      {r.decisionNote ? ` — ${r.decisionNote}` : ""}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {canDecide && (
+                    <>
+                      <button onClick={() => actions.decideLeave(r.id, "Approved", "")}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white">Approve</button>
+                      <button onClick={() => { setDeciding(r.id); setNote(""); }}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-stone-300 text-stone-600 hover:bg-stone-50">Decline</button>
+                    </>
+                  )}
+                  {isFinance && isOwn && r.status === "Pending" && (
+                    <span className="text-[11px] text-stone-400 italic">Another approver decides yours</span>
+                  )}
+                  {canWithdraw && (
+                    <button onClick={() => { if (window.confirm("Withdraw this request?")) actions.deleteLeave(r.id); }}
+                      className="text-xs text-stone-400 hover:text-rose-600">Withdraw</button>
+                  )}
+                </div>
+              </div>
+
+              {deciding === r.id && (
+                <div className="flex items-center gap-2 mt-3 pt-3 border-t border-stone-100">
+                  <input className={`${inputCls} text-xs`} value={note} onChange={e => setNote(e.target.value)}
+                    placeholder="Why is this being declined?" autoFocus />
+                  <button onClick={() => { actions.decideLeave(r.id, "Rejected", note); setDeciding(null); }}
+                    disabled={!note.trim()}
+                    className="px-3 py-2 rounded-lg text-xs font-semibold bg-rose-600 text-white disabled:opacity-40 shrink-0">Decline</button>
+                  <button onClick={() => setDeciding(null)} className="text-xs text-stone-500 shrink-0">Cancel</button>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+
+      {isFinance && (
+        <Card className="p-4">
+          <h3 className="font-display text-base font-semibold text-stone-900 mb-3">Days taken in {year}</h3>
+          <div className="space-y-1.5">
+            {perPerson.map(({ user, days, permissions }) => (
+              <div key={user.id} className="flex items-center gap-3 text-xs">
+                <span className="text-stone-700 w-44 shrink-0 truncate">{user.name}</span>
+                <span className="text-stone-400 w-24 shrink-0">{user.role}</span>
+                <div className="flex-1 h-2 rounded-full bg-stone-100 overflow-hidden">
+                  <div className="h-full dia-bg-gold" style={{ width: `${Math.min(100, (days / 24) * 100)}%` }} />
+                </div>
+                <span className="font-semibold text-stone-800 w-20 text-right">{days} day{days === 1 ? "" : "s"}</span>
+                <span className="text-stone-400 w-24 text-right">{permissions} permission{permissions === 1 ? "" : "s"}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {showAsk && (
+        <Modal title="Ask For Leave Or Permission" onClose={() => setShowAsk(false)}>
+          <LeaveRequestForm onSave={async (req) => { await actions.addLeaveRequest(req); setShowAsk(false); }} />
+        </Modal>
+      )}
     </div>
   );
 }
@@ -5973,6 +6290,7 @@ function AttendanceView({ data, currentUser, actions }) {
 
   const records = data.attendance || [];
   const users = (data.users || []).filter(u => u.active && !u.removed);
+  const isFinance = currentUser.role === "Admin" || currentUser.role === "Accounts";
   const today = localToday();
 
   const forDay = records.filter(r => r.date === day);
@@ -6053,6 +6371,17 @@ function AttendanceView({ data, currentUser, actions }) {
           <option value={today}>Today — {fmtDate(today)}</option>
           {days.filter(d => d !== today).map(d => <option key={d} value={d}>{fmtDate(d)}</option>)}
         </select>
+        {isFinance && records.length > 0 && (
+          <button onClick={() => {
+            /* The whole period held in memory, not just the day on screen —
+               a register is read by month, not by date. */
+            const dates = records.map(r => r.date).sort();
+            exportAttendanceExcel({ records, users: data.users || [], from: dates[0], to: dates[dates.length - 1] });
+          }}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 shrink-0">
+            <FileSpreadsheet size={15} /> Export with work report
+          </button>
+        )}
         <div className="flex gap-1 flex-wrap">
           {myFortnight.slice().reverse().map(d => (
             <span key={d.iso} title={`${fmtDate(d.iso)} — ${d.record ? "present" : "no record"}`}
@@ -6236,6 +6565,7 @@ function OfficeExpensesView({ data, currentUser, actions }) {
   const [month, setMonth] = useState(TODAY.toISOString().slice(0, 7));
   const [rejecting, setRejecting] = useState(null);
   const [reason, setReason] = useState("");
+  const [mineOnly, setMineOnly] = useState(false);
 
   const all = data.officeExpenses || [];
   const users = data.users || [];
@@ -6252,6 +6582,7 @@ function OfficeExpensesView({ data, currentUser, actions }) {
     if (category !== "All" && e.category !== category) return false;
     if (status !== "All" && e.status !== status) return false;
     if (month !== "All" && (e.date || "").slice(0, 7) !== month) return false;
+    if (mineOnly && e.submittedBy !== currentUser.id) return false;
     return true;
   });
   const visibleTotal = visible.filter(e => e.status !== "Rejected").reduce((s, e) => s + e.amount, 0);
@@ -6295,6 +6626,21 @@ function OfficeExpensesView({ data, currentUser, actions }) {
           <option value="All">Any status</option>
           {["Pending", "Approved", "Rejected"].map(s => <option key={s}>{s}</option>)}
         </select>
+        <button type="button" onClick={() => setMineOnly(m => !m)}
+          className={`px-4 py-2.5 rounded-lg text-sm font-semibold border shrink-0 transition-colors ${
+            mineOnly ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+          Only mine
+        </button>
+        {isFinance && (
+          <button onClick={() => exportOfficeExpensesExcel({
+            expenses: visible, users,
+            label: [month === "All" ? "all months" : monthLabel(month),
+                    office === "All" ? null : office].filter(Boolean).join(" · "),
+          })} disabled={!visible.length}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40 shrink-0">
+            <FileSpreadsheet size={15} /> Export Excel
+          </button>
+        )}
         <button onClick={() => setShowAdd(true)}
           className="flex items-center justify-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg shrink-0">
           <Plus size={16} /> Add expense
@@ -7631,6 +7977,15 @@ export default function App() {
     updateQuotationStatus: (id, status) => dbUpdateQuotationStatus(id, status).then(reload),
     duplicateQuotation: (q) => dbDuplicateQuotation(q, profile?.id).then(reload),
     deleteQuotation: (id) => dbDeleteQuotation(id).then(reload),
+    addLeaveRequest: (req) => dbAddLeaveRequest(req, profile?.id).then(reload).catch((err) => {
+      window.alert(`Couldn't send that request.\n\n${err.message || err}`);
+      throw err;
+    }),
+    decideLeave: (id, status, note) => dbDecideLeaveRequest(id, profile?.id, status, note).then(reload).catch((err) => {
+      window.alert(`Couldn't record that decision.\n\n${err.message || err}`);
+      throw err;
+    }),
+    deleteLeave: (id) => dbDeleteLeaveRequest(id).then(reload),
     addClientScopeItem: (item) => dbAddClientScopeItem(item, profile?.id).then(reload),
     updateClientScopeItem: (id, patch) => dbUpdateClientScopeItem(id, patch).then(reload),
     deleteClientScopeItem: (id) => dbDeleteClientScopeItem(id).then(reload),
@@ -7764,6 +8119,7 @@ export default function App() {
     tracker: ["Work Tracker", "Everything outstanding, grouped by project"],
     office: ["Office Expenses", "Petty cash for the Bengaluru and Chennai offices"],
     attendance: ["Attendance", "Who is in today, and what they are working on"],
+    leave: ["Leave & Permissions", "Ask for leave or a late check-in, and see what has been taken"],
     feed: ["Team Feed", "Daily updates, follow-ups and approvals across every site"],
     schedules: ["Schedules", "Client welcome packs and the programme of works"],
     quotations: ["Quotations", "Design proposals, fee schedules and client-ready PDFs"],
@@ -7789,6 +8145,7 @@ export default function App() {
         openWorkCount={(data.workTasks || []).filter(t => t.priority === "High" && t.status !== "Done").length}
         pendingOfficeCount={(data.officeExpenses || []).filter(e => e.status === "Pending").length}
         needsCheckIn={!(data.attendance || []).some(r => r.userId === currentUser.id && r.date === localToday())}
+        pendingLeaveCount={(data.leaveRequests || []).filter(r => r.status === "Pending").length}
         mobileOpen={mobileNavOpen} onCloseMobile={() => setMobileNavOpen(false)} />
       <div className="flex-1 min-w-0">
         {view.tab !== "project" && view.tab !== "sup-home" && view.tab !== "arch-home" && (
@@ -7803,6 +8160,7 @@ export default function App() {
         {view.tab === "expenses" && (isStaffOnly ? <ExpensesGlobal data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "tracker" && (isAdmin ? <WorkTrackerView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "attendance" && <AttendanceView data={data} currentUser={currentUser} actions={actions} />}
+        {view.tab === "leave" && <LeaveView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "office" && <OfficeExpensesView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "feed" && <FeedView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "schedules" && <SchedulesView data={data} currentUser={currentUser} actions={actions} />}
