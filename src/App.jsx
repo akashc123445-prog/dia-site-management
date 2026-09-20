@@ -54,6 +54,7 @@ import { parseScheduleFile } from "./lib/importSchedule";
 import { parseWhatsAppTasks } from "./lib/parseWhatsApp";
 import { generateClientScopePdf, clientScopeReminderText } from "./lib/generateClientScope";
 import { exportAttendanceExcel, exportOfficeExpensesExcel, exportLeaveExcel } from "./lib/exportRegisters";
+import { generateWorkTrackerPdf, workTrackerMessage } from "./lib/generateWorkTracker";
 import { generateSchedulePdf } from "./lib/generateSchedule";
 import {
   SCHEDULE_STATUSES, SCHEDULE_TASK_TEMPLATE, TASK_STATUSES,
@@ -7306,6 +7307,7 @@ function WorkTrackerView({ data, currentUser, actions }) {
 
   const tasks = data.workTasks || [];
   const people = (data.users || []).filter(u => u.active && !u.removed);
+  const [copied, setCopied] = useState(false);
   const projects = [...new Set(tasks.map(t => t.project))].sort();
   /* Projects in the system are offered alongside the tracker's own names, so a
      real site and a loose end can share a heading. */
@@ -7326,6 +7328,13 @@ function WorkTrackerView({ data, currentUser, actions }) {
     }
     return true;
   });
+
+  /* Names the export after whatever is being shown. */
+  const exportLabel = [
+    person === "All" ? null : person === "Unassigned" ? "Unassigned" : people.find(p => p.id === person)?.name,
+    filter === "High" ? "High priority" : filter === "Done" ? "Completed" : null,
+    query.trim() ? `"${query.trim()}"` : null,
+  ].filter(Boolean).join(" · ") || "Work in hand";
 
   const grouped = [];
   visible.forEach(t => {
@@ -7419,6 +7428,24 @@ function WorkTrackerView({ data, currentUser, actions }) {
             </button>
           ))}
         </div>
+        {/* Both exports take the filtered list, so "Ravi's high-priority work"
+            on screen is exactly what leaves the building. */}
+        <button type="button" onClick={() => generateWorkTrackerPdf({
+          tasks: visible, people, title: exportLabel,
+          subtitle: `${visible.filter(t => t.status !== "Done").length} open of ${visible.length}`,
+        })} disabled={!visible.length}
+          className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40 shrink-0">
+          <Download size={15} /> <span className="hidden sm:inline">PDF</span>
+        </button>
+        <button type="button" onClick={async () => {
+          const text = workTrackerMessage({ tasks: visible, people, heading: exportLabel });
+          try { await navigator.clipboard.writeText(text); } catch { /* clipboard blocked */ }
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2500);
+        }} disabled={!visible.length}
+          className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40 shrink-0">
+          <MessageSquare size={15} /> <span className="hidden sm:inline">{copied ? "Copied" : "WhatsApp"}</span>
+        </button>
         {done > 0 && (
           <button type="button"
             onClick={() => { if (window.confirm(`Delete all ${done} completed task${done === 1 ? "" : "s"}?`)) actions.clearDoneWorkTasks(); }}
