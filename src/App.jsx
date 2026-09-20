@@ -55,6 +55,7 @@ import { parseWhatsAppTasks } from "./lib/parseWhatsApp";
 import { generateClientScopePdf, clientScopeReminderText } from "./lib/generateClientScope";
 import { exportAttendanceExcel, exportOfficeExpensesExcel, exportLeaveExcel } from "./lib/exportRegisters";
 import { generateWorkTrackerPdf, workTrackerMessage } from "./lib/generateWorkTracker";
+import { downloadTaskCalendar } from "./lib/taskCalendar";
 import { generateSchedulePdf } from "./lib/generateSchedule";
 import {
   SCHEDULE_STATUSES, SCHEDULE_TASK_TEMPLATE, TASK_STATUSES,
@@ -5280,6 +5281,7 @@ function SupervisorHome({ data, currentUser, actions, setView }) {
 
   return (
     <div className="p-4 sm:p-6 max-w-2xl mx-auto space-y-5">
+      <MyTasksReminder data={data} currentUser={currentUser} actions={actions} />
       {myProjects.length > 1 && (
         <select className={inputCls} value={activeProjectId} onChange={e => setActiveProjectId(e.target.value)}>
           {myProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -5431,13 +5433,14 @@ function IssueForm({ onSave }) {
 /* Architect Home (mobile-first)                                            */
 /* ---------------------------------------------------------------------- */
 
-function ArchitectHome({ data, currentUser, setView }) {
+function ArchitectHome({ data, currentUser, actions, setView }) {
   const myProjects = data.projects.filter(p => (p.architects || []).includes(currentUser.id));
   const myOpenVisit = data.siteVisits.find(v => v.status === "Open" && v.architectId === currentUser.id);
   const openVisitProject = myOpenVisit ? myProjects.find(p => p.id === myOpenVisit.projectId) : null;
 
   return (
     <div className="p-4 sm:p-6 max-w-2xl mx-auto space-y-4">
+      <MyTasksReminder data={data} currentUser={currentUser} actions={actions} />
       <Card className="p-4">
         <div className="text-[11px] uppercase tracking-wide dia-text-bronze font-label font-semibold">{currentUser.rank}</div>
         <p className="text-sm text-stone-500 mt-1">Tap a project to update its design phases and working-drawings checklist.</p>
@@ -6160,6 +6163,99 @@ function ClientScopeEditForm({ item, onSave }) {
         {busy ? "Saving…" : "Save changes"}
       </button>
     </div>
+  );
+}
+
+/* What's on someone's plate, shown the moment they open the portal. Sits at
+   the top of whichever home screen their role lands on. */
+function MyTasksReminder({ data, currentUser, actions }) {
+  const [dismissed, setDismissed] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+
+  const today = localToday();
+  const mine = (data.workTasks || []).filter(t => t.assigneeId === currentUser.id && t.status !== "Done");
+  if (!mine.length || dismissed) return null;
+
+  const rank = { High: 0, Medium: 1, Low: 2 };
+  const sorted = [...mine].sort((a, b) => {
+    /* Overdue first, then by date, then by priority. */
+    const aLate = a.dueDate && a.dueDate < today ? 0 : 1;
+    const bLate = b.dueDate && b.dueDate < today ? 0 : 1;
+    if (aLate !== bLate) return aLate - bLate;
+    if ((a.dueDate || "9999") !== (b.dueDate || "9999")) return (a.dueDate || "9999").localeCompare(b.dueDate || "9999");
+    return (rank[a.priority] ?? 1) - (rank[b.priority] ?? 1);
+  });
+
+  const overdue = sorted.filter(t => t.dueDate && t.dueDate < today);
+  const dueToday = sorted.filter(t => t.dueDate === today);
+  const shown = showAll ? sorted : sorted.slice(0, 4);
+
+  const when = (t) => {
+    if (!t.dueDate) return null;
+    if (t.dueDate < today) return <span className="text-rose-600 font-semibold">overdue</span>;
+    if (t.dueDate === today) return <span className="text-amber-700 font-semibold">today</span>;
+    return <span className="text-stone-500">{fmtDate(t.dueDate)}</span>;
+  };
+
+  return (
+    <Card className="p-4 sm:p-5 dia-border-gold-soft">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="font-display text-lg font-semibold text-stone-900">
+              {mine.length} task{mine.length !== 1 ? "s" : ""} on you
+            </h3>
+            {overdue.length > 0 && (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700">
+                {overdue.length} overdue
+              </span>
+            )}
+            {dueToday.length > 0 && (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
+                {dueToday.length} due today
+              </span>
+            )}
+          </div>
+        </div>
+        <button onClick={() => setDismissed(true)} title="Hide until next time"
+          className="text-stone-300 hover:text-stone-600 shrink-0"><X size={16} /></button>
+      </div>
+
+      <div className="mt-3 space-y-1.5">
+        {shown.map(t => (
+          <div key={t.id} className="flex items-center gap-2.5 text-sm">
+            <button onClick={() => actions.updateWorkTask(t.id, { status: "Done" })}
+              title="Mark done"
+              className="w-4 h-4 rounded border-2 border-stone-300 hover:dia-border-gold shrink-0" />
+            <span className="text-stone-800 truncate flex-1">{t.title}</span>
+            <span className="text-[11px] text-stone-400 shrink-0 hidden sm:inline">{t.project}</span>
+            {t.priority === "High" && (
+              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-rose-50 text-rose-700 shrink-0">High</span>
+            )}
+            <span className="text-[11px] shrink-0 w-16 text-right">{when(t)}</span>
+          </div>
+        ))}
+      </div>
+
+      {sorted.length > 4 && (
+        <button onClick={() => setShowAll(v => !v)} className="text-xs dia-text-bronze font-semibold mt-2.5">
+          {showAll ? "Show fewer" : `Show all ${sorted.length}`}
+        </button>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-stone-100">
+        <button onClick={() => downloadTaskCalendar(mine, {
+          assigneeName: currentUser.name,
+          filename: `DIA tasks - ${currentUser.name.split(" ")[0]}.ics`,
+        })}
+          className="flex items-center gap-1.5 dia-btn-gold px-4 py-2 rounded-lg text-xs font-semibold">
+          <CalendarDays size={14} /> Add to my phone's reminders
+        </button>
+        <span className="text-[11px] text-stone-400">
+          Opens in your calendar app with an alert at 9am on the day.
+        </span>
+      </div>
+    </Card>
   );
 }
 
@@ -7225,9 +7321,16 @@ function WorkTaskRow({ task, projects, people, actions }) {
           {task.note && !open && (
             <div className="text-xs text-stone-500 mt-0.5 truncate">{task.note}</div>
           )}
-          {task.assigneeId && (
-            <div className="text-[11px] dia-text-bronze mt-0.5">
-              {people.find(p => p.id === task.assigneeId)?.name || "Assigned"}
+          {(task.assigneeId || task.dueDate) && (
+            <div className="text-[11px] mt-0.5 flex flex-wrap gap-x-2">
+              {task.assigneeId && (
+                <span className="dia-text-bronze">{people.find(p => p.id === task.assigneeId)?.name || "Assigned"}</span>
+              )}
+              {task.dueDate && (
+                <span className={task.dueDate < localToday() && !isDone ? "text-rose-600 font-semibold" : "text-stone-400"}>
+                  due {fmtDate(task.dueDate)}
+                </span>
+              )}
             </div>
           )}
           {task.doneOn && (
@@ -7271,6 +7374,12 @@ function WorkTaskRow({ task, projects, people, actions }) {
             <datalist id={`proj-${task.id}`}>
               {projects.map(p => <option key={p} value={p} />)}
             </datalist>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-stone-500 shrink-0">Due</span>
+            <input type="date" className={`${inputCls} text-xs`} value={task.dueDate || ""}
+              onChange={e => actions.updateWorkTask(task.id, { dueDate: e.target.value || null })} />
           </div>
 
           <div className="flex items-center gap-2">
@@ -8496,7 +8605,14 @@ export default function App() {
         {view.tab === "sup-home" && <Header title="My Sites" subtitle={`Welcome back, ${currentUser.name.split(" ")[0]}`} notifications={notifications} onMenuClick={() => setMobileNavOpen(true)} onNotificationClick={setView} />}
         {view.tab === "arch-home" && <Header title="My Design Work" subtitle={`Welcome back, ${currentUser.name.split(" ")[0]}`} notifications={notifications} onMenuClick={() => setMobileNavOpen(true)} onNotificationClick={setView} />}
 
-        {view.tab === "dashboard" && (isStaffOnly ? <AdminDashboard data={data} setView={setView} /> : <AccessDenied />)}
+        {view.tab === "dashboard" && (isStaffOnly ? (
+          <div>
+            <div className="px-4 sm:px-8 pt-4 sm:pt-8">
+              <MyTasksReminder data={data} currentUser={currentUser} actions={actions} />
+            </div>
+            <AdminDashboard data={data} setView={setView} />
+          </div>
+        ) : <AccessDenied />)}
         {view.tab === "projects" && (isStaffOnly ? <ProjectsList data={data} setView={setView} actions={actions} currentUser={currentUser} /> : <AccessDenied />)}
         {view.tab === "project" && <ProjectDetail data={data} projectId={view.projectId} sub={view.sub} setView={setView} currentUser={currentUser} actions={actions} onMenuClick={() => setMobileNavOpen(true)} />}
         {view.tab === "expenses" && (isStaffOnly ? <ExpensesGlobal data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
@@ -8511,7 +8627,7 @@ export default function App() {
         {view.tab === "updates" && (isAdmin ? <UpdatesFeed data={data} setView={setView} /> : <AccessDenied />)}
         {view.tab === "users" && (isAdmin ? <TeamView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "sup-home" && <SupervisorHome data={data} currentUser={currentUser} actions={actions} setView={setView} />}
-        {view.tab === "arch-home" && <ArchitectHome data={data} currentUser={currentUser} setView={setView} />}
+        {view.tab === "arch-home" && <ArchitectHome data={data} currentUser={currentUser} actions={actions} setView={setView} />}
         <p className="text-center text-[11px] text-stone-300 py-4">© Designed and developed by Kash.d Studios</p>
       </div>
     </div>
