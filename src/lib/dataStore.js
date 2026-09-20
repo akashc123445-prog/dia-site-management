@@ -119,7 +119,7 @@ const mapOfficeExpense = (r) => ({
 
 const mapWorkTask = (r) => ({
   id: r.id, project: r.project, title: r.title, status: r.status,
-  assigneeId: r.assignee_id,
+  assigneeId: r.assignee_id, dueDate: r.due_date,
   priority: r.priority || (r.urgent ? "High" : "Medium"),
   urgent: (r.priority || (r.urgent ? "High" : "Medium")) === "High",
   note: r.note || "", doneOn: r.done_on,
@@ -895,6 +895,7 @@ export async function dbAddWorkTask(task, createdBy) {
     priority: task.priority || (task.urgent ? "High" : "Medium"),
     urgent: (task.priority || (task.urgent ? "High" : "Medium")) === "High",
     assignee_id: task.assigneeId || null,
+    due_date: task.dueDate || null,
     note: task.note || null,
     created_by: createdBy,
   });
@@ -911,6 +912,7 @@ export async function dbUpdateWorkTask(id, patch) {
   if (patch.urgent !== undefined && patch.priority === undefined) { payload.urgent = patch.urgent; payload.priority = patch.urgent ? "High" : "Medium"; }
   if (patch.note !== undefined) payload.note = patch.note;
   if (patch.assigneeId !== undefined) payload.assignee_id = patch.assigneeId || null;
+  if (patch.dueDate !== undefined) payload.due_date = patch.dueDate || null;
   if (patch.status !== undefined) {
     payload.status = patch.status;
     payload.done_on = patch.status === "Done" ? new Date().toISOString().slice(0, 10) : null;
