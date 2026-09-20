@@ -38,6 +38,7 @@ import {
   dbCheckIn, dbCheckOut, uploadAttendancePhoto,
   dbAddClientScopeItem, dbUpdateClientScopeItem, dbDeleteClientScopeItem, dbMarkClientScopeReminded,
   dbAddLeaveRequest, dbDecideLeaveRequest, dbDeleteLeaveRequest,
+  dbEditExpense, dbRegisterVendorFromName,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
   dbMarkMaterialReceived, dbFulfillMaterialRequest,
   dbStartSiteVisit, dbEndSiteVisit,
@@ -2370,6 +2371,8 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
 /* ---------------------------------------------------------------------- */
 
 function ExpensesGlobal({ data, currentUser, actions }) {
+  /* Admin-only correction of a bill entered wrongly. */
+  const [correcting, setCorrecting] = useState(null);
   const { expenses, projects, users, vendors } = data;
   const [projectFilter, setProjectFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
@@ -2487,6 +2490,7 @@ function ExpensesGlobal({ data, currentUser, actions }) {
                 onMarkPaid={(paid) => actions.markExpensePaid(e.id, currentUser.id, paid)}
                 onGeneratePO={() => actions.generatePO(e.id, currentUser.id)}
                 onAdoptVendor={(exp) => actions.adoptVendorFromExpense(exp)}
+                onEditExpense={currentUser.role === "Admin" ? (exp) => setCorrecting(exp) : undefined}
                 onDownloadPO={() => generatePOPdf({ expense: e, vendor: poVendor(e, vendors), project: projects.find(p => p.id === e.projectId), generatedByName: userName(e.poGeneratedBy) })} />
             ))}
           </tbody>
@@ -2495,9 +2499,15 @@ function ExpensesGlobal({ data, currentUser, actions }) {
       </div>
     </div>
   );
+      {correcting && (
+        <Modal title="Correct Expense" onClose={() => setCorrecting(null)} wide>
+          <ExpenseEditForm expense={correcting} vendors={data.vendors || []}
+            onSave={async (patch) => { await actions.editExpense(correcting.id, patch); setCorrecting(null); }} />
+        </Modal>
+      )}
 }
 
-function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO, onDownloadPO, onAdoptVendor }) {
+function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO, onDownloadPO, onAdoptVendor, onEditExpense }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -2662,55 +2672,323 @@ function UpdatesFeed({ data, setView }) {
   );
 }
 
-function VendorsView({ data, actions }) {
+/* Shops typed on an expense that were never added to the directory. Grouped
+   by name so a vendor billed five times appears once, with what they're owed. */
+function unregisteredVendors(expenses) {
+  const groups = [];
+  expenses.filter(e => !e.vendorId && String(e.vendor || "").trim()).forEach(e => {
+    const key = e.vendor.trim().toLowerCase();
+    const g = groups.find(x => x.key === key);
+    if (g) { g.bills.push(e); }
+    else groups.push({ key, name: e.vendor.trim(), bills: [e] });
+  });
+  groups.forEach(g => {
+    g.total = g.bills.reduce((s, b) => s + b.amount, 0);
+    g.unpaid = g.bills.filter(b => !b.paid && b.status !== "Rejected").reduce((s, b) => s + b.amount, 0);
+    g.lastDate = g.bills.map(b => b.date).sort().pop();
+  });
+  return groups.sort((a, b) => b.unpaid - a.unpaid || b.total - a.total);
+}
+
+/* Every bill against one vendor, matched by link or by the name that was
+   typed before they were registered. */
+function billsForVendor(vendor, expenses) {
+  const name = String(vendor.name || "").trim().toLowerCase();
+  return expenses.filter(e =>
+    (vendor.id && e.vendorId === vendor.id) ||
+    (!e.vendorId && String(e.vendor || "").trim().toLowerCase() === name));
+}
+
+function VendorBillsPanel({ vendor, expenses, projects, userName, onEditExpense, canEdit }) {
+  const [filter, setFilter] = useState("All");
+  const bills = billsForVendor(vendor, expenses)
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  const shown = bills.filter(b => {
+    if (filter === "Paid") return b.paid;
+    if (filter === "Unpaid") return !b.paid && b.status !== "Rejected";
+    if (filter === "Pending approval") return b.status === "Pending";
+    return true;
+  });
+
+  const totals = {
+    all: bills.filter(b => b.status !== "Rejected").reduce((s, b) => s + b.amount, 0),
+    paid: bills.filter(b => b.paid).reduce((s, b) => s + b.amount, 0),
+    unpaid: bills.filter(b => !b.paid && b.status !== "Rejected").reduce((s, b) => s + b.amount, 0),
+  };
+
+  return (
+    <div>
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        {[["Billed", totals.all], ["Paid", totals.paid], ["Outstanding", totals.unpaid]].map(([label, v], i) => (
+          <div key={label} className={`rounded-xl p-3 ${i === 2 && v > 0 ? "bg-rose-50" : "dia-bg-cream-soft"}`}>
+            <div className="text-[10px] uppercase tracking-wide dia-text-bronze font-label font-semibold">{label}</div>
+            <div className={`font-display text-lg font-semibold mt-0.5 ${i === 2 && v > 0 ? "text-rose-700" : "text-stone-900"}`}>{fmtINR(v)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex gap-1.5 mb-3 flex-wrap">
+        {["All", "Unpaid", "Paid", "Pending approval"].map(f => (
+          <button key={f} type="button" onClick={() => setFilter(f)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+              filter === f ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+            {f}
+          </button>
+        ))}
+      </div>
+
+      {shown.length === 0 && <p className="text-sm text-stone-400 text-center py-6">No bills under this filter.</p>}
+
+      <div className="space-y-2 max-h-[52vh] overflow-y-auto pr-1">
+        {shown.map(b => (
+          <div key={b.id} className="border border-stone-200 rounded-xl p-3">
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">{b.category}</span>
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                    b.status === "Approved" ? "bg-emerald-50 text-emerald-700"
+                      : b.status === "Rejected" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>{b.status}</span>
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                    b.paid ? "bg-emerald-50 text-emerald-700" : "bg-stone-100 text-stone-500"}`}>
+                    {b.paid ? "Paid" : "Unpaid"}
+                  </span>
+                  {b.poNumber && <span className="text-[10px] font-mono text-stone-400">{b.poNumber}</span>}
+                </div>
+                <div className="text-sm font-medium text-stone-800 mt-1.5">{b.description}</div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-xs text-stone-500">
+                  <span>{fmtDate(b.date)}</span>
+                  <span>{projects.find(p => p.id === b.projectId)?.name || "—"}</span>
+                  <span>By {userName(b.submittedBy)}</span>
+                  {b.invoiceNo && <span>Bill {b.invoiceNo}</span>}
+                  {b.proofUrl && <a href={b.proofUrl} target="_blank" rel="noreferrer" className="dia-text-bronze">Attachment</a>}
+                </div>
+              </div>
+              <div className="text-right shrink-0">
+                <div className="font-display text-base font-semibold text-stone-900">{fmtINR(b.amount)}</div>
+                {canEdit && (
+                  <button onClick={() => onEditExpense(b)} className="text-[11px] dia-text-bronze font-semibold mt-1">Edit</button>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* Admin-only correction of an expense already submitted. */
+function ExpenseEditForm({ expense, vendors, onSave }) {
+  const [form, setForm] = useState({
+    date: expense.date, category: expense.category, description: expense.description,
+    amount: expense.amount, paymentMethod: expense.paymentMethod,
+    vendorName: expense.vendor || "", invoiceNo: expense.invoiceNo || "",
+    totalInvoiceValue: expense.totalInvoiceValue ?? "", advancePaid: expense.advancePaid ?? 0,
+    notes: expense.notes || "",
+  });
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+  const matched = vendors.find(v => v.name.trim().toLowerCase() === form.vendorName.trim().toLowerCase());
+
+  return (
+    <div>
+      <p className="text-xs text-stone-500 mb-3">
+        Corrects the details of the bill. The approval and payment status are left as they are.
+      </p>
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Date"><input type="date" className={inputCls} value={form.date} onChange={set("date")} /></Field>
+        <Field label="Category">
+          <select className={inputCls} value={form.category} onChange={set("category")}>
+            {EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+      </div>
+      <Field label="Reason for expense">
+        <input className={inputCls} value={form.description} onChange={set("description")} />
+      </Field>
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Amount (₹)"><input type="number" className={inputCls} value={form.amount} onChange={set("amount")} /></Field>
+        <Field label="Payment method">
+          <select className={inputCls} value={form.paymentMethod} onChange={set("paymentMethod")}>
+            {PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}
+          </select>
+        </Field>
+      </div>
+      <Field label="Shop or vendor name">
+        <input className={inputCls} list="edit-vendor-names" value={form.vendorName} onChange={set("vendorName")} />
+        <datalist id="edit-vendor-names">{vendors.map(v => <option key={v.id} value={v.name} />)}</datalist>
+        {matched
+          ? <p className="text-[11px] text-stone-500 mt-1">Linked to {matched.name} in the directory.</p>
+          : form.vendorName.trim() && <p className="text-[11px] text-stone-400 mt-1">Not in the directory — recorded as a one-off.</p>}
+      </Field>
+      <div className="grid sm:grid-cols-3 gap-x-4">
+        <Field label="Bill / invoice no."><input className={inputCls} value={form.invoiceNo} onChange={set("invoiceNo")} /></Field>
+        <Field label="Total invoice value"><input type="number" className={inputCls} value={form.totalInvoiceValue} onChange={set("totalInvoiceValue")} /></Field>
+        <Field label="Advance paid"><input type="number" className={inputCls} value={form.advancePaid} onChange={set("advancePaid")} /></Field>
+      </div>
+      <Field label="Notes"><textarea rows={2} className={inputCls} value={form.notes} onChange={set("notes")} /></Field>
+      <button onClick={async () => {
+        setBusy(true);
+        try { await onSave({ ...form, vendor: form.vendorName.trim(), vendorId: matched?.id || null }); }
+        catch (err) { alert(err.message || "Couldn't save."); setBusy(false); }
+      }} disabled={busy || !form.description.trim() || !form.amount}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">
+        {busy ? "Saving…" : "Save corrections"}
+      </button>
+    </div>
+  );
+}
+
+function VendorsView({ data, currentUser, actions }) {
   const [showForm, setShowForm] = useState(false);
   const [editingVendor, setEditingVendor] = useState(null);
+  const [tab, setTab] = useState("registered");
+  const [openVendor, setOpenVendor] = useState(null);      // bills panel
+  const [registering, setRegistering] = useState(null);    // unregistered group
+  const [editingExpense, setEditingExpense] = useState(null);
+  const [query, setQuery] = useState("");
+
+  const expenses = data.expenses || [];
+  const userName = (id) => (data.users || []).find(u => u.id === id)?.name || "—";
+  const isAdmin = currentUser.role === "Admin";
+
   const vendors = [...data.vendors].sort((a, b) => a.name.localeCompare(b.name));
+  const unregistered = unregisteredVendors(expenses);
+
+  const match = (t) => !query.trim() || String(t).toLowerCase().includes(query.trim().toLowerCase());
+  const shownVendors = vendors.filter(v => match(`${v.name} ${v.material || ""}`));
+  const shownUnregistered = unregistered.filter(g => match(g.name));
 
   return (
     <div className="p-4 sm:p-8 space-y-5">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-stone-500">{vendors.length} vendor{vendors.length !== 1 ? "s" : ""} on file</p>
-        <button onClick={() => setShowForm(true)} className="flex items-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="flex gap-1.5">
+          {[["registered", `Registered (${vendors.length})`], ["unregistered", `Not registered (${unregistered.length})`]].map(([v, label]) => (
+            <button key={v} type="button" onClick={() => setTab(v)}
+              className={`px-3.5 py-2 rounded-lg text-sm font-semibold border transition-colors ${
+                tab === v ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="relative flex-1">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+          <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search vendors"
+            className={`${inputCls} pl-9`} />
+        </div>
+        <button onClick={() => setShowForm(true)} className="flex items-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg shrink-0">
           <Plus size={16} /> Add Vendor
         </button>
       </div>
 
-      {vendors.length === 0 && (
-        <Card className="p-10 text-center">
-          <Store size={26} className="mx-auto text-stone-300 mb-2" />
-          <p className="text-sm text-stone-400">No vendors added yet. Add one so expenses can be linked to their bank details for payment.</p>
-        </Card>
+      {tab === "unregistered" && (
+        <>
+          <p className="text-sm text-stone-500">
+            Shops typed straight onto an expense. Registering one keeps its bank and GST details on file, links every bill already under that name, and lets a PO be raised properly.
+          </p>
+          {shownUnregistered.length === 0 && (
+            <Card className="p-10 text-center">
+              <Store size={26} className="mx-auto text-stone-300 mb-2" />
+              <p className="text-sm text-stone-400">
+                {unregistered.length === 0 ? "Every shop billed so far is registered." : "Nothing matches that search."}
+              </p>
+            </Card>
+          )}
+          <div className="space-y-2">
+            {shownUnregistered.map(g => (
+              <Card key={g.key} className="p-4">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                  <button onClick={() => setOpenVendor({ name: g.name, unregistered: true })} className="min-w-0 flex-1 text-left">
+                    <div className="text-sm font-semibold text-stone-900">{g.name}</div>
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-xs text-stone-500">
+                      <span>{g.bills.length} bill{g.bills.length !== 1 ? "s" : ""}</span>
+                      <span>Last on {fmtDate(g.lastDate)}</span>
+                      {g.unpaid > 0 && <span className="text-rose-600 font-semibold">{fmtINR(g.unpaid)} outstanding</span>}
+                    </div>
+                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-display text-lg font-semibold text-stone-900">{fmtINR(g.total)}</span>
+                    <button onClick={() => setRegistering(g)}
+                      className="dia-btn-gold px-4 py-2 rounded-lg text-xs font-semibold">Register</button>
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </>
       )}
 
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {vendors.map(v => (
-          <Card key={v.id} className="p-4">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <h3 className="font-display text-base font-semibold text-stone-900 truncate">{v.name}</h3>
-                {v.material && <p className="text-xs dia-text-bronze font-medium mt-0.5">{v.material}</p>}
-              </div>
-              <button onClick={() => setEditingVendor(v)} className="text-stone-400 hover:dia-text-bronze shrink-0"><Pencil size={14} /></button>
-            </div>
-            <div className="mt-3 pt-3 border-t border-stone-100 space-y-1.5 text-xs text-stone-500">
-              {v.gstNumber && <div><span className="text-stone-400">GST:</span> {v.gstNumber}</div>}
-              {v.address && <div className="flex items-start gap-1"><MapPin size={11} className="mt-0.5 shrink-0" /> {v.address}</div>}
-              {v.phone && <div>{v.phone}</div>}
-              {v.email && <div>{v.email}</div>}
-              {v.bankAccountNumber ? (
-                <div className="font-mono text-[11px] text-stone-500 pt-1">
-                  {v.bankAccountName && <div>{v.bankAccountName}</div>}
-                  <div>A/C {v.bankAccountNumber}</div>
-                  <div>{v.bankIfsc || "—"} · {v.bankName || ""}</div>
-                </div>
-              ) : (
-                <div className="text-amber-600 pt-1">No bank details on file</div>
-              )}
-            </div>
-          </Card>
-        ))}
-      </div>
+      {tab === "registered" && (
+        <>
+          {shownVendors.length === 0 && (
+            <Card className="p-10 text-center">
+              <Store size={26} className="mx-auto text-stone-300 mb-2" />
+              <p className="text-sm text-stone-400">
+                {vendors.length === 0 ? "No vendors added yet. Add one so expenses can be linked to their bank details for payment." : "Nothing matches that search."}
+              </p>
+            </Card>
+          )}
+          <div className="space-y-2">
+            {shownVendors.map(v => {
+              const bills = billsForVendor(v, expenses);
+              const unpaid = bills.filter(b => !b.paid && b.status !== "Rejected").reduce((s, b) => s + b.amount, 0);
+              return (
+                <Card key={v.id} className="p-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                    <button onClick={() => setOpenVendor(v)} className="min-w-0 flex-1 text-left">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold text-stone-900">{v.name}</span>
+                        {v.material && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full dia-bg-cream-soft dia-text-bronze">{v.material}</span>}
+                        {!v.bankAccountNumber && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">No bank details</span>}
+                      </div>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-xs text-stone-500">
+                        <span>{bills.length} bill{bills.length !== 1 ? "s" : ""}</span>
+                        {v.gstNumber && <span>GSTIN {v.gstNumber}</span>}
+                        {v.phone && <span>{v.phone}</span>}
+                        {unpaid > 0 && <span className="text-rose-600 font-semibold">{fmtINR(unpaid)} outstanding</span>}
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button onClick={() => setOpenVendor(v)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-stone-300 text-stone-600 hover:bg-stone-50">View bills</button>
+                      <button onClick={() => setEditingVendor(v)} className="text-stone-400 hover:dia-text-bronze"><Pencil size={15} /></button>
+                    </div>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {openVendor && (
+        <Modal title={openVendor.name} onClose={() => setOpenVendor(null)} wide>
+          <VendorBillsPanel vendor={openVendor} expenses={expenses} projects={data.projects || []}
+            userName={userName} canEdit={isAdmin} onEditExpense={(e) => { setOpenVendor(null); setEditingExpense(e); }} />
+        </Modal>
+      )}
+
+      {registering && (
+        <Modal title={`Register ${registering.name}`} onClose={() => setRegistering(null)}>
+          <VendorForm vendor={{ name: registering.name }}
+            onSave={async (details) => {
+              await actions.registerVendorFromName(registering.name, details);
+              setRegistering(null);
+            }} />
+          <p className="text-[11px] text-stone-500 mt-3">
+            {registering.bills.length} bill{registering.bills.length !== 1 ? "s" : ""} already under this name will be linked to the new vendor.
+          </p>
+        </Modal>
+      )}
+
+      {editingExpense && (
+        <Modal title="Correct Expense" onClose={() => setEditingExpense(null)} wide>
+          <ExpenseEditForm expense={editingExpense} vendors={vendors}
+            onSave={async (patch) => { await actions.editExpense(editingExpense.id, patch); setEditingExpense(null); }} />
+        </Modal>
+      )}
 
       {showForm && (
         <Modal title="Add Vendor" onClose={() => setShowForm(false)}>
@@ -6901,11 +7179,11 @@ function WhatsAppImportPanel({ suggestions, onAdd, onClose }) {
   );
 }
 
-function WorkTaskRow({ task, projects, actions }) {
+function WorkTaskRow({ task, projects, people, actions }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState(task.note || "");
-  const [moving, setMoving] = useState(false);
-  const [moveTo, setMoveTo] = useState("");
+  const [title, setTitle] = useState(task.title || "");
+  const [project, setProject] = useState(task.project || "");
   const isDone = task.status === "Done";
 
   /* Notes are saved a moment after typing stops rather than on every
@@ -6916,6 +7194,21 @@ function WorkTaskRow({ task, projects, actions }) {
     return () => clearTimeout(t);
   }, [note]);
 
+  /* Same treatment for the wording and the project. An empty title is
+     ignored rather than saved — clearing the box shouldn't leave a task with
+     no name. */
+  useEffect(() => {
+    if (!title.trim() || title === task.title) return;
+    const t = setTimeout(() => actions.updateWorkTask(task.id, { title: title.trim() }), 700);
+    return () => clearTimeout(t);
+  }, [title]);
+
+  useEffect(() => {
+    if (project === task.project) return;
+    const t = setTimeout(() => actions.updateWorkTask(task.id, { project: project.trim() || "General" }), 700);
+    return () => clearTimeout(t);
+  }, [project]);
+
   return (
     <div className={`border-l-4 rounded-r-xl border border-stone-200 bg-white ${
       task.priority === "High" && !isDone ? "border-l-rose-500" : task.priority === "Low" ? "border-l-stone-200" : "border-l-amber-300"} ${isDone ? "opacity-70" : ""}`}>
@@ -6925,8 +7218,16 @@ function WorkTaskRow({ task, projects, actions }) {
           <div className={`text-sm font-medium text-stone-800 ${isDone ? "line-through text-stone-400" : ""}`}>
             {task.title}
           </div>
+          {task.project && task.project !== "General" && !open && (
+            <span className="sr-only">{task.project}</span>
+          )}
           {task.note && !open && (
             <div className="text-xs text-stone-500 mt-0.5 truncate">{task.note}</div>
+          )}
+          {task.assigneeId && (
+            <div className="text-[11px] dia-text-bronze mt-0.5">
+              {people.find(p => p.id === task.assigneeId)?.name || "Assigned"}
+            </div>
           )}
           {task.doneOn && (
             <div className="text-[11px] text-emerald-700 mt-0.5">Done on {fmtDate(task.doneOn)}</div>
@@ -6950,47 +7251,44 @@ function WorkTaskRow({ task, projects, actions }) {
 
       {open && (
         <div className="px-3 pb-3 pt-1 border-t border-stone-100 space-y-2">
+          {/* The wording itself, corrected in place. A task typed in a hurry or
+              pasted from WhatsApp usually needs a word changed, not deleting
+              and retyping. */}
+          <div className="flex items-center gap-2">
+            <input className={`${inputCls} text-xs font-medium`} value={title}
+              onChange={e => setTitle(e.target.value)}
+              placeholder="What needs doing" />
+            {title.trim() && title !== task.title && (
+              <span className="text-[11px] text-stone-400 shrink-0">saving…</span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-stone-500 shrink-0">Project</span>
+            <input className={`${inputCls} text-xs`} list={`proj-${task.id}`} value={project}
+              onChange={e => setProject(e.target.value)} />
+            <datalist id={`proj-${task.id}`}>
+              {projects.map(p => <option key={p} value={p} />)}
+            </datalist>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-stone-500 shrink-0">Assigned to</span>
+            <select className={`${inputCls} text-xs`} value={task.assigneeId || ""}
+              onChange={e => actions.updateWorkTask(task.id, { assigneeId: e.target.value || null })}>
+              <option value="">Nobody yet</option>
+              {people.map(p => <option key={p.id} value={p.id}>{p.name} — {p.role}</option>)}
+            </select>
+          </div>
           <textarea rows={2} className={`${inputCls} text-xs`} value={note}
             onChange={e => setNote(e.target.value)} placeholder="Notes — who you're waiting on, what's next" />
 
           <div className="flex flex-wrap items-center gap-3">
-            <button type="button" onClick={() => { setMoving(m => !m); setMoveTo(""); }}
-              className="text-xs text-stone-500 hover:text-stone-800">
-              {moving ? "Cancel move" : "Move to another project"}
-            </button>
             <span className="flex-1" />
             <button type="button" onClick={() => actions.deleteWorkTask(task.id)}
               className="text-xs text-stone-400 hover:text-rose-600">Delete</button>
           </div>
 
-          {moving && (
-            <div className="pt-1 space-y-2">
-              <div className="flex items-center gap-2">
-                {/* Typing filters every project, existing or new — the buttons
-                    below are a shortcut, not the whole list. */}
-                <input className={`${inputCls} text-xs`} list={`move-targets-${task.id}`}
-                  value={moveTo} onChange={e => setMoveTo(e.target.value)}
-                  placeholder="Type or pick a project" autoFocus />
-                <datalist id={`move-targets-${task.id}`}>
-                  {projects.filter(p => p !== task.project).map(p => <option key={p} value={p} />)}
-                </datalist>
-                <button type="button" disabled={!moveTo.trim()}
-                  onClick={() => { actions.updateWorkTask(task.id, { project: moveTo }); setMoving(false); }}
-                  className="dia-btn-gold px-3 py-2 rounded-lg text-xs font-semibold disabled:opacity-40 shrink-0">Move</button>
-              </div>
-              {projects.filter(p => p !== task.project).length > 0 && (
-                <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto pr-1">
-                  {projects.filter(p => p !== task.project).map(p => (
-                    <button key={p} type="button"
-                      onClick={() => { actions.updateWorkTask(task.id, { project: p }); setMoving(false); }}
-                      className="text-[11px] px-2.5 py-1 rounded-lg border border-stone-200 text-stone-600 hover:dia-border-gold hover:dia-text-bronze">
-                      {p}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -7004,8 +7302,10 @@ function WorkTrackerView({ data, currentUser, actions }) {
   const [newProject, setNewProject] = useState("");
   const [busy, setBusy] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [person, setPerson] = useState("All");
 
   const tasks = data.workTasks || [];
+  const people = (data.users || []).filter(u => u.active && !u.removed);
   const projects = [...new Set(tasks.map(t => t.project))].sort();
   /* Projects in the system are offered alongside the tracker's own names, so a
      real site and a loose end can share a heading. */
@@ -7019,6 +7319,7 @@ function WorkTrackerView({ data, currentUser, actions }) {
     if (filter === "Open" && t.status === "Done") return false;
     if (filter === "Done" && t.status !== "Done") return false;
     if (filter === "High" && (t.priority !== "High" || t.status === "Done")) return false;
+    if (person === "Unassigned" ? t.assigneeId : person !== "All" && t.assigneeId !== person) return false;
     if (query.trim()) {
       const hay = `${t.title} ${t.project} ${t.note}`.toLowerCase();
       if (!hay.includes(query.trim().toLowerCase())) return false;
@@ -7052,7 +7353,8 @@ function WorkTrackerView({ data, currentUser, actions }) {
         <KPI label="Open" value={tasks.length - done} sub="still to do" icon={ListChecks} />
         <KPI label="In progress" value={inProgress} sub="under way" icon={Clock} />
         <KPI label="High priority" value={urgent} sub="needs attention now" icon={AlertCircle} />
-        <KPI label="Done" value={done} sub="completed" icon={CheckCircle2} />
+        <KPI label="On you" value={tasks.filter(t => t.assigneeId === currentUser.id && t.status !== "Done").length}
+          sub="assigned to you, open" icon={Users} />
       </div>
 
       {tasks.length > 0 && (
@@ -7103,6 +7405,11 @@ function WorkTrackerView({ data, currentUser, actions }) {
           <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search tasks, projects or notes"
             className={`${inputCls} pl-9`} />
         </div>
+        <select value={person} onChange={e => setPerson(e.target.value)} className={`${inputCls} sm:w-48`}>
+          <option value="All">Anyone</option>
+          <option value="Unassigned">Not assigned</option>
+          {people.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
         <div className="flex gap-1.5">
           {["Open", "High", "Done", "All"].map(f => (
             <button key={f} type="button" onClick={() => setFilter(f)}
@@ -7155,7 +7462,7 @@ function WorkTrackerView({ data, currentUser, actions }) {
             </div>
             <div className="space-y-2">
               {group.tasks.map(task => (
-                <WorkTaskRow key={task.id} task={task} projects={suggestions} actions={actions} />
+                <WorkTaskRow key={task.id} task={task} projects={suggestions} people={people} actions={actions} />
               ))}
             </div>
           </div>
@@ -7977,6 +8284,14 @@ export default function App() {
     updateQuotationStatus: (id, status) => dbUpdateQuotationStatus(id, status).then(reload),
     duplicateQuotation: (q) => dbDuplicateQuotation(q, profile?.id).then(reload),
     deleteQuotation: (id) => dbDeleteQuotation(id).then(reload),
+    editExpense: (id, patch) => dbEditExpense(id, patch).then(reload).catch((err) => {
+      window.alert(`Couldn't save the correction.\n\n${err.message || err}`);
+      throw err;
+    }),
+    registerVendorFromName: (name, details) => dbRegisterVendorFromName(name, details).then(reload).catch((err) => {
+      window.alert(`Couldn't register that vendor.\n\n${err.message || err}`);
+      throw err;
+    }),
     addLeaveRequest: (req) => dbAddLeaveRequest(req, profile?.id).then(reload).catch((err) => {
       window.alert(`Couldn't send that request.\n\n${err.message || err}`);
       throw err;
@@ -8165,7 +8480,7 @@ export default function App() {
         {view.tab === "feed" && <FeedView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "schedules" && <SchedulesView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "quotations" && (isStaffOnly ? <QuotationsView data={data} currentUser={currentUser} actions={actions} setView={setView} /> : <AccessDenied />)}
-        {view.tab === "vendors" && (isStaffOnly ? <VendorsView data={data} actions={actions} /> : <AccessDenied />)}
+        {view.tab === "vendors" && (isStaffOnly ? <VendorsView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "updates" && (isAdmin ? <UpdatesFeed data={data} setView={setView} /> : <AccessDenied />)}
         {view.tab === "users" && (isAdmin ? <TeamView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "sup-home" && <SupervisorHome data={data} currentUser={currentUser} actions={actions} setView={setView} />}
