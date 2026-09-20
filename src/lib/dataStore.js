@@ -119,6 +119,7 @@ const mapOfficeExpense = (r) => ({
 
 const mapWorkTask = (r) => ({
   id: r.id, project: r.project, title: r.title, status: r.status,
+  assigneeId: r.assignee_id,
   priority: r.priority || (r.urgent ? "High" : "Medium"),
   urgent: (r.priority || (r.urgent ? "High" : "Medium")) === "High",
   note: r.note || "", doneOn: r.done_on,
@@ -720,6 +721,44 @@ export async function dbDuplicateQuotation(source, createdBy) {
   return dbAddQuotation({ ...source, quotationNo: "", status: "Draft" }, createdBy);
 }
 
+/* Admin correcting an expense entered wrongly. Status and approval are left
+   alone — this fixes the facts of the bill, not the decision on it. */
+export async function dbEditExpense(id, patch) {
+  const payload = {};
+  if (patch.date !== undefined) payload.date = patch.date;
+  if (patch.category !== undefined) payload.category = patch.category;
+  if (patch.description !== undefined) payload.description = patch.description;
+  if (patch.amount !== undefined) payload.amount = Number(patch.amount) || 0;
+  if (patch.paymentMethod !== undefined) payload.payment_method = patch.paymentMethod;
+  if (patch.vendor !== undefined) payload.vendor = patch.vendor;
+  if (patch.vendorId !== undefined) payload.vendor_id = patch.vendorId || null;
+  if (patch.invoiceNo !== undefined) payload.invoice_no = patch.invoiceNo || null;
+  if (patch.notes !== undefined) payload.notes = patch.notes || null;
+  if (patch.totalInvoiceValue !== undefined) {
+    payload.total_invoice_value = patch.totalInvoiceValue === "" || patch.totalInvoiceValue === null
+      ? null : Number(patch.totalInvoiceValue);
+  }
+  if (patch.advancePaid !== undefined) payload.advance_paid = Number(patch.advancePaid) || 0;
+  const { error } = await supabase.from("expenses").update(payload).eq("id", id);
+  if (error) throw error;
+}
+
+/* Turns a shop typed on expenses into a proper vendor, and links every
+   expense that carried that name — so the history follows the vendor rather
+   than being stranded on the old text. */
+export async function dbRegisterVendorFromName(name, details = {}) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) throw new Error("A vendor name is required.");
+
+  const { data: existing } = await supabase.from("vendors").select("*").ilike("name", trimmed).maybeSingle();
+  const vendor = existing ? mapVendor(existing) : await dbAddVendor({ name: trimmed, ...details });
+
+  const { error } = await supabase.from("expenses")
+    .update({ vendor_id: vendor.id }).is("vendor_id", null).ilike("vendor", trimmed);
+  if (error) throw error;
+  return vendor;
+}
+
 /* ---- leave and permissions ----------------------------------------------- */
 
 export async function dbAddLeaveRequest(req, userId) {
@@ -855,6 +894,7 @@ export async function dbAddWorkTask(task, createdBy) {
     title: task.title.trim(),
     priority: task.priority || (task.urgent ? "High" : "Medium"),
     urgent: (task.priority || (task.urgent ? "High" : "Medium")) === "High",
+    assignee_id: task.assigneeId || null,
     note: task.note || null,
     created_by: createdBy,
   });
@@ -870,6 +910,7 @@ export async function dbUpdateWorkTask(id, patch) {
   if (patch.priority !== undefined) { payload.priority = patch.priority; payload.urgent = patch.priority === "High"; }
   if (patch.urgent !== undefined && patch.priority === undefined) { payload.urgent = patch.urgent; payload.priority = patch.urgent ? "High" : "Medium"; }
   if (patch.note !== undefined) payload.note = patch.note;
+  if (patch.assigneeId !== undefined) payload.assignee_id = patch.assigneeId || null;
   if (patch.status !== undefined) {
     payload.status = patch.status;
     payload.done_on = patch.status === "Done" ? new Date().toISOString().slice(0, 10) : null;

@@ -12,7 +12,7 @@ const PHASE_TEMPLATE = [
 ];
 
 const EXPENSE_CATEGORIES = [
-  "Labour", "Materials", "Transportation", "Accommodation", "Food",
+  "Design Fee", "Labour", "Materials", "Transportation", "Accommodation", "Food",
   "Site Expenses", "Tools", "Hardware", "Electrical", "Plumbing",
   "Carpentry", "Civil", "Fabrication", "Glass", "Metal", "Paint",
   "Furniture", "Jewellery Display", "Logistics", "Miscellaneous"
