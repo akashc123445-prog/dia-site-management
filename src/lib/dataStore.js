@@ -70,6 +70,7 @@ const mapExpense = (r) => ({
   id: r.id, projectId: r.project_id, submittedBy: r.submitted_by, date: r.date, category: r.category,
   description: r.description, amount: Number(r.amount) || 0, paymentMethod: r.payment_method,
   vendor: r.vendor, vendorId: r.vendor_id,
+  billableToClient: !!r.billable_to_client,
   totalInvoiceValue: r.total_invoice_value === null ? null : Number(r.total_invoice_value),
   advancePaid: Number(r.advance_paid) || 0,
   proofUrl: r.proof_url,
@@ -85,6 +86,12 @@ const mapVendor = (r) => ({
   phone: r.phone, email: r.email,
   bankAccountName: r.bank_account_name, bankAccountNumber: r.bank_account_number,
   bankIfsc: r.bank_ifsc, bankName: r.bank_name, createdAt: r.created_at,
+});
+
+const mapClientAdvance = (r) => ({
+  id: r.id, projectId: r.project_id, date: r.date, amount: Number(r.amount) || 0,
+  mode: r.mode, reference: r.reference || "", purpose: r.purpose || "", notes: r.notes || "",
+  recordedBy: r.recorded_by, createdAt: r.created_at,
 });
 
 const mapLeaveRequest = (r) => ({
@@ -207,7 +214,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, clientScopeRaw, attendanceRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, advancesRaw, clientScopeRaw, attendanceRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -235,6 +242,8 @@ export async function fetchAllData() {
       // Last few weeks only: the board is about today, and the history view
       // never looks further back than a month.
       supabase.from("leave_requests").select("*").order("from_date", { ascending: false }),
+      // Staff-only at the RLS level; empty for everyone else.
+      supabase.from("client_advances").select("*").order("date", { ascending: true }),
       supabase.from("client_scope_items").select("*").order("sort_order").order("created_at"),
       supabase.from("attendance").select("*")
         .gte("date", new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10))
@@ -306,6 +315,7 @@ export async function fetchAllData() {
     attendance: (attendanceRaw.data || []).map(mapAttendance),
     clientScope: (clientScopeRaw.data || []).map(mapClientScopeItem),
     leaveRequests: (leaveRaw.data || []).map(mapLeaveRequest),
+    clientAdvances: (advancesRaw.data || []).map(mapClientAdvance),
     feedPosts: (feedPostsRaw.data || []).map(mapFeedPost),
     feedComments: (feedCommentsRaw.data || []).map(mapFeedComment),
   };
@@ -536,6 +546,7 @@ export async function dbAddExpense(exp) {
     /* Empty string would fail the uuid column; a one-off shop simply has no
        vendor record to point at. */
     vendor_id: exp.vendorId || null,
+    billable_to_client: !!exp.billableToClient,
     total_invoice_value: exp.totalInvoiceValue === "" || exp.totalInvoiceValue === undefined ? null : exp.totalInvoiceValue,
     advance_paid: exp.advancePaid || 0,
     proof_url: exp.proofUrl,
@@ -739,6 +750,7 @@ export async function dbEditExpense(id, patch) {
       ? null : Number(patch.totalInvoiceValue);
   }
   if (patch.advancePaid !== undefined) payload.advance_paid = Number(patch.advancePaid) || 0;
+  if (patch.billableToClient !== undefined) payload.billable_to_client = !!patch.billableToClient;
   const { error } = await supabase.from("expenses").update(payload).eq("id", id);
   if (error) throw error;
 }
@@ -757,6 +769,30 @@ export async function dbRegisterVendorFromName(name, details = {}) {
     .update({ vendor_id: vendor.id }).is("vendor_id", null).ilike("vendor", trimmed);
   if (error) throw error;
   return vendor;
+}
+
+/* ---- client advances ------------------------------------------------------ */
+
+export async function dbAddClientAdvance(adv, recordedBy) {
+  const { error } = await supabase.from("client_advances").insert({
+    project_id: adv.projectId, date: adv.date, amount: Number(adv.amount) || 0,
+    mode: adv.mode, reference: adv.reference || null, purpose: adv.purpose || null,
+    notes: adv.notes || null, recorded_by: recordedBy,
+  });
+  if (error) throw error;
+}
+
+export async function dbUpdateClientAdvance(id, adv) {
+  const { error } = await supabase.from("client_advances").update({
+    date: adv.date, amount: Number(adv.amount) || 0, mode: adv.mode,
+    reference: adv.reference || null, purpose: adv.purpose || null, notes: adv.notes || null,
+  }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteClientAdvance(id) {
+  const { error } = await supabase.from("client_advances").delete().eq("id", id);
+  if (error) throw error;
 }
 
 /* ---- leave and permissions ----------------------------------------------- */
