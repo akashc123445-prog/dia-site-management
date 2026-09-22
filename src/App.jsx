@@ -2400,6 +2400,9 @@ function ExpensesGlobal({ data, currentUser, actions }) {
   const [projectFilter, setProjectFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
   const [categoryFilter, setCategoryFilter] = useState("All");
+  /* "Ours" is the fit-out cost; "Client scope" is what we paid out at the
+     client's request and will recover on their final bill. */
+  const [scopeFilter, setScopeFilter] = useState("All");
   const [showPaymentsDue, setShowPaymentsDue] = useState(true);
 
   const projectName = (id) => projects.find(p => p.id === id)?.name || id;
@@ -2410,6 +2413,8 @@ function ExpensesGlobal({ data, currentUser, actions }) {
     if (projectFilter !== "All" && e.projectId !== projectFilter) return false;
     if (statusFilter !== "All" && e.status !== statusFilter) return false;
     if (categoryFilter !== "All" && e.category !== categoryFilter) return false;
+    if (scopeFilter === "Client" && !e.billableToClient) return false;
+    if (scopeFilter === "Ours" && e.billableToClient) return false;
     return true;
   }).sort((a, b) => new Date(b.date) - new Date(a.date));
 
@@ -2478,15 +2483,33 @@ function ExpensesGlobal({ data, currentUser, actions }) {
           <option value="All">All categories</option>
           {EXPENSE_CATEGORIES.map(c => <option key={c}>{c}</option>)}
         </select>
-        <button onClick={() => exportToExcel(filtered.map(e => ({ Date: e.date, TimeFiled: fmtTime(e.submittedAt), Project: projectName(e.projectId), Category: e.category, Description: e.description, Amount: e.amount, Vendor: e.vendor, Invoice: e.invoiceNo, TotalInvoiceValue: e.totalInvoiceValue, AdvancePaid: e.advancePaid, Status: e.status, Paid: e.paid ? "Yes" : "No", SubmittedBy: userName(e.submittedBy) })), "expense_report.xlsx", "Expenses")}
+        <select className={inputCls + " w-auto"} value={scopeFilter} onChange={e => setScopeFilter(e.target.value)}>
+          <option value="All">Our scope and client scope</option>
+          <option value="Ours">Our scope only</option>
+          <option value="Client">Client scope only</option>
+        </select>
+        <button onClick={() => exportToExcel(filtered.map(e => ({ Date: e.date, TimeFiled: fmtTime(e.submittedAt), Project: projectName(e.projectId), Category: e.category, Description: e.description, Amount: e.amount, Vendor: e.vendor, Invoice: e.invoiceNo, TotalInvoiceValue: e.totalInvoiceValue, AdvancePaid: e.advancePaid, Status: e.status, Paid: e.paid ? "Yes" : "No", Scope: e.billableToClient ? "Client scope — recover" : "Our scope", SubmittedBy: userName(e.submittedBy) })),
+          scopeFilter === "Client" ? "client_scope_expenses.xlsx" : "expense_report.xlsx", "Expenses")}
           className="flex items-center gap-2 border border-stone-300 hover:border-stone-400 text-stone-700 font-semibold text-sm px-4 py-2 rounded-lg ml-auto">
           <FileSpreadsheet size={15} /> Export Excel
         </button>
       </div>
 
-      <Card className="p-4 flex items-center justify-between">
-        <span className="text-sm text-stone-500">{filtered.length} expense(s) matching filters</span>
-        <span className="font-mono font-semibold text-stone-800">{fmtINR(total)}</span>
+      <Card className="p-4">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-stone-500">{filtered.length} expense(s) matching filters</span>
+          <span className="font-mono font-semibold text-stone-800">{fmtINR(total)}</span>
+        </div>
+        {scopeFilter === "All" && filtered.some(e => e.billableToClient) && (
+          <div className="flex flex-wrap gap-x-5 gap-y-1 mt-2 pt-2 border-t border-stone-100 text-xs">
+            <span className="text-stone-500">
+              Our scope <span className="font-semibold text-stone-800">{fmtINR(filtered.filter(e => !e.billableToClient).reduce((s, e) => s + e.amount, 0))}</span>
+            </span>
+            <span className="dia-text-bronze">
+              Client scope, to recover <span className="font-semibold">{fmtINR(filtered.filter(e => e.billableToClient).reduce((s, e) => s + e.amount, 0))}</span>
+            </span>
+          </div>
+        )}
       </Card>
 
       <div className="overflow-x-auto bg-white rounded-xl border border-stone-200">
@@ -2542,7 +2565,15 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
         {e.submittedAt && <div className="text-[10px] text-stone-400 font-mono">Filed {fmtTime(e.submittedAt)}</div>}
       </td>
       <td className="py-2.5 px-4 text-stone-700 max-w-[180px] truncate">{projectName(e.projectId)}</td>
-      <td className="py-2.5 px-4"><span className="text-xs bg-stone-100 text-stone-700 px-2 py-0.5 rounded-full font-medium">{e.category}</span></td>
+      <td className="py-2.5 px-4">
+        <span className="text-xs bg-stone-100 text-stone-700 px-2 py-0.5 rounded-full font-medium">{e.category}</span>
+        {e.billableToClient && (
+          <span className="block mt-1 text-[10px] font-semibold px-2 py-0.5 rounded-full dia-bg-cream-soft dia-text-bronze w-fit"
+            title="Paid at the client's request — to be recovered on their final bill">
+            Client scope
+          </span>
+        )}
+      </td>
       <td className="py-2.5 px-4 text-stone-800 max-w-[220px]">
         {e.description}
         {e.status === "Rejected" && e.rejectionReason && <div className="text-xs text-rose-600 mt-0.5">Reason: {e.rejectionReason}</div>}
