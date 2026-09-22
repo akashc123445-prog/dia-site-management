@@ -870,6 +870,9 @@ export async function dbCheckIn(userId, { photoUrl, note, location, lat, lng }) 
     check_in_photo_url: photoUrl, check_in_note: note,
     location: location || null, lat: lat ?? null, lng: lng ?? null,
   });
+  /* Already marked in today — a double tap, or a retry after an attempt that
+     did land. The person is present; treat it as done, not as an error. */
+  if (error && error.code === "23505") return;
   if (error) throw error;
 }
 
