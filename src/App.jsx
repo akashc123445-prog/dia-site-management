@@ -39,6 +39,7 @@ import {
   dbAddClientScopeItem, dbUpdateClientScopeItem, dbDeleteClientScopeItem, dbMarkClientScopeReminded,
   dbAddLeaveRequest, dbDecideLeaveRequest, dbDeleteLeaveRequest,
   dbEditExpense, dbRegisterVendorFromName,
+  dbAddClientAdvance, dbUpdateClientAdvance, dbDeleteClientAdvance,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
   dbMarkMaterialReceived, dbFulfillMaterialRequest,
   dbStartSiteVisit, dbEndSiteVisit,
@@ -56,6 +57,7 @@ import { generateClientScopePdf, clientScopeReminderText } from "./lib/generateC
 import { exportAttendanceExcel, exportOfficeExpensesExcel, exportLeaveExcel } from "./lib/exportRegisters";
 import { generateWorkTrackerPdf, workTrackerMessage } from "./lib/generateWorkTracker";
 import { downloadTaskCalendar } from "./lib/taskCalendar";
+import { generateClientStatementPdf, recoverableTotals } from "./lib/generateClientStatement";
 import { generateSchedulePdf } from "./lib/generateSchedule";
 import {
   SCHEDULE_STATUSES, SCHEDULE_TASK_TEMPLATE, TASK_STATUSES,
@@ -1335,7 +1337,7 @@ function ExpenseForm({ onSave, defaultProjectId, projects, vendors }) {
     projectId: defaultProjectId || (projects && projects[0]?.id) || "",
     date: TODAY.toISOString().slice(0, 10), category: EXPENSE_CATEGORIES[0], description: "",
     amount: "", paymentMethod: PAYMENT_METHODS[0], vendorId: "", invoiceNo: "", notes: "",
-    totalInvoiceValue: "", advancePaid: "", proof: null,
+    totalInvoiceValue: "", advancePaid: "", proof: null, billableToClient: false,
   });
   /* The shop is recorded by name on the expense itself — no vendor record is
      created. Only Admin and Accounts may add to the vendor directory, so
@@ -1421,6 +1423,21 @@ function ExpenseForm({ onSave, defaultProjectId, projects, vendors }) {
         <p className="text-xs text-stone-500 -mt-2 mb-3">Pending balance to vendor: <b className="text-stone-700 font-mono">{fmtINR(pending)}</b></p>
       )}
       <Field label="Notes (optional)"><textarea className={inputCls} rows={2} value={form.notes} onChange={set("notes")} /></Field>
+
+      {/* Work in the client's scope that they asked us to arrange. We still
+          pay for it; this marks it to be recovered on their final bill. */}
+      <label className={`flex items-start gap-2.5 mb-3 p-3 rounded-xl border cursor-pointer transition-colors ${
+        form.billableToClient ? "dia-border-gold dia-bg-cream-soft" : "border-stone-200"}`}>
+        <input type="checkbox" className="mt-0.5 accent-current dia-text-bronze" checked={!!form.billableToClient}
+          onChange={e => setForm(f => ({ ...f, billableToClient: e.target.checked }))} />
+        <span>
+          <span className="text-sm font-semibold text-stone-800">Client asked us to arrange this</span>
+          <span className="block text-xs text-stone-500">
+            It's outside our scope — recover it from the client on the final bill.
+          </span>
+        </span>
+      </label>
+
       <ProofAttachment proof={form.proof} onChange={(p) => setForm(f => ({ ...f, proof: p }))} required pathPrefix="expenses" />
       <button onClick={handleSave} disabled={!canSubmit}
         className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">
@@ -2224,6 +2241,7 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
     ...(isDesigning ? [] : [{ key: "photos", label: "Photos" }]),
     ...(isDesigning ? [] : [{ key: "materials", label: "Materials" }]),
     { key: "clientscope", label: "Client Scope" },
+    ...(isFinance ? [{ key: "clientaccount", label: "Client Account" }] : []),
   ];
 
   return (
@@ -2339,6 +2357,9 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
         canLog={isAssignedArchitect}
         onStart={(entryPhotoUrl) => actions.startSiteVisit(project.id, currentUser.id, entryPhotoUrl)}
         onEnd={(visitId, fields) => actions.endSiteVisit(visitId, fields)} />}
+      {tab === "clientaccount" && isFinance && (
+        <ClientAccountTab project={project} data={data} currentUser={currentUser} actions={actions} />
+      )}
       {tab === "clientscope" && (
         <ClientScopeTab project={project} currentUser={currentUser} canEdit={isFinance} actions={actions}
           items={(data.clientScope || []).filter(i => i.projectId === project.id)} />
@@ -2788,7 +2809,7 @@ function ExpenseEditForm({ expense, vendors, onSave }) {
     amount: expense.amount, paymentMethod: expense.paymentMethod,
     vendorName: expense.vendor || "", invoiceNo: expense.invoiceNo || "",
     totalInvoiceValue: expense.totalInvoiceValue ?? "", advancePaid: expense.advancePaid ?? 0,
-    notes: expense.notes || "",
+    notes: expense.notes || "", billableToClient: !!expense.billableToClient,
   });
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
@@ -2831,6 +2852,11 @@ function ExpenseEditForm({ expense, vendors, onSave }) {
         <Field label="Advance paid"><input type="number" className={inputCls} value={form.advancePaid} onChange={set("advancePaid")} /></Field>
       </div>
       <Field label="Notes"><textarea rows={2} className={inputCls} value={form.notes} onChange={set("notes")} /></Field>
+      <label className="flex items-center gap-2 mb-3 cursor-pointer">
+        <input type="checkbox" className="accent-current dia-text-bronze" checked={!!form.billableToClient}
+          onChange={e => setForm(f => ({ ...f, billableToClient: e.target.checked }))} />
+        <span className="text-sm text-stone-700">Recover from the client on the final bill</span>
+      </label>
       <button onClick={async () => {
         setBusy(true);
         try { await onSave({ ...form, vendor: form.vendorName.trim(), vendorId: matched?.id || null }); }
@@ -5960,6 +5986,125 @@ function SchedulesView({ data, currentUser, actions }) {
 }
 
 /* ---------------------------------------------------------------------- */
+/* Client account — recoverable spend against advances                     */
+/* ---------------------------------------------------------------------- */
+
+function ClientAccountTab({ project, data, currentUser, actions }) {
+  const blank = { date: new Date().toISOString().slice(0, 10), amount: "", mode: "Bank Transfer", reference: "", purpose: "", notes: "" };
+  const [form, setForm] = useState(blank);
+  const [editing, setEditing] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  const expenses = (data.expenses || []).filter(e => e.projectId === project.id);
+  const advances = (data.clientAdvances || []).filter(a => a.projectId === project.id);
+  const t = recoverableTotals(expenses, advances);
+  const userName = (id) => (data.users || []).find(u => u.id === id)?.name || "—";
+
+  const save = async () => {
+    if (!(Number(form.amount) > 0)) return;
+    setBusy(true);
+    try {
+      if (editing) await actions.updateClientAdvance(editing, form);
+      else await actions.addClientAdvance({ ...form, projectId: project.id });
+      setForm(blank); setEditing(null);
+    } catch (err) { alert(err.message || "Couldn't save that advance."); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <KPI label="Paid on their behalf" value={fmtINR(t.spent)} sub={`${t.recoverable.length} approved item${t.recoverable.length !== 1 ? "s" : ""}`} icon={Receipt} />
+        <KPI label="Advances received" value={fmtINR(t.received)} sub={`${advances.length} receipt${advances.length !== 1 ? "s" : ""}`} icon={Landmark} />
+        <KPI label={t.balance >= 0 ? "Balance due from client" : "Advance held for client"}
+          value={fmtINR(Math.abs(t.balance))} sub="carried to the final bill" icon={FileText} />
+        <KPI label="Awaiting approval" value={fmtINR(t.pendingAmount)} sub="not yet counted" icon={Clock} />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={() => { const u = generateClientStatementPdf({ project, expenses, advances, preparedBy: currentUser.name }, "preview"); if (u) window.open(u, "_blank"); }}
+          className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50">
+          <Eye size={15} /> Preview statement
+        </button>
+        <button onClick={() => generateClientStatementPdf({ project, expenses, advances, preparedBy: currentUser.name }, "save")}
+          className="flex items-center gap-1.5 dia-btn-gold px-4 py-2.5 rounded-lg text-sm font-semibold">
+          <Download size={15} /> Statement for the final bill
+        </button>
+      </div>
+
+      <Card className="p-4">
+        <h3 className="font-display text-base font-semibold text-stone-900 mb-1">Paid on the client's behalf</h3>
+        <p className="text-xs text-stone-500 mb-3">
+          Expenses marked "Client asked us to arrange this" when they were recorded. Only approved items count towards the balance.
+        </p>
+        {expenses.filter(e => e.billableToClient).length === 0 ? (
+          <p className="text-sm text-stone-400 py-4 text-center">
+            None yet. When recording an expense for this project, tick "Client asked us to arrange this".
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            {expenses.filter(e => e.billableToClient)
+              .sort((a, b) => (a.date < b.date ? -1 : 1))
+              .map(e => (
+                <div key={e.id} className={`flex items-center gap-3 text-sm py-1.5 border-b border-stone-100 last:border-0 ${e.status !== "Approved" ? "opacity-60" : ""}`}>
+                  <span className="text-xs text-stone-400 w-20 shrink-0">{fmtDate(e.date)}</span>
+                  <span className="text-stone-800 flex-1 truncate">{e.description}</span>
+                  <span className="text-xs text-stone-500 truncate max-w-[140px] hidden sm:inline">{e.vendor}</span>
+                  {e.status !== "Approved" && (
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${e.status === "Rejected" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>{e.status}</span>
+                  )}
+                  <span className="font-semibold text-stone-900 w-24 text-right tabular-nums">{fmtINR(e.amount)}</span>
+                </div>
+              ))}
+          </div>
+        )}
+      </Card>
+
+      <Card className="p-4">
+        <h3 className="font-display text-base font-semibold text-stone-900 mb-3">Advances from the client</h3>
+        <div className="grid sm:grid-cols-12 gap-2 mb-2">
+          <input type="date" className={`${inputCls} sm:col-span-2`} value={form.date} onChange={set("date")} />
+          <input type="number" className={`${inputCls} sm:col-span-2`} value={form.amount} onChange={set("amount")} placeholder="Amount" />
+          <select className={`${inputCls} sm:col-span-2`} value={form.mode} onChange={set("mode")}>
+            {PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}
+          </select>
+          <input className={`${inputCls} sm:col-span-2`} value={form.reference} onChange={set("reference")} placeholder="UTR / cheque no." />
+          <input className={`${inputCls} sm:col-span-3`} value={form.purpose} onChange={set("purpose")} placeholder="Paid towards, e.g. electrical works" />
+          <button onClick={save} disabled={!(Number(form.amount) > 0) || busy}
+            className="sm:col-span-1 dia-btn-gold rounded-lg text-sm font-semibold disabled:opacity-40 py-2.5">
+            {editing ? "Save" : "Add"}
+          </button>
+        </div>
+        {editing && (
+          <button onClick={() => { setEditing(null); setForm(blank); }} className="text-xs text-stone-500 mb-2">Cancel editing</button>
+        )}
+
+        {advances.length === 0 ? (
+          <p className="text-sm text-stone-400 py-4 text-center">No advances recorded against this project.</p>
+        ) : (
+          <div className="space-y-1.5 mt-2">
+            {advances.map(a => (
+              <div key={a.id} className="flex items-center gap-3 text-sm py-1.5 border-b border-stone-100 last:border-0">
+                <span className="text-xs text-stone-400 w-20 shrink-0">{fmtDate(a.date)}</span>
+                <span className="text-stone-800 flex-1 truncate">{a.purpose || "Advance"}</span>
+                <span className="text-xs text-stone-500 hidden sm:inline">{[a.mode, a.reference].filter(Boolean).join(" · ")}</span>
+                <span className="text-[11px] text-stone-400 hidden md:inline">by {userName(a.recordedBy)}</span>
+                <span className="font-semibold text-emerald-700 w-24 text-right tabular-nums">{fmtINR(a.amount)}</span>
+                <button onClick={() => { setEditing(a.id); setForm({ date: a.date, amount: a.amount, mode: a.mode, reference: a.reference, purpose: a.purpose, notes: a.notes }); }}
+                  className="text-stone-400 hover:dia-text-bronze"><Pencil size={13} /></button>
+                <button onClick={() => { if (window.confirm("Remove this advance?")) actions.deleteClientAdvance(a.id); }}
+                  className="text-stone-300 hover:text-rose-600"><Trash2 size={13} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
 /* Client scope — what the client must arrange, and by when                */
 /* ---------------------------------------------------------------------- */
 
@@ -8420,6 +8565,9 @@ export default function App() {
     updateQuotationStatus: (id, status) => dbUpdateQuotationStatus(id, status).then(reload),
     duplicateQuotation: (q) => dbDuplicateQuotation(q, profile?.id).then(reload),
     deleteQuotation: (id) => dbDeleteQuotation(id).then(reload),
+    addClientAdvance: (a) => dbAddClientAdvance(a, profile?.id).then(reload),
+    updateClientAdvance: (id, a) => dbUpdateClientAdvance(id, a).then(reload),
+    deleteClientAdvance: (id) => dbDeleteClientAdvance(id).then(reload),
     editExpense: (id, patch) => dbEditExpense(id, patch).then(reload).catch((err) => {
       window.alert(`Couldn't save the correction.\n\n${err.message || err}`);
       throw err;
