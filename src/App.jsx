@@ -2651,6 +2651,10 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
                 {e.paid ? "Mark unpaid" : "Mark paid"}
               </button>
             )}
+            {onEditExpense && (
+              <button onClick={() => onEditExpense(e)} title="Correct this expense"
+                className="p-1.5 rounded-lg text-stone-400 hover:dia-text-bronze hover:bg-stone-50"><Pencil size={14} /></button>
+            )}
             {!e.vendorId && e.vendor && onAdoptVendor && (
               <button onClick={() => onAdoptVendor(e)} title={`Add ${e.vendor} to the vendor directory and link this expense`}
                 className="text-[11px] dia-text-bronze font-semibold whitespace-nowrap">
