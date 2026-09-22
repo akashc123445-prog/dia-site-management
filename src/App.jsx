@@ -1187,7 +1187,10 @@ function poVendor(expense, vendors) {
     || (expense.vendor ? { name: expense.vendor } : null);
 }
 
-function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO }) {
+function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprove, canAdd, onAdd, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO, onEditExpense }) {
+  /* Admin-only correction of a bill entered wrongly — the same form as the
+     main Expenses screen, reached from inside the project. */
+  const [correcting, setCorrecting] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const list = expenses
     .filter(e => e.projectId === project.id)
@@ -1226,6 +1229,7 @@ function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprov
           <tbody>
             {list.map(e => (
               <ExpenseRow key={e.id} e={e} userName={userName} canApprove={canApprove} currentUserId={currentUser.id} onApprove={onApprove} onReject={onReject} onDelete={onDelete} onMarkPaid={onMarkPaid} onGeneratePO={onGeneratePO}
+                onEditExpense={onEditExpense ? (exp) => setCorrecting(exp) : undefined}
                 onDownloadPO={() => generatePOPdf({ expense: e, vendor: poVendor(e, vendors), project, generatedByName: userName(e.poGeneratedBy) })} />
             ))}
           </tbody>
@@ -1235,11 +1239,17 @@ function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprov
       {showModal && <Modal title="Add Expense" onClose={() => setShowModal(false)}>
         <ExpenseForm defaultProjectId={project.id} vendors={vendors} onSave={(exp) => { onAdd(exp); setShowModal(false); }} />
       </Modal>}
+      {correcting && (
+        <Modal title="Correct Expense" onClose={() => setCorrecting(null)} wide>
+          <ExpenseEditForm expense={correcting} vendors={vendors || []}
+            onSave={async (patch) => { await onEditExpense(correcting.id, patch); setCorrecting(null); }} />
+        </Modal>
+      )}
     </div>
   );
 }
 
-function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO, onDownloadPO }) {
+function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onReject, onDelete, onMarkPaid, onGeneratePO, onDownloadPO, onEditExpense }) {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -1286,6 +1296,10 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
             </div>
           ) : (
             <div className="flex gap-1.5 items-center flex-wrap">
+              {onEditExpense && (
+                <button onClick={() => onEditExpense(e)} title="Correct this expense"
+                  className="p-1.5 rounded-lg text-stone-400 hover:dia-text-bronze hover:bg-stone-50"><Pencil size={14} /></button>
+              )}
               {e.status === "Pending" && isOwn && (
                 <span className="text-[11px] text-stone-400 italic mr-1">Submitted by you — needs another approver</span>
               )}
@@ -2370,7 +2384,8 @@ function ProjectDetail({ data, projectId, sub, setView, currentUser, actions, on
         onApprove={(id) => actions.approveExpense(id, currentUser.id)} onReject={(id, reason) => actions.rejectExpense(id, currentUser.id, reason)}
         onDelete={(id) => actions.deleteExpense(id)}
         onMarkPaid={(id, paid) => actions.markExpensePaid(id, currentUser.id, paid)}
-        onGeneratePO={(id) => actions.generatePO(id, currentUser.id)} />}
+        onGeneratePO={(id) => actions.generatePO(id, currentUser.id)}
+        onEditExpense={currentUser.role === "Admin" ? actions.editExpense : undefined} />}
       {tab === "photos" && <PhotosTab project={project} reports={projectReports} canAdd={isAssignedSupervisor || isAssignedArchitect} onAddPhoto={(photo) => actions.addPhoto(project.id, photo, currentUser.id)} />}
       {tab === "materials" && <MaterialsTab project={project} requests={data.materialRequests.filter(m => m.projectId === project.id)} users={data.users} vendors={data.vendors} currentUser={currentUser}
         isAdmin={isFinance} canRequest={isAssignedArchitect || isAdmin} isAssignedSupervisor={isAssignedSupervisor}
