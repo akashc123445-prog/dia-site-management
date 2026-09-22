@@ -6722,6 +6722,28 @@ const clockTime = (iso) => iso
   ? new Date(iso).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true })
   : "—";
 
+/* Phone photos arrive at 4–8 MB. Shrunk to a sensible size before upload
+   they drop to a few hundred KB, so a check-in on site data takes a second or
+   two instead of long enough for the screen to lock or the app to be
+   switched away mid-upload — which is how a photo reaches storage and the
+   attendance record never follows it. */
+async function shrinkImage(file, maxSide = 1600, quality = 0.82) {
+  if (!file || !file.type.startsWith("image/") || file.size < 400 * 1024) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(res => canvas.toBlob(res, "image/jpeg", quality));
+    if (!blob || blob.size >= file.size) return file;
+    return new File([blob], (file.name || "photo").replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" });
+  } catch {
+    return file;   // an older browser without createImageBitmap just sends the original
+  }
+}
+
 /* Marking yourself in takes an image of the work being started and a line
    about the day. Photographing the screen, screenshotting it, or shooting the
    work on site all prove the same thing; a switch proves nothing. */
@@ -6741,6 +6763,7 @@ function CheckInForm({ onDone, currentUser }) {
     if (!file.type.startsWith("image/")) { setError("That needs to be an image — a screenshot or a photo."); return; }
     setError("");
     setPhoto(file);
+    setUploadedUrl("");
     setPreview(URL.createObjectURL(file));
   };
 
@@ -6755,15 +6778,29 @@ function CheckInForm({ onDone, currentUser }) {
     );
   };
 
+  const [uploadedUrl, setUploadedUrl] = useState("");
+  const [stage, setStage] = useState("");
+
   const submit = async () => {
     if (!photo || !note.trim()) return;
     setBusy(true); setError("");
     try {
-      const url = await uploadAttendancePhoto(photo);
+      /* Kept after the first success: if saving the record fails, the retry
+         goes straight to the save rather than uploading all over again. */
+      let url = uploadedUrl;
+      if (!url) {
+        setStage("Preparing the photo…");
+        const small = await shrinkImage(photo);
+        setStage("Uploading…");
+        url = await uploadAttendancePhoto(small);
+        setUploadedUrl(url);
+      }
+      setStage("Saving…");
       await onDone({ photoUrl: url, note: note.trim(), location: where.trim(), ...(coords || {}) });
     } catch (err) {
       setError(err.message || "Couldn't mark you in. Try again.");
       setBusy(false);
+      setStage("");
     }
   };
 
@@ -6825,7 +6862,7 @@ function CheckInForm({ onDone, currentUser }) {
 
       <button onClick={submit} disabled={!photo || !note.trim() || busy}
         className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
-        {busy ? "Marking you in…" : "Mark me present"}
+        {busy ? (stage || "Marking you in…") : uploadedUrl ? "Try saving again" : "Mark me present"}
       </button>
       {(!photo || !note.trim()) && (
         <p className="text-[11px] text-stone-400 mt-2 text-center">Both the photo and the day's work are needed.</p>
