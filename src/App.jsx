@@ -1255,7 +1255,6 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const isOwn = e.submittedBy === currentUserId;
   const pending = e.totalInvoiceValue != null ? e.totalInvoiceValue - e.advancePaid : null;
   return (
     <tr className="border-b border-stone-50 hover:bg-stone-50/60 align-top">
@@ -1302,27 +1301,19 @@ function ExpenseRow({ e, userName, canApprove, currentUserId, onApprove, onRejec
                 <button onClick={() => onEditExpense(e)} title="Correct this expense"
                   className="p-1.5 rounded-lg text-stone-400 hover:dia-text-bronze hover:bg-stone-50"><Pencil size={14} /></button>
               )}
-              {e.status === "Pending" && isOwn && (
-                <span className="text-[11px] text-stone-400 italic mr-1">Submitted by you — needs another approver</span>
-              )}
-              {e.status === "Pending" && !isOwn && !rejecting && (
+              {e.status === "Pending" && !rejecting && (
                 <>
                   <button onClick={() => onApprove(e.id)} className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100"><Check size={14} /></button>
                   <button onClick={() => setRejecting(true)} className="p-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"><XCircle size={14} /></button>
                 </>
               )}
-              {e.status === "Pending" && !isOwn && rejecting && (
+              {e.status === "Pending" && rejecting && (
                 <div className="flex gap-1.5 items-center min-w-[180px]">
                   <input value={reason} onChange={e2 => setReason(e2.target.value)} placeholder="Reason…" className="text-xs border border-stone-300 rounded-md px-2 py-1 w-full" />
                   <button onClick={() => { onReject(e.id, reason || "Not specified"); setRejecting(false); }} className="text-xs font-semibold text-rose-700 shrink-0">Confirm</button>
                 </div>
               )}
-              {e.status === "Approved" && onMarkPaid && isOwn && (
-                <span className="text-[11px] text-stone-400 italic" title="Marking a payment on your own expense needs another approver">
-                  Paid status set by another approver
-                </span>
-              )}
-              {e.status === "Approved" && onMarkPaid && !isOwn && (
+              {e.status === "Approved" && onMarkPaid && (
                 <button onClick={() => onMarkPaid(e.id, !e.paid)}
                   className={`text-[11px] font-semibold px-2 py-1 rounded-md ${e.paid ? "text-stone-500 border border-stone-200 hover:bg-stone-50" : "text-white bg-amber-600 hover:bg-amber-700"}`}>
                   {e.paid ? "Mark unpaid" : "Mark paid"}
@@ -2574,7 +2565,6 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const isOwn = e.submittedBy === currentUserId;
   return (
     <tr className="border-b border-stone-50 hover:bg-stone-50/60 align-top">
       <td className="py-2.5 px-4 whitespace-nowrap text-stone-600">
@@ -2624,16 +2614,13 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
           </div>
         ) : (
           <div className="flex gap-1.5 items-center flex-wrap">
-            {e.status === "Pending" && isOwn && (
-              <span className="text-[11px] text-stone-400 italic mr-1">Submitted by you — needs another approver</span>
-            )}
-            {e.status === "Pending" && !isOwn && !rejecting && (
+            {e.status === "Pending" && !rejecting && (
               <>
                 <button onClick={onApprove} className="p-1.5 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100"><Check size={14} /></button>
                 <button onClick={() => setRejecting(true)} className="p-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100"><XCircle size={14} /></button>
               </>
             )}
-            {e.status === "Pending" && !isOwn && rejecting && (
+            {e.status === "Pending" && rejecting && (
               <div className="flex gap-1.5 items-center min-w-[200px]">
                 <input value={reason} onChange={ev => setReason(ev.target.value)} placeholder="Reason…" autoFocus
                   onKeyDown={ev => { if (ev.key === "Enter") { onReject(reason || "Not specified"); setRejecting(false); } }}
@@ -2642,12 +2629,7 @@ function GlobalExpenseRow({ e, projectName, userName, currentUserId, onApprove, 
                 <button onClick={() => { setRejecting(false); setReason(""); }} className="text-xs font-semibold text-stone-400 shrink-0">Cancel</button>
               </div>
             )}
-            {e.status === "Approved" && onMarkPaid && isOwn && (
-              <span className="text-[11px] text-stone-400 italic" title="Marking a payment on your own expense needs another approver">
-                Paid status set by another approver
-              </span>
-            )}
-            {e.status === "Approved" && onMarkPaid && !isOwn && (
+            {e.status === "Approved" && onMarkPaid && (
               <button onClick={() => onMarkPaid(!e.paid)}
                 className={`text-[11px] font-semibold px-2 py-1 rounded-md ${e.paid ? "text-stone-500 border border-stone-200 hover:bg-stone-50" : "text-white bg-amber-600 hover:bg-amber-700"}`}>
                 {e.paid ? "Mark unpaid" : "Mark paid"}
@@ -7373,7 +7355,7 @@ function OfficeExpensesView({ data, currentUser, actions }) {
 
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="font-display text-lg font-semibold text-stone-900">{fmtINR(e.amount)}</span>
-                  {isFinance && e.status === "Pending" && !isOwn && (
+                  {isFinance && e.status === "Pending" && (
                     <>
                       <button onClick={() => actions.approveOfficeExpense(e.id)}
                         className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white">Approve</button>
@@ -7381,10 +7363,8 @@ function OfficeExpensesView({ data, currentUser, actions }) {
                         className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-stone-300 text-stone-600 hover:bg-stone-50">Reject</button>
                     </>
                   )}
-                  {isFinance && e.status === "Pending" && isOwn && (
-                    <span className="text-[11px] text-stone-400 italic">Needs another approver</span>
-                  )}
-                  {isFinance && e.status === "Approved" && !isOwn && (
+
+                  {isFinance && e.status === "Approved" && (
                     <button onClick={() => actions.markOfficeExpensePaid(e.id, !e.paid)}
                       className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
                         e.paid ? "border border-stone-300 text-stone-600 hover:bg-stone-50" : "dia-btn-gold"}`}>
