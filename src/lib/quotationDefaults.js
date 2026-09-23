@@ -314,6 +314,25 @@ export function blankWorkQuote(project) {
   };
 }
 
+/* ---- the one-page brief ------------------------------------------------ */
+
+/* What the design fee covers, as it reads on the short quotation. Edited per
+   document — the third line changes most often. */
+export const BRIEF_INCLUSIONS = [
+  "2D schematic design layout.",
+  "3D design realistic interior walkthrough (on 2D approval).",
+  "3D elevation design not included.",
+  "Complete set of carpentry, electrical and false ceiling working drawings.",
+  "Complete end to end co-ordination with the respective vendors for queries, to ensure smooth and timely completion of project.",
+];
+
+/* The brief quotes three stages rather than six. */
+export const BRIEF_PAYMENT_TEMPLATE = [
+  { stage: "1", milestone: "Advance", percentage: 50 },
+  { stage: "2", milestone: "3D design", percentage: 30 },
+  { stage: "3", milestone: "2nd site visit", percentage: 20 },
+];
+
 /* ---- Bill of Quantities ------------------------------------------------ */
 
 /* Material specifications printed at the head of every BOQ. Edited per

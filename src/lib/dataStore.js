@@ -192,6 +192,7 @@ const mapQuotation = (r) => ({
   concessionLabel: r.concession_label || "Concession",
   pageOptions: r.page_options || {},
   gstRate: Number(r.gst_rate) || 0,
+  inclusions: r.inclusions || [],
   status: r.status, notes: r.notes, createdBy: r.created_by,
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
@@ -689,6 +690,7 @@ const quotationPayload = (q) => ({
   concession_label: q.concessionLabel || null,
   page_options: q.pageOptions || {},
   gst_rate: Number(q.gstRate) || 0,
+  inclusions: q.inclusions || [],
   work_terms: q.workTerms || [],
   material_specs: q.materialSpecs || [],
   boq_sections: q.boqSections || [],
