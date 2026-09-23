@@ -47,6 +47,7 @@ import {
 } from "./lib/dataStore";
 import { generatePOPdf } from "./lib/generatePO";
 import { generateQuotationPdf } from "./lib/generateQuotation";
+import { generateQuotationBriefPdf } from "./lib/generateQuotationBrief";
 import { generateWorkQuotePdf, workQuoteTotals, lineTotal } from "./lib/generateWorkQuote";
 import { generateBOQPdf } from "./lib/generateBOQ";
 import { exportBOQExcel } from "./lib/exportBOQExcel";
@@ -67,6 +68,7 @@ import {
   QUOTATION_STATUSES, QUOTATION_SERVICE_LINES, QUOTATION_SCOPE_TEMPLATE, QUOTATION_PAYMENT_TEMPLATE,
   QUOTATION_SIGNATORY, WORK_QUOTE_TERMS, WORK_QUOTE_UNITS,
   BOQ_MATERIAL_SPECS, BOQ_EXCLUSIONS, BOQ_PAYMENT_TEMPLATE, BOQ_UNITS, BOQ_GST_NOTES,
+  BRIEF_INCLUSIONS, BRIEF_PAYMENT_TEMPLATE,
   blankQuotation, blankWorkQuote, blankBOQ, computeStageAmounts, amountInWords,
   quotationFee, feeLineAmount, blankFeeLine,
   boqItemQty, boqItemAmount, boqItemIsOverridden, boqSectionTotal, boqTotals, sectionCode,
@@ -3337,6 +3339,8 @@ function quotationPdf(q, mode) {
   const t = q.docType || "proposal";
   if (t === "boq") return generateBOQPdf(q, mode);
   if (t === "itemised") return generateWorkQuotePdf(q, mode);
+  /* The same proposal, printed long or on a single page. */
+  if (q.pageOptions && q.pageOptions.layout === "brief") return generateQuotationBriefPdf(q, mode);
   return generateQuotationPdf(q, mode);
 }
 
@@ -3473,6 +3477,7 @@ function QuotationEditor({ quotation, data, currentUser, onSave, onCancel, savin
       .filter(s => String(s.title || "").trim())
       .map(s => ({ ...s, items: cleanList(s.items) })),
     paymentStages: (form.paymentStages || []).filter(s => String(s.stage || "").trim()),
+    inclusions: cleanList(form.inclusions),
   });
 
   const applyProject = (projectId) => {
@@ -3565,6 +3570,54 @@ function QuotationEditor({ quotation, data, currentUser, onSave, onCancel, savin
           </div>
         </div>
       </QSection>
+
+      {/* The same proposal prints two ways. Detailed carries the scope,
+          stages, revision policy and terms; brief is the single page a client
+          gets when they want the figure rather than the method. */}
+      <QSection title="How this proposal prints" subtitle="Both use the same figures — only the document differs">
+        <div className="grid sm:grid-cols-2 gap-3">
+          {[
+            ["detailed", "Detailed proposal", "Six pages — scope by stage, deliverables, revision policy, payment terms and bank details."],
+            ["brief", "One-page brief", "A single sheet — the brief, the figure, what's included, payment schedule and bank details."],
+          ].map(([v, label, blurb]) => {
+            const active = (form.pageOptions?.layout || "detailed") === v;
+            return (
+              <button key={v} type="button"
+                onClick={() => set({
+                  pageOptions: { ...(form.pageOptions || {}), layout: v },
+                  /* Moving to the brief brings its shorter three-stage
+                     schedule, unless the stages were already customised. */
+                  ...(v === "brief" && (form.paymentStages || []).length > 4
+                    ? { paymentStages: BRIEF_PAYMENT_TEMPLATE }
+                    : {}),
+                  ...(v === "brief" && !(form.inclusions || []).length
+                    ? { inclusions: BRIEF_INCLUSIONS }
+                    : {}),
+                })}
+                className={`text-left p-3.5 rounded-xl border transition-colors ${
+                  active ? "dia-border-gold dia-bg-cream-soft" : "border-stone-200 hover:border-stone-300"}`}>
+                <div className={`text-sm font-semibold ${active ? "dia-text-bronze" : "text-stone-800"}`}>{label}</div>
+                <div className="text-xs text-stone-500 mt-1">{blurb}</div>
+              </button>
+            );
+          })}
+        </div>
+      </QSection>
+
+      {(form.pageOptions?.layout || "detailed") === "brief" && (
+        <QSection title="The brief & what's included" subtitle="Printed on the one-page version">
+          <Field label="Brief — leave blank and it's written from the client and location">
+            <textarea rows={2} className={inputCls} value={form.pageOptions?.briefText || ""}
+              onChange={e => set({ pageOptions: { ...(form.pageOptions || {}), briefText: e.target.value } })}
+              placeholder={`${form.serviceLine || "Interior design"} and execution co-ordination work to be carried out for ${form.clientName || "…"}${form.location ? ` at ${form.location}` : ""}.`} />
+          </Field>
+          <Field label="Things inclusive — one per line">
+            <ListEditor rows={6} value={form.inclusions} onChange={v => set({ inclusions: v })} />
+          </Field>
+          <button type="button" onClick={() => set({ inclusions: BRIEF_INCLUSIONS })}
+            className="text-sm text-stone-500 hover:text-stone-800">Reset to the standard list</button>
+        </QSection>
+      )}
 
       <QSection title="Area & professional fee"
         subtitle="Rate per sq.ft. or a flat lump sum — the schedule below follows automatically">
