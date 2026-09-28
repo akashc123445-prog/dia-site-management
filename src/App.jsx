@@ -1210,10 +1210,10 @@ function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprov
         {canAdd && <button onClick={() => setShowModal(true)} className="flex items-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg">
           <Plus size={16} /> Add Expense
         </button>}
-        <button onClick={() => exportToExcel(list.map(e => ({ Date: e.date, TimeFiled: fmtTime(e.submittedAt), Category: e.category, Description: e.description, Amount: e.amount, Vendor: e.vendor, Invoice: e.invoiceNo, Status: e.status, SubmittedBy: userName(e.submittedBy) })), `${project.name.replace(/\W+/g, "_")}_expenses.xlsx`, "Expenses")}
-          className="flex items-center gap-2 border border-stone-300 hover:border-stone-400 text-stone-700 font-semibold text-sm px-4 py-2.5 rounded-lg ml-auto">
-          <FileSpreadsheet size={15} /> Export Excel
-        </button>
+        <div className="ml-auto">
+          <ExpenseExportMenu expenses={list} userName={userName}
+            fileBase={project.name.replace(/\W+/g, "_")} />
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -1247,6 +1247,86 @@ function ExpensesTab({ project, expenses, users, vendors, currentUser, canApprov
           <ExpenseEditForm expense={correcting} vendors={vendors || []}
             onSave={async (patch) => { await onEditExpense(correcting.id, patch); setCorrecting(null); }} />
         </Modal>
+      )}
+    </div>
+  );
+}
+
+/* Exports expenses as one of three sets: everything, only what we bear, or
+   only what the client owes us. Two figures that answer different questions —
+   what the job cost us, and what goes on the client's bill — so they are
+   offered as separate files rather than one sheet to be filtered afterwards. */
+function ExpenseExportMenu({ expenses, projectName, userName, fileBase, includeProject = false }) {
+  const [open, setOpen] = useState(false);
+
+  const build = (scope) => {
+    const list = expenses.filter(e =>
+      scope === "client" ? e.billableToClient
+      : scope === "ours" ? !e.billableToClient
+      : true);
+    if (!list.length) { window.alert("Nothing to export in that set."); return; }
+
+    const rows = list.map(e => ({
+      Date: e.date,
+      TimeFiled: fmtTime(e.submittedAt),
+      ...(includeProject ? { Project: projectName(e.projectId) } : {}),
+      Category: e.category,
+      Description: e.description,
+      Amount: e.amount,
+      Vendor: e.vendor,
+      Invoice: e.invoiceNo,
+      TotalInvoiceValue: e.totalInvoiceValue,
+      AdvancePaid: e.advancePaid,
+      Status: e.status,
+      Paid: e.paid ? "Yes" : "No",
+      Scope: e.billableToClient ? "Client scope — recover" : "Our scope",
+      SubmittedBy: userName(e.submittedBy),
+    }));
+
+    /* A blank line, then the total — rejected bills are listed but never
+       counted, since they are not money spent. */
+    const counted = list.filter(e => e.status !== "Rejected");
+    rows.push({});
+    rows.push({
+      Date: "TOTAL",
+      Description: `${counted.length} expense${counted.length === 1 ? "" : "s"}, excluding rejected`,
+      Amount: counted.reduce((s, e) => s + e.amount, 0),
+    });
+
+    const suffix = scope === "client" ? "client_scope" : scope === "ours" ? "our_scope" : "all";
+    exportToExcel(rows, `${fileBase}_${suffix}.xlsx`, "Expenses");
+    setOpen(false);
+  };
+
+  const count = (scope) => expenses.filter(e =>
+    scope === "client" ? e.billableToClient : scope === "ours" ? !e.billableToClient : true).length;
+
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-2 border border-stone-300 hover:bg-stone-50 text-stone-700 font-semibold text-sm px-4 py-2.5 rounded-lg">
+        <FileSpreadsheet size={16} /> Export Excel <ChevronDown size={14} className={open ? "rotate-180 transition-transform" : "transition-transform"} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 mt-1 w-72 bg-white border border-stone-200 rounded-xl shadow-xl z-20 overflow-hidden">
+            {[
+              ["all", "Everything", "Both sets in one sheet, with a scope column"],
+              ["ours", "Our project expenses", "What the job cost us — the client's items left out"],
+              ["client", "Client scope expenses", "Arranged at the client's request, to recover on their bill"],
+            ].map(([scope, label, blurb]) => (
+              <button key={scope} onClick={() => build(scope)}
+                className="w-full text-left px-4 py-3 hover:bg-stone-50 border-b border-stone-100 last:border-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-stone-800">{label}</span>
+                  <span className="text-[11px] text-stone-400 shrink-0">{count(scope)}</span>
+                </div>
+                <div className="text-xs text-stone-500 mt-0.5">{blurb}</div>
+              </button>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
@@ -2497,11 +2577,11 @@ function ExpensesGlobal({ data, currentUser, actions }) {
           <option value="Ours">Our scope only</option>
           <option value="Client">Client scope only</option>
         </select>
-        <button onClick={() => exportToExcel(filtered.map(e => ({ Date: e.date, TimeFiled: fmtTime(e.submittedAt), Project: projectName(e.projectId), Category: e.category, Description: e.description, Amount: e.amount, Vendor: e.vendor, Invoice: e.invoiceNo, TotalInvoiceValue: e.totalInvoiceValue, AdvancePaid: e.advancePaid, Status: e.status, Paid: e.paid ? "Yes" : "No", Scope: e.billableToClient ? "Client scope — recover" : "Our scope", SubmittedBy: userName(e.submittedBy) })),
-          scopeFilter === "Client" ? "client_scope_expenses.xlsx" : "expense_report.xlsx", "Expenses")}
-          className="flex items-center gap-2 border border-stone-300 hover:border-stone-400 text-stone-700 font-semibold text-sm px-4 py-2 rounded-lg ml-auto">
-          <FileSpreadsheet size={15} /> Export Excel
-        </button>
+        <div className="ml-auto">
+          {/* Exports whatever the filters above have left, split by scope. */}
+          <ExpenseExportMenu expenses={filtered} projectName={projectName} userName={userName}
+            fileBase="expenses" includeProject />
+        </div>
       </div>
 
       <Card className="p-4">
