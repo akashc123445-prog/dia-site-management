@@ -54,6 +54,7 @@ import { exportBOQExcel } from "./lib/exportBOQExcel";
 import { parseBOQFile } from "./lib/importBOQ";
 import { parseScheduleFile } from "./lib/importSchedule";
 import { parseWhatsAppTasks } from "./lib/parseWhatsApp";
+import { parseWorkQuoteFile } from "./lib/importWorkQuote";
 import { generateClientScopePdf, clientScopeReminderText } from "./lib/generateClientScope";
 import { exportAttendanceExcel, exportOfficeExpensesExcel, exportLeaveExcel } from "./lib/exportRegisters";
 import { generateWorkTrackerPdf, workTrackerMessage } from "./lib/generateWorkTracker";
@@ -3911,6 +3912,119 @@ function SignatoryFields({ form, set, currentUser, lastSignature }) {
 
 /* Itemised work quotation: the line-item document for execution work, as
    opposed to the multi-page design proposal. */
+/* Brings a team-priced spreadsheet into the work quotation. Sheets are listed
+   with what was found in each; nothing changes until Import is pressed. */
+function WorkQuoteImportPanel({ onApply }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [parsed, setParsed] = useState(null);
+  const [chosen, setChosen] = useState({});
+  const [headings, setHeadings] = useState(true);
+  const [mode, setMode] = useState("replace");
+
+  const pick = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setBusy(true); setError(""); setParsed(null);
+    try {
+      const { sheets } = await parseWorkQuoteFile(file);
+      const usable = sheets.filter(s => s.items.length);
+      if (!usable.length) { setError("No priced lines found in that workbook."); setBusy(false); return; }
+      setParsed({ fileName: file.name, sheets: usable });
+      setChosen(Object.fromEntries(usable.map(s => [s.name, true])));
+    } catch (err) {
+      setError(err.message || "That file couldn't be read.");
+    }
+    setBusy(false);
+  };
+
+  const selected = (parsed?.sheets || []).filter(s => chosen[s.name]);
+  const lineCount = selected.reduce((n, s) => n + s.items.length, 0);
+  const grand = selected.reduce((n, s) => n + s.total, 0);
+
+  const apply = () => {
+    const items = [];
+    selected.forEach(sheet => {
+      /* A heading row keeps materials and labour apart in one document,
+         rather than running them together as one list. */
+      if (headings && selected.length > 1) {
+        items.push({ heading: true, description: sheet.title || sheet.name, qty: 0, unit: "", rate: 0 });
+      }
+      sheet.items.forEach(it => items.push(it));
+    });
+    onApply(items, mode);
+  };
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="inline-flex items-center gap-2 border border-dashed border-stone-300 rounded-lg px-4 py-2.5 text-sm text-stone-600 cursor-pointer hover:dia-border-gold hover:dia-text-bronze">
+          <Upload size={15} /> {busy ? "Reading…" : "Choose a quotation spreadsheet"}
+          <input type="file" accept=".xlsx,.xls,.csv" hidden onChange={pick} disabled={busy} />
+        </label>
+        <p className="text-xs text-stone-500">
+          Quantities, units and rates are read where the sheet has them; a list of priced activities comes in as lump sums.
+        </p>
+      </div>
+      {error && <p className="text-xs text-rose-600 mt-2 flex items-center gap-1.5"><AlertCircle size={13} /> {error}</p>}
+
+      {parsed && (
+        <div className="mt-4 border dia-border-gold-soft rounded-xl overflow-hidden">
+          <div className="dia-bg-cream-soft px-4 py-3">
+            <div className="text-sm font-semibold text-stone-800">{parsed.fileName}</div>
+            <div className="text-xs text-stone-600 mt-0.5">{lineCount} line{lineCount !== 1 ? "s" : ""} · {fmtINR(grand)}</div>
+          </div>
+
+          <div className="px-4 py-3 space-y-2 max-h-56 overflow-y-auto">
+            {parsed.sheets.map(sheet => (
+              <label key={sheet.name} className="flex items-start gap-2.5 cursor-pointer">
+                <input type="checkbox" className="mt-1 accent-current dia-text-bronze" checked={!!chosen[sheet.name]}
+                  onChange={e => setChosen(c => ({ ...c, [sheet.name]: e.target.checked }))} />
+                <span className="min-w-0 flex-1">
+                  <span className="text-xs font-semibold text-stone-800 block truncate">{sheet.title || sheet.name}</span>
+                  <span className="text-[11px] text-stone-500">
+                    {sheet.name} · {sheet.items.length} line{sheet.items.length !== 1 ? "s" : ""} · {fmtINR(sheet.total)}
+                  </span>
+                  {sheet.warnings.map((w, i) => (
+                    <span key={i} className="block text-[11px] text-amber-700 mt-0.5">{w}</span>
+                  ))}
+                </span>
+              </label>
+            ))}
+          </div>
+
+          {selected.length > 1 && (
+            <label className="flex items-center gap-2 px-4 pb-3 cursor-pointer">
+              <input type="checkbox" className="accent-current dia-text-bronze" checked={headings}
+                onChange={e => setHeadings(e.target.checked)} />
+              <span className="text-xs text-stone-600">Keep each sheet under its own heading in the quotation</span>
+            </label>
+          )}
+
+          <div className="px-4 py-3 border-t border-stone-100 flex flex-wrap items-center gap-2">
+            <div className="flex gap-1.5 flex-1">
+              {[["replace", "Replace the lines"], ["append", "Add to what's here"]].map(([v, label]) => (
+                <button key={v} type="button" onClick={() => setMode(v)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                    mode === v ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <button type="button" onClick={() => setParsed(null)}
+              className="px-3 py-1.5 text-xs font-semibold text-stone-500 hover:text-stone-800">Discard</button>
+            <button type="button" onClick={apply} disabled={!lineCount}
+              className="dia-btn-gold px-4 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40">
+              <Check size={13} /> Import {lineCount} line{lineCount !== 1 ? "s" : ""}
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function WorkQuoteEditor({ quotation, data, currentUser, onSave, onCancel, saving, lastSignature }) {
   const [form, setForm] = useState(() => quotation ? { ...quotation } : blankWorkQuote(null));
   const set = (patch) => setForm(f => ({ ...f, ...patch }));
@@ -3932,7 +4046,12 @@ function WorkQuoteEditor({ quotation, data, currentUser, onSave, onCancel, savin
     ...form,
     docType: "itemised",
     lineItems: items.filter(it => String(it.description || "").trim())
-      .map(it => ({ description: it.description, qty: Number(it.qty) || 0, unit: it.unit || "", rate: Number(it.rate) || 0 })),
+      .map(it => ({
+        description: it.description, qty: Number(it.qty) || 0,
+        unit: it.unit || "", rate: Number(it.rate) || 0,
+        /* A heading is a band across the table, not a priced line. */
+        ...(it.heading ? { heading: true, qty: 0, rate: 0 } : {}),
+      })),
     workTerms: cleanList(form.workTerms),
     discount: Number(form.discount) || 0,
     totalFee: totals.grand,
@@ -4013,6 +4132,14 @@ function WorkQuoteEditor({ quotation, data, currentUser, onSave, onCancel, savin
             </div>
           </div>
         </div>
+      </QSection>
+
+      <QSection title="Import a priced spreadsheet"
+        subtitle="Bring a quotation your team built in Excel straight into this document"
+        defaultOpen={!quotation && !items.some(i => String(i.description || "").trim())}>
+        <WorkQuoteImportPanel onApply={(imported, mode) => {
+          set({ lineItems: mode === "append" ? [...items, ...imported] : imported });
+        }} />
       </QSection>
 
       <QSection title="Schedule of work"
