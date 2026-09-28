@@ -310,10 +310,12 @@ function paymentTable(ctx, stages, amounts) {
    leaves the rule blank for a wet signature. */
 export function drawSignature(ctx, q, x, width = 170, opts = {}) {
   const { doc } = ctx;
-  /* Reserve space for the signature image only when there is one — an empty
-     34pt gap is what pushes an otherwise single-page quote onto a second
-     sheet with nothing but a signature on it. */
-  const imgH = q.signatureUrl ? (opts.imageHeight || 32) : 0;
+  /* Room to sign. With an image, that is the image's height; without one it
+     is a hand's worth of space above the rule — printing the rule directly
+     under the previous line leaves nowhere to sign, which is the whole point
+     of the block. The reservation below counts it, so the space can't push
+     the block onto a sheet of its own. */
+  const imgH = q.signatureUrl ? (opts.imageHeight || 32) : (opts.signSpace ?? 34);
   ctx.need(imgH + (opts.showCompany === false ? 44 : 56));
   if (q.signatureUrl) {
     try {

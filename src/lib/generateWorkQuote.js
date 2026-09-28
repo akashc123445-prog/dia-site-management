@@ -274,14 +274,18 @@ export function generateWorkQuotePdf(q, mode = "save") {
   }
 
   /* ---- signatures: client on the left, the firm on the right ---- */
-  ctx.need(q.signatureUrl ? 108 : 76);
+  ctx.need(q.signatureUrl ? 112 : 114);
   const signTop = ctx.y;
   doc.setFont(DISPLAY, "normal");
   doc.setFontSize(7.8);
   doc.setTextColor(...GREY);
   doc.setDrawColor(...INK);
   doc.setLineWidth(0.7);
-  const clientRuleY = signTop + (q.signatureUrl ? 50 : 34);
+  /* Our block starts 14pt below signTop (under "For DIA Retail Solutions")
+     and then leaves signing room before its rule, so the client's rule is
+     placed at the same height rather than at a guessed offset. */
+  const signRoom = q.signatureUrl ? 32 : 34;
+  const clientRuleY = signTop + 14 + signRoom + 4;
   doc.line(M.left, clientRuleY, M.left + 170, clientRuleY);
   doc.text("Client's Signature & Date", M.left, clientRuleY + 12);
 
