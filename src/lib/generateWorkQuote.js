@@ -15,9 +15,13 @@ import {
    firm on the same day.
    ------------------------------------------------------------------------ */
 
+/* The soft cream used for section bands; generateQuotation keeps it private. */
+const CREAM_SOFT = [243, 233, 216];
+
 const qtyFmt = (n) => (Number(n) || 0).toLocaleString("en-IN", { maximumFractionDigits: 3 });
 
 export function lineTotal(item) {
+  if (item.heading) return 0;
   return (Number(item.qty) || 0) * (Number(item.rate) || 0);
 }
 
@@ -56,7 +60,28 @@ function itemsTable(ctx, items) {
 
   drawHead();
 
+  /* Headings don't take a serial number, so the numbering runs through the
+     priced lines only — a client counting items shouldn't find gaps. */
+  let serial = 0;
+
   (items || []).forEach((it, i) => {
+    if (it.heading) {
+      const h = 22;
+      if (ctx.y + h > ctx.bottom) { ctx.newPage(); drawHead(); }
+      doc.setFillColor(...CREAM_SOFT);
+      doc.rect(M.left, ctx.y, CONTENT_W, h, "F");
+      doc.setDrawColor(...RULE);
+      doc.setLineWidth(0.6);
+      doc.rect(M.left, ctx.y, CONTENT_W, h);
+      doc.setFont(DISPLAY, "bold");
+      doc.setFontSize(8.4);
+      doc.setTextColor(...MAROON);
+      doc.text(String(it.description || "").toUpperCase(), M.left + 8, ctx.y + 14.5, { charSpace: 0.4 });
+      ctx.y += h;
+      return;
+    }
+    serial += 1;
+
     /* measure with the face the description is actually drawn in — the table
        header leaves the display face selected, and Trajan is much wider */
     doc.setFont(BODY, "normal");
@@ -66,7 +91,7 @@ function itemsTable(ctx, items) {
     if (ctx.y + rowH > ctx.bottom) { ctx.newPage(); drawHead(); }
 
     const top = ctx.y;
-    if (i % 2 === 1) {
+    if (serial % 2 === 0) {
       doc.setFillColor(248, 244, 237);
       doc.rect(M.left, top, CONTENT_W, rowH, "F");
     }
@@ -78,7 +103,7 @@ function itemsTable(ctx, items) {
     let cx = M.left;
 
     doc.setFont(DISPLAY, "bold");
-    doc.text(`${i + 1}.`, cx + cols[0].w / 2, midY, { align: "center" });
+    doc.text(`${serial}.`, cx + cols[0].w / 2, midY, { align: "center" });
     doc.setFont(BODY, "normal");
     cx += cols[0].w;
 
