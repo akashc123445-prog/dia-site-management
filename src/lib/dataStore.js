@@ -113,6 +113,7 @@ const mapAttendance = (r) => ({
   checkInAt: r.check_in_at, checkInPhotoUrl: r.check_in_photo_url, checkInNote: r.check_in_note,
   location: r.location, lat: r.lat, lng: r.lng,
   checkOutAt: r.check_out_at, checkOutNote: r.check_out_note,
+  amendedBy: r.amended_by, amendedAt: r.amended_at, amendNote: r.amend_note || "",
 });
 
 const mapOfficeExpense = (r) => ({
@@ -882,6 +883,29 @@ export async function dbCheckOut(attendanceId, note) {
   const { error } = await supabase.from("attendance")
     .update({ check_out_at: new Date().toISOString(), check_out_note: note })
     .eq("id", attendanceId);
+  if (error) throw error;
+}
+
+/* Admin correcting a mis-punched time. Stamped as amended so the register
+   shows that a figure was changed and by whom, rather than quietly reading
+   as though it was always right. */
+export async function dbAmendAttendance(id, { checkInAt, checkOutAt, checkInNote, checkOutNote, location, amendNote }, amendedBy) {
+  const payload = { amended_by: amendedBy, amended_at: new Date().toISOString() };
+  if (checkInAt !== undefined) payload.check_in_at = checkInAt;
+  /* An out time can be cleared — someone who never signed off should read as
+     still open, not as having left at midnight. */
+  if (checkOutAt !== undefined) payload.check_out_at = checkOutAt || null;
+  if (checkInNote !== undefined) payload.check_in_note = checkInNote;
+  if (checkOutNote !== undefined) payload.check_out_note = checkOutNote || null;
+  if (location !== undefined) payload.location = location || null;
+  if (amendNote !== undefined) payload.amend_note = amendNote || null;
+
+  const { error } = await supabase.from("attendance").update(payload).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteAttendance(id) {
+  const { error } = await supabase.from("attendance").delete().eq("id", id);
   if (error) throw error;
 }
 
