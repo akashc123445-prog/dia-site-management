@@ -35,7 +35,7 @@ import {
   dbAddSchedule, dbUpdateSchedule, dbDeleteSchedule,
   dbAddWorkTask, dbUpdateWorkTask, dbDeleteWorkTask, dbClearDoneWorkTasks, dbAddWorkTasksBulk,
   dbAddOfficeExpense, dbApproveOfficeExpense, dbRejectOfficeExpense, dbMarkOfficeExpensePaid, dbDeleteOfficeExpense,
-  dbCheckIn, dbCheckOut, uploadAttendancePhoto,
+  dbCheckIn, dbCheckOut, uploadAttendancePhoto, dbAmendAttendance, dbDeleteAttendance,
   dbAddClientScopeItem, dbUpdateClientScopeItem, dbDeleteClientScopeItem, dbMarkClientScopeReminded,
   dbAddLeaveRequest, dbDecideLeaveRequest, dbDeleteLeaveRequest,
   dbEditExpense, dbRegisterVendorFromName,
@@ -7131,9 +7131,93 @@ function CheckOutForm({ onDone }) {
   );
 }
 
+/* Admin correcting a record. Times are edited as clock times against the day
+   the record belongs to, so there is no date arithmetic to get wrong. */
+function AttendanceAmendForm({ record, person, onSave, onDelete }) {
+  const asTime = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+  const toISO = (time) => {
+    if (!time) return null;
+    const [h, m] = time.split(":").map(Number);
+    const d = new Date(record.date + "T00:00:00");
+    d.setHours(h, m, 0, 0);
+    return d.toISOString();
+  };
+
+  const [form, setForm] = useState({
+    inTime: asTime(record.checkInAt),
+    outTime: asTime(record.checkOutAt),
+    checkInNote: record.checkInNote || "",
+    checkOutNote: record.checkOutNote || "",
+    location: record.location || "",
+    amendNote: "",
+  });
+  const [busy, setBusy] = useState(false);
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  const hours = form.inTime && form.outTime
+    ? Math.round(((toISO(form.outTime) ? Date.parse(toISO(form.outTime)) : 0) - Date.parse(toISO(form.inTime))) / 360000) / 10
+    : null;
+  const backwards = hours !== null && hours < 0;
+
+  return (
+    <div>
+      <p className="text-xs text-stone-500 mb-3">
+        {person?.name} · {fmtDate(record.date)}. The change is recorded against your name.
+      </p>
+
+      <div className="grid grid-cols-2 gap-x-4">
+        <Field label="In time"><input type="time" className={inputCls} value={form.inTime} onChange={set("inTime")} /></Field>
+        <Field label="Out time — leave blank if they never signed off">
+          <input type="time" className={inputCls} value={form.outTime} onChange={set("outTime")} />
+        </Field>
+      </div>
+
+      {hours !== null && (
+        <p className={`text-xs mb-3 ${backwards ? "text-rose-600 font-semibold" : "text-stone-500"}`}>
+          {backwards
+            ? "The out time is before the in time — check both before saving."
+            : `${hours} hours on the day.`}
+        </p>
+      )}
+
+      <Field label="Where they worked from"><input className={inputCls} value={form.location} onChange={set("location")} /></Field>
+      <Field label="What they set out to do"><textarea rows={2} className={inputCls} value={form.checkInNote} onChange={set("checkInNote")} /></Field>
+      <Field label="What they got done"><textarea rows={2} className={inputCls} value={form.checkOutNote} onChange={set("checkOutNote")} /></Field>
+      <Field label="Why it was changed (optional, kept on the record)">
+        <input className={inputCls} value={form.amendNote} onChange={set("amendNote")}
+          placeholder="e.g. Punched in at home, actually reached site at 9:40" />
+      </Field>
+
+      <button onClick={async () => {
+        setBusy(true);
+        try {
+          await onSave({
+            checkInAt: toISO(form.inTime), checkOutAt: toISO(form.outTime),
+            checkInNote: form.checkInNote, checkOutNote: form.checkOutNote,
+            location: form.location, amendNote: form.amendNote,
+          });
+        } catch (err) { alert(err.message || "Couldn't save the change."); setBusy(false); }
+      }} disabled={busy || !form.inTime || backwards}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
+        {busy ? "Saving…" : "Save the correction"}
+      </button>
+
+      <button onClick={() => { if (window.confirm(`Remove ${person?.name}'s record for ${fmtDate(record.date)} entirely?`)) onDelete(); }}
+        className="w-full text-xs text-stone-400 hover:text-rose-600 mt-3">
+        Remove this record
+      </button>
+    </div>
+  );
+}
+
 function AttendanceView({ data, currentUser, actions }) {
   const [showIn, setShowIn] = useState(false);
   const [showOut, setShowOut] = useState(false);
+  const [amending, setAmending] = useState(null);
   const [day, setDay] = useState(localToday());
   const [photo, setPhoto] = useState(null);
 
@@ -7277,12 +7361,20 @@ function AttendanceView({ data, currentUser, actions }) {
                         </span>
                       )}
                       {r.location && <span className="text-[11px] text-stone-500">{r.location}</span>}
+                      {r.amendedAt && (
+                        <span className="text-[10px] text-stone-400 italic"
+                          title={r.amendNote || "Times corrected by an administrator"}>amended</span>
+                      )}
                       {r.lat && (
                         <a href={`https://maps.google.com/?q=${r.lat},${r.lng}`} target="_blank" rel="noreferrer"
                           className="text-[11px] dia-text-bronze">Map</a>
                       )}
                     </div>
                     <p className="text-xs text-stone-600 mt-1.5 whitespace-pre-wrap">{r.checkInNote}</p>
+                    {currentUser.role === "Admin" && (
+                      <button onClick={() => setAmending(r)}
+                        className="text-[11px] dia-text-bronze font-semibold mt-1.5">Correct the times</button>
+                    )}
                     {r.checkOutNote && (
                       <p className="text-xs text-stone-500 mt-1.5 pt-1.5 border-t border-stone-100 whitespace-pre-wrap">
                         <span className="font-semibold">Done: </span>{r.checkOutNote}
@@ -7322,6 +7414,15 @@ function AttendanceView({ data, currentUser, actions }) {
       {showOut && mine && (
         <Modal title="Sign Off For The Day" onClose={() => setShowOut(false)}>
           <CheckOutForm onDone={async (note) => { await actions.checkOut(mine.id, note); setShowOut(false); }} />
+        </Modal>
+      )}
+
+      {amending && (
+        <Modal title="Correct Attendance" onClose={() => setAmending(null)}>
+          <AttendanceAmendForm record={amending}
+            person={(data.users || []).find(u => u.id === amending.userId)}
+            onSave={async (patch) => { await actions.amendAttendance(amending.id, patch); setAmending(null); }}
+            onDelete={async () => { await actions.deleteAttendance(amending.id); setAmending(null); }} />
         </Modal>
       )}
 
@@ -8916,6 +9017,11 @@ export default function App() {
     updateClientScopeItem: (id, patch) => dbUpdateClientScopeItem(id, patch).then(reload),
     deleteClientScopeItem: (id) => dbDeleteClientScopeItem(id).then(reload),
     markClientScopeReminded: (ids) => dbMarkClientScopeReminded(ids).then(reload),
+    amendAttendance: (id, patch) => dbAmendAttendance(id, patch, profile?.id).then(reload).catch((err) => {
+      window.alert(`Couldn't save the change.\n\n${err.message || err}`);
+      throw err;
+    }),
+    deleteAttendance: (id) => dbDeleteAttendance(id).then(reload),
     checkIn: (payload) => dbCheckIn(profile?.id, payload).then(reload).catch((err) => {
       window.alert(`Couldn't mark you present.\n\n${err.message || err}`);
       throw err;
