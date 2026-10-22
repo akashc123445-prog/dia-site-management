@@ -14,7 +14,7 @@ import {
 
 import { supabase } from "./lib/supabaseClient";
 import {
-  PHASE_TEMPLATE, EXPENSE_CATEGORIES, OFFICE_EXPENSE_CATEGORIES, OFFICES, PAYMENT_METHODS, PROJECT_STATUSES, PROJECT_TYPES,
+  PHASE_TEMPLATE, EXPENSE_CATEGORIES, OFFICE_EXPENSE_CATEGORIES, OFFICES, PAYMENT_METHODS, PROJECT_STATUSES, PROJECT_TYPES, COMPANY_INFO,
   ARCHITECT_RANKS, DESIGN_PHASES, CONTRACT_TYPES, DRAWING_STATUSES,
   TODAY, DIA, FONT_STYLE, LOGO_MARK, LOGO_FULL,
 } from "./lib/constants";
@@ -38,6 +38,7 @@ import {
   dbCheckIn, dbCheckOut, uploadAttendancePhoto, dbAmendAttendance, dbDeleteAttendance,
   dbAddClientScopeItem, dbUpdateClientScopeItem, dbDeleteClientScopeItem, dbMarkClientScopeReminded,
   dbAddLeaveRequest, dbDecideLeaveRequest, dbDeleteLeaveRequest,
+  dbAddHiringPost, dbUpdateHiringPost, dbDeleteHiringPost,
   dbEditExpense, dbRegisterVendorFromName,
   dbAddClientAdvance, dbUpdateClientAdvance, dbDeleteClientAdvance,
   dbAddMaterialRequest, dbApproveMaterialRequest, dbRejectMaterialRequest, dbDeleteMaterialRequest,
@@ -57,6 +58,9 @@ import { parseWhatsAppTasks } from "./lib/parseWhatsApp";
 import { parseWorkQuoteFile } from "./lib/importWorkQuote";
 import { generateClientScopePdf, clientScopeReminderText } from "./lib/generateClientScope";
 import { exportAttendanceExcel, exportOfficeExpensesExcel, exportLeaveExcel } from "./lib/exportRegisters";
+import { generateHiringPostPdf, hiringPostMessage } from "./lib/generateHiringPost";
+import { generateExpenseClaimPdf } from "./lib/generateExpenseClaim";
+import { HIRING_ROLES, HIRING_LOCATIONS, blankHiringPost } from "./lib/hiringTemplates";
 import { generateWorkTrackerPdf, workTrackerMessage } from "./lib/generateWorkTracker";
 import { downloadTaskCalendar } from "./lib/taskCalendar";
 import { generateClientStatementPdf, recoverableTotals } from "./lib/generateClientStatement";
@@ -322,16 +326,19 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
   /* A dot rather than a number: a reminder to mark in, not a count of work. */
   const attendanceItem = { key: "attendance", label: "Attendance", icon: CheckCircle2, badge: needsCheckIn ? "•" : undefined };
   const leaveItem = { key: "leave", label: "Leave & Permissions", icon: CalendarDays, badge: pendingLeaveCount };
+  const myExpensesItem = { key: "myexpenses", label: "My Expenses", icon: Receipt };
   const adminNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     attendanceItem,
     leaveItem,
+    { key: "hiring", label: "Hiring", icon: Users },
     { key: "tracker", label: "Work Tracker", icon: ListChecks, badge: openWorkCount },
     feedItem,
     { key: "updates", label: "Updates", icon: ImageIcon },
     { key: "projects", label: "Projects", icon: Building2 },
     { key: "expenses", label: "Expenses", icon: Receipt, badge: pendingCount },
     officeItem,
+    myExpensesItem,
     { key: "quotations", label: "Quotations", icon: FileText },
     scheduleItem,
     { key: "vendors", label: "Vendors", icon: Store },
@@ -345,6 +352,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
     { key: "projects", label: "Projects", icon: Building2 },
     { key: "expenses", label: "Expenses", icon: Receipt, badge: pendingCount },
     officeItem,
+    myExpensesItem,
     { key: "quotations", label: "Quotations", icon: FileText },
     scheduleItem,
     { key: "vendors", label: "Vendors", icon: Store },
@@ -353,6 +361,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
     { key: "sup-home", label: "My Sites", icon: LayoutDashboard },
     attendanceItem,
     leaveItem,
+    myExpensesItem,
     feedItem,
     scheduleItem,
     officeItem,
@@ -361,6 +370,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
     { key: "arch-home", label: "My Design Work", icon: PenTool },
     attendanceItem,
     leaveItem,
+    myExpensesItem,
     feedItem,
     scheduleItem,
     officeItem,
@@ -6282,15 +6292,23 @@ function SchedulesView({ data, currentUser, actions }) {
 /* ---------------------------------------------------------------------- */
 
 function ClientAccountTab({ project, data, currentUser, actions }) {
-  const blank = { date: new Date().toISOString().slice(0, 10), amount: "", mode: "Bank Transfer", reference: "", purpose: "", notes: "" };
+  const blank = { date: new Date().toISOString().slice(0, 10), amount: "", mode: "Bank Transfer", reference: "", purpose: "", notes: "", kind: "advance" };
   const [form, setForm] = useState(blank);
   const [editing, setEditing] = useState(null);
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
 
   const expenses = (data.expenses || []).filter(e => e.projectId === project.id);
-  const advances = (data.clientAdvances || []).filter(a => a.projectId === project.id);
+  const allReceipts = (data.clientAdvances || []).filter(a => a.projectId === project.id);
+  /* Two ledgers, one table: fee receipts against what we're owed for the
+     work, advances against what we lay out on the client's behalf. */
+  const feeReceipts = allReceipts.filter(a => a.kind === "fee");
+  const advances = allReceipts.filter(a => (a.kind || "advance") === "advance");
   const t = recoverableTotals(expenses, advances);
+
+  const feeAgreed = Number(project.contractValue) || 0;
+  const feeReceived = feeReceipts.reduce((s, a) => s + a.amount, 0);
+  const feePending = feeAgreed - feeReceived;
   const userName = (id) => (data.users || []).find(u => u.id === id)?.name || "—";
 
   const save = async () => {
@@ -6299,13 +6317,71 @@ function ClientAccountTab({ project, data, currentUser, actions }) {
     try {
       if (editing) await actions.updateClientAdvance(editing, form);
       else await actions.addClientAdvance({ ...form, projectId: project.id });
-      setForm(blank); setEditing(null);
+      setForm({ ...blank, kind: form.kind });
+      setEditing(null);
     } catch (err) { alert(err.message || "Couldn't save that advance."); }
     setBusy(false);
   };
 
   return (
     <div className="space-y-4">
+      {/* What we are owed for the work itself. On a design-only project this
+          is the whole commercial picture. */}
+      <Card className="p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+          <div>
+            <h3 className="font-display text-base font-semibold text-stone-900">
+              {project.contractType === "Designing" ? "Design fee" : "Professional fee"}
+            </h3>
+            <p className="text-xs text-stone-500 mt-0.5">
+              Agreed figure comes from the project's contract value — change it under Edit project.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-5">
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-stone-400 font-label font-semibold">Agreed</div>
+              <div className="font-display text-lg font-semibold text-stone-900">{fmtINR(feeAgreed)}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-stone-400 font-label font-semibold">Collected</div>
+              <div className="font-display text-lg font-semibold text-emerald-700">{fmtINR(feeReceived)}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-stone-400 font-label font-semibold">Pending</div>
+              <div className={`font-display text-lg font-semibold ${feePending > 0 ? "text-rose-700" : "text-stone-900"}`}>
+                {fmtINR(Math.abs(feePending))}{feePending < 0 ? " over" : ""}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {feeAgreed > 0 && (
+          <div className="h-2 rounded-full bg-stone-100 overflow-hidden mb-3">
+            <div className="h-full dia-bg-gold transition-all"
+              style={{ width: `${Math.min(100, (feeReceived / feeAgreed) * 100)}%` }} />
+          </div>
+        )}
+
+        {feeReceipts.length === 0 ? (
+          <p className="text-sm text-stone-400 py-2">No fee collected yet. Record a receipt below, choosing "Design fee".</p>
+        ) : (
+          <div className="space-y-1.5">
+            {feeReceipts.map(a => (
+              <div key={a.id} className="flex items-center gap-3 text-sm py-1.5 border-b border-stone-100 last:border-0">
+                <span className="text-xs text-stone-400 w-20 shrink-0">{fmtDate(a.date)}</span>
+                <span className="text-stone-800 flex-1 truncate">{a.purpose || "Fee instalment"}</span>
+                <span className="text-xs text-stone-500 hidden sm:inline">{[a.mode, a.reference].filter(Boolean).join(" · ")}</span>
+                <span className="font-semibold text-emerald-700 w-24 text-right tabular-nums">{fmtINR(a.amount)}</span>
+                <button onClick={() => { setEditing(a.id); setForm({ date: a.date, amount: a.amount, mode: a.mode, reference: a.reference, purpose: a.purpose, notes: a.notes, kind: "fee" }); }}
+                  className="text-stone-400 hover:dia-text-bronze"><Pencil size={13} /></button>
+                <button onClick={() => { if (window.confirm("Remove this receipt?")) actions.deleteClientAdvance(a.id); }}
+                  className="text-stone-300 hover:text-rose-600"><Trash2 size={13} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <KPI label="Paid on their behalf" value={fmtINR(t.spent)} sub={`${t.recoverable.length} approved item${t.recoverable.length !== 1 ? "s" : ""}`} icon={Receipt} />
         <KPI label="Advances received" value={fmtINR(t.received)} sub={`${advances.length} receipt${advances.length !== 1 ? "s" : ""}`} icon={Landmark} />
@@ -6354,7 +6430,18 @@ function ClientAccountTab({ project, data, currentUser, actions }) {
       </Card>
 
       <Card className="p-4">
-        <h3 className="font-display text-base font-semibold text-stone-900 mb-3">Advances from the client</h3>
+        <h3 className="font-display text-base font-semibold text-stone-900 mb-1">Record a receipt</h3>
+        <p className="text-xs text-stone-500 mb-3">Choose which it is — the two are kept apart and never set against each other.</p>
+        <div className="flex gap-2 mb-3">
+          {[["fee", project.contractType === "Designing" ? "Design fee" : "Professional fee"],
+            ["advance", "Advance for works we arrange"]].map(([k, label]) => (
+            <button key={k} type="button" onClick={() => setForm(f => ({ ...f, kind: k }))}
+              className={`flex-1 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                form.kind === k ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
         <div className="grid sm:grid-cols-12 gap-2 mb-2">
           <input type="date" className={`${inputCls} sm:col-span-2`} value={form.date} onChange={set("date")} />
           <input type="number" className={`${inputCls} sm:col-span-2`} value={form.amount} onChange={set("amount")} placeholder="Amount" />
@@ -6362,7 +6449,8 @@ function ClientAccountTab({ project, data, currentUser, actions }) {
             {PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}
           </select>
           <input className={`${inputCls} sm:col-span-2`} value={form.reference} onChange={set("reference")} placeholder="UTR / cheque no." />
-          <input className={`${inputCls} sm:col-span-3`} value={form.purpose} onChange={set("purpose")} placeholder="Paid towards, e.g. electrical works" />
+          <input className={`${inputCls} sm:col-span-3`} value={form.purpose} onChange={set("purpose")}
+            placeholder={form.kind === "fee" ? "Paid towards, e.g. advance on signing" : "Paid towards, e.g. electrical works"} />
           <button onClick={save} disabled={!(Number(form.amount) > 0) || busy}
             className="sm:col-span-1 dia-btn-gold rounded-lg text-sm font-semibold disabled:opacity-40 py-2.5">
             {editing ? "Save" : "Add"}
@@ -6372,6 +6460,7 @@ function ClientAccountTab({ project, data, currentUser, actions }) {
           <button onClick={() => { setEditing(null); setForm(blank); }} className="text-xs text-stone-500 mb-2">Cancel editing</button>
         )}
 
+        <h4 className="text-xs font-semibold text-stone-600 mt-4 mb-1">Advances for works arranged on their behalf</h4>
         {advances.length === 0 ? (
           <p className="text-sm text-stone-400 py-4 text-center">No advances recorded against this project.</p>
         ) : (
@@ -6693,6 +6782,333 @@ function MyTasksReminder({ data, currentUser, actions }) {
         </span>
       </div>
     </Card>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* My expenses — what one person is owed                                    */
+/* ---------------------------------------------------------------------- */
+
+function MyExpensesView({ data, currentUser, actions }) {
+  const [month, setMonth] = useState("All");
+  const [status, setStatus] = useState("All");
+
+  const mine = (data.expenses || []).filter(e => e.submittedBy === currentUser.id);
+  const projectName = (id) => (data.projects || []).find(p => p.id === id)?.name || "—";
+
+  const monthLabel = (m) => new Date(m + "-01").toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  const months = [...new Set(mine.map(e => (e.date || "").slice(0, 7)).filter(Boolean))].sort().reverse();
+
+  const visible = mine.filter(e => {
+    if (month !== "All" && (e.date || "").slice(0, 7) !== month) return false;
+    if (status !== "All" && e.status !== status) return false;
+    return true;
+  }).sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  /* What matters to the person claiming: not the total they spent, but the
+     part nobody has paid back yet. */
+  const counted = mine.filter(e => e.status !== "Rejected");
+  const owed = counted.filter(e => !e.paid).reduce((s, e) => s + e.amount, 0);
+  const awaiting = mine.filter(e => e.status === "Pending");
+  const reimbursed = counted.filter(e => e.paid).reduce((s, e) => s + e.amount, 0);
+
+  const claimList = visible.length ? visible : counted;
+  const periodLabel = month === "All" ? "All dates" : monthLabel(month);
+
+  return (
+    <div className="p-4 sm:p-8 space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <KPI label="Owed to you" value={fmtINR(owed)} sub="approved or pending, unpaid" icon={Receipt} />
+        <KPI label="Awaiting approval" value={awaiting.length} sub={fmtINR(awaiting.reduce((s, e) => s + e.amount, 0))} icon={Clock} />
+        <KPI label="Reimbursed" value={fmtINR(reimbursed)} sub="paid back to you" icon={CheckCircle2} />
+        <KPI label="Bills filed" value={counted.length} sub="all time" icon={ListChecks} />
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <select value={month} onChange={e => setMonth(e.target.value)} className={`${inputCls} sm:w-52`}>
+          <option value="All">Every month</option>
+          {months.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
+        </select>
+        <select value={status} onChange={e => setStatus(e.target.value)} className={`${inputCls} sm:w-40`}>
+          <option value="All">Any status</option>
+          {["Pending", "Approved", "Rejected"].map(s => <option key={s}>{s}</option>)}
+        </select>
+        <span className="flex-1" />
+        <button onClick={() => generateExpenseClaimPdf({
+          person: currentUser, expenses: claimList, projectName, periodLabel,
+        }, "preview") && window.open(generateExpenseClaimPdf({
+          person: currentUser, expenses: claimList, projectName, periodLabel,
+        }, "preview"), "_blank")}
+          disabled={!claimList.length}
+          className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40 shrink-0">
+          <Eye size={15} /> Preview
+        </button>
+        <button onClick={() => generateExpenseClaimPdf({
+          person: currentUser, expenses: claimList, projectName, periodLabel,
+        }, "save")} disabled={!claimList.length}
+          className="flex items-center gap-1.5 dia-btn-gold px-4 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40 shrink-0">
+          <Download size={15} /> Claim sheet (PDF)
+        </button>
+      </div>
+
+      <p className="text-xs text-stone-500">
+        The claim sheet lists the bills shown above, with a total in words and a line for you and for accounts to sign. Attach your bills and hand it in.
+      </p>
+
+      {visible.length === 0 && (
+        <Card className="p-10 text-center">
+          <Receipt size={26} className="mx-auto text-stone-300 mb-2" />
+          <p className="text-sm text-stone-400">
+            {mine.length === 0
+              ? "You haven't recorded any expenses yet. Add them from the project's Expenses tab."
+              : "Nothing matches these filters."}
+          </p>
+        </Card>
+      )}
+
+      <div className="space-y-2">
+        {visible.map(e => (
+          <Card key={e.id} className={`p-4 ${e.status === "Rejected" ? "opacity-70" : ""}`}>
+            <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">{e.category}</span>
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                    e.status === "Approved" ? "bg-emerald-50 text-emerald-700"
+                      : e.status === "Rejected" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>
+                    {e.status}
+                  </span>
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                    e.paid ? "bg-emerald-50 text-emerald-700" : "bg-stone-100 text-stone-500"}`}>
+                    {e.paid ? "Reimbursed" : "Not yet paid"}
+                  </span>
+                  {e.billableToClient && (
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full dia-bg-cream-soft dia-text-bronze">Client scope</span>
+                  )}
+                </div>
+                <div className="text-sm font-medium text-stone-800 mt-1.5">{e.description}</div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-xs text-stone-500">
+                  <span>{fmtDate(e.date)}</span>
+                  <span>{projectName(e.projectId)}</span>
+                  <span>{e.vendor}</span>
+                  {e.proofUrl && <a href={e.proofUrl} target="_blank" rel="noreferrer" className="dia-text-bronze">Attachment</a>}
+                </div>
+                {e.status === "Rejected" && e.rejectionReason && (
+                  <div className="text-xs text-rose-600 mt-1">Rejected: {e.rejectionReason}</div>
+                )}
+              </div>
+              <span className="font-display text-lg font-semibold text-stone-900 shrink-0">{fmtINR(e.amount)}</span>
+            </div>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Hiring                                                                   */
+/* ---------------------------------------------------------------------- */
+
+const HIRING_STATUS_STYLE = {
+  Open: "bg-emerald-50 text-emerald-700",
+  Filled: "bg-stone-100 text-stone-600",
+  Closed: "bg-stone-100 text-stone-500",
+};
+
+function HiringPostForm({ post, currentUser, onSave }) {
+  const [form, setForm] = useState(post || {
+    ...blankHiringPost("architect"),
+    contactName: currentUser.name,
+    contactEmail: currentUser.email || "",
+  });
+  const [busy, setBusy] = useState(false);
+  const set = (patch) => setForm(f => ({ ...f, ...patch }));
+
+  /* Changing the role swaps in that role's words — unless they've been
+     edited, in which case throwing the edits away would be worse. */
+  const chooseRole = (key) => {
+    const t = HIRING_ROLES[key];
+    const untouched = JSON.stringify([form.intro, form.responsibilities, form.requirements])
+      === JSON.stringify([HIRING_ROLES[form.roleKey]?.intro, HIRING_ROLES[form.roleKey]?.responsibilities, HIRING_ROLES[form.roleKey]?.requirements]);
+    set({
+      roleKey: key,
+      title: untouched || form.title === HIRING_ROLES[form.roleKey]?.label ? t.label : form.title,
+      ...(untouched ? {
+        experience: t.experience, intro: t.intro,
+        responsibilities: [...t.responsibilities], requirements: [...t.requirements],
+      } : {}),
+    });
+  };
+
+  return (
+    <div>
+      <Field label="Which role?">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+          {Object.entries(HIRING_ROLES).map(([key, t]) => (
+            <button key={key} type="button" onClick={() => chooseRole(key)}
+              className={`px-2.5 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                form.roleKey === key ? "dia-btn-gold dia-border-gold" : "border-stone-200 text-stone-600 hover:bg-stone-50"}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      <div className="grid sm:grid-cols-2 gap-x-4">
+        <Field label="Title, as advertised">
+          <input className={inputCls} value={form.title} onChange={e => set({ title: e.target.value })} />
+        </Field>
+        <Field label="Experience">
+          <input className={inputCls} value={form.experience} onChange={e => set({ experience: e.target.value })} />
+        </Field>
+      </div>
+
+      <Field label="Where is this role based?">
+        <select className={inputCls} value={form.location} onChange={e => set({ location: e.target.value })}>
+          {HIRING_LOCATIONS.map(l => <option key={l}>{l}</option>)}
+        </select>
+      </Field>
+
+      <Field label="What the job is — the opening paragraph">
+        <textarea rows={3} className={inputCls} value={form.intro} onChange={e => set({ intro: e.target.value })} />
+      </Field>
+
+      <Field label="What they'll do — one per line">
+        <ListEditor rows={5} value={form.responsibilities} onChange={v => set({ responsibilities: v })} />
+      </Field>
+
+      <Field label="What we're looking for — one per line">
+        <ListEditor rows={5} value={form.requirements} onChange={v => set({ requirements: v })} />
+      </Field>
+
+      <div className="grid sm:grid-cols-3 gap-x-4">
+        <Field label="Contact name">
+          <input className={inputCls} value={form.contactName} onChange={e => set({ contactName: e.target.value })} />
+        </Field>
+        <Field label="Phone">
+          <input className={inputCls} value={form.contactPhone} onChange={e => set({ contactPhone: e.target.value })}
+            placeholder={COMPANY_INFO.phone} />
+        </Field>
+        <Field label="Email">
+          <input className={inputCls} value={form.contactEmail} onChange={e => set({ contactEmail: e.target.value })}
+            placeholder={COMPANY_INFO.email} />
+        </Field>
+      </div>
+
+      <Field label="Status">
+        <select className={inputCls} value={form.status} onChange={e => set({ status: e.target.value })}>
+          {["Open", "Filled", "Closed"].map(s => <option key={s}>{s}</option>)}
+        </select>
+      </Field>
+
+      <div className="flex gap-2 mt-1">
+        <button type="button" onClick={() => { const u = generateHiringPostPdf(form, "preview"); if (u) window.open(u, "_blank"); }}
+          className="px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50">
+          Preview
+        </button>
+        <button onClick={async () => { setBusy(true); try { await onSave(form); } catch (err) { alert(err.message || "Couldn't save."); setBusy(false); } }}
+          disabled={busy || !form.title.trim()}
+          className="flex-1 dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
+          {busy ? "Saving…" : post ? "Save changes" : "Create the post"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HiringView({ data, currentUser, actions }) {
+  const [editing, setEditing] = useState(null);     // post object or "new"
+  const [copied, setCopied] = useState("");
+  const posts = data.hiringPosts || [];
+  const isAdmin = currentUser.role === "Admin";
+  const open = posts.filter(p => p.status === "Open");
+
+  const copyMessage = async (post) => {
+    try { await navigator.clipboard.writeText(hiringPostMessage(post)); } catch { /* blocked */ }
+    setCopied(post.id);
+    setTimeout(() => setCopied(""), 2500);
+  };
+
+  return (
+    <div className="p-4 sm:p-8 space-y-5">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm text-stone-500">
+            {open.length ? `${open.length} position${open.length !== 1 ? "s" : ""} open.` : "No positions open at the moment."}
+            {isAdmin && " Each post makes a sheet you can send on WhatsApp or post on Instagram."}
+          </p>
+        </div>
+        {isAdmin && (
+          <button onClick={() => setEditing("new")}
+            className="flex items-center gap-2 dia-btn-gold font-semibold text-sm px-4 py-2.5 rounded-lg shrink-0">
+            <Plus size={16} /> New hiring post
+          </button>
+        )}
+      </div>
+
+      {posts.length === 0 && (
+        <Card className="p-10 text-center">
+          <Users size={26} className="mx-auto text-stone-300 mb-2" />
+          <p className="text-sm text-stone-400">
+            No hiring posts yet. Pick a role and the words are written for you — edit what doesn't sound like us.
+          </p>
+        </Card>
+      )}
+
+      <div className="grid sm:grid-cols-2 gap-3">
+        {posts.map(post => (
+          <Card key={post.id} className={`p-4 ${post.status !== "Open" ? "opacity-70" : ""}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${HIRING_STATUS_STYLE[post.status]}`}>{post.status}</span>
+                  <span className="text-[10px] text-stone-400">{fmtDate(post.createdAt)}</span>
+                </div>
+                <h3 className="font-display text-lg font-semibold text-stone-900 mt-1">{post.title}</h3>
+                <p className="text-xs text-stone-500 mt-0.5">
+                  {post.location}{post.experience ? ` · ${post.experience}` : ""}
+                </p>
+              </div>
+              {isAdmin && (
+                <button onClick={() => setEditing(post)} className="text-stone-400 hover:dia-text-bronze shrink-0">
+                  <Pencil size={15} />
+                </button>
+              )}
+            </div>
+
+            <p className="text-xs text-stone-600 mt-2 line-clamp-3">{post.intro}</p>
+
+            <div className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-stone-100">
+              <button onClick={() => generateHiringPostPdf(post, "save")}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50">
+                <Download size={13} /> PDF
+              </button>
+              <button onClick={() => copyMessage(post)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50">
+                <MessageSquare size={13} /> {copied === post.id ? "Copied" : "WhatsApp"}
+              </button>
+              <span className="flex-1" />
+              {isAdmin && (
+                <button onClick={() => { if (window.confirm(`Delete the ${post.title} post?`)) actions.deleteHiringPost(post.id); }}
+                  className="text-stone-300 hover:text-rose-600"><Trash2 size={14} /></button>
+              )}
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      {editing && (
+        <Modal title={editing === "new" ? "New Hiring Post" : "Edit Hiring Post"} onClose={() => setEditing(null)} wide>
+          <HiringPostForm post={editing === "new" ? null : editing} currentUser={currentUser}
+            onSave={async (post) => {
+              if (editing === "new") await actions.addHiringPost(post);
+              else await actions.updateHiringPost(editing.id, post);
+              setEditing(null);
+            }} />
+        </Modal>
+      )}
+    </div>
   );
 }
 
@@ -9004,6 +9420,9 @@ export default function App() {
       window.alert(`Couldn't register that vendor.\n\n${err.message || err}`);
       throw err;
     }),
+    addHiringPost: (p) => dbAddHiringPost(p, profile?.id).then(reload),
+    updateHiringPost: (id, p) => dbUpdateHiringPost(id, p).then(reload),
+    deleteHiringPost: (id) => dbDeleteHiringPost(id).then(reload),
     addLeaveRequest: (req) => dbAddLeaveRequest(req, profile?.id).then(reload).catch((err) => {
       window.alert(`Couldn't send that request.\n\n${err.message || err}`);
       throw err;
@@ -9152,6 +9571,8 @@ export default function App() {
     office: ["Office Expenses", "Petty cash for the Bengaluru and Chennai offices"],
     attendance: ["Attendance", "Who is in today, and what they are working on"],
     leave: ["Leave & Permissions", "Ask for leave or a late check-in, and see what has been taken"],
+    hiring: ["Hiring", "Posts for the roles we're recruiting, ready to send"],
+    myexpenses: ["My Expenses", "What you've spent, what you're owed, and a claim sheet for accounts"],
     feed: ["Team Feed", "Daily updates, follow-ups and approvals across every site"],
     schedules: ["Schedules", "Client welcome packs and the programme of works"],
     quotations: ["Quotations", "Design proposals, fee schedules and client-ready PDFs"],
@@ -9200,6 +9621,8 @@ export default function App() {
         {view.tab === "tracker" && (isAdmin ? <WorkTrackerView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "attendance" && <AttendanceView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "leave" && <LeaveView data={data} currentUser={currentUser} actions={actions} />}
+        {view.tab === "hiring" && <HiringView data={data} currentUser={currentUser} actions={actions} />}
+        {view.tab === "myexpenses" && <MyExpensesView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "office" && <OfficeExpensesView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "feed" && <FeedView data={data} currentUser={currentUser} actions={actions} />}
         {view.tab === "schedules" && <SchedulesView data={data} currentUser={currentUser} actions={actions} />}
