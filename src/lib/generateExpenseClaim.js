@@ -192,3 +192,42 @@ export function generateExpenseClaimPdf({ person, expenses, projectName, periodL
   doc.save(filename);
   return null;
 }
+
+/* One claim sheet per person, from a mixed list. Produced as separate files
+   rather than one document, because each is signed, filed and paid on its
+   own — a single PDF holding five people's claims cannot be handed to five
+   people.
+
+   Browsers throttle rapid downloads, so the files are released a moment
+   apart; without the gap most of them are silently dropped. */
+export async function generateExpenseClaimsPerPerson({ expenses, users, projectName, periodLabel }) {
+  const byPerson = [];
+  expenses.forEach((e) => {
+    const g = byPerson.find((x) => x.id === e.submittedBy);
+    if (g) g.expenses.push(e);
+    else byPerson.push({ id: e.submittedBy, expenses: [e] });
+  });
+
+  /* Someone whose only bills were rejected has nothing to claim. */
+  const claims = byPerson
+    .map((g) => ({
+      person: (users || []).find((u) => u.id === g.id) || { name: "Unknown" },
+      expenses: g.expenses,
+      claimable: g.expenses.filter((e) => e.status !== "Rejected"),
+    }))
+    .filter((g) => g.claimable.length)
+    .sort((a, b) => a.person.name.localeCompare(b.person.name));
+
+  for (let i = 0; i < claims.length; i++) {
+    generateExpenseClaimPdf({
+      person: claims[i].person, expenses: claims[i].expenses, projectName, periodLabel,
+    }, "save");
+    if (i < claims.length - 1) await new Promise((r) => setTimeout(r, 700));
+  }
+
+  return claims.map((c) => ({
+    name: c.person.name,
+    bills: c.claimable.length,
+    total: c.claimable.reduce((s, e) => s + e.amount, 0),
+  }));
+}

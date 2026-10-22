@@ -59,7 +59,7 @@ import { parseWorkQuoteFile } from "./lib/importWorkQuote";
 import { generateClientScopePdf, clientScopeReminderText } from "./lib/generateClientScope";
 import { exportAttendanceExcel, exportOfficeExpensesExcel, exportLeaveExcel } from "./lib/exportRegisters";
 import { generateHiringPostPdf, hiringPostMessage } from "./lib/generateHiringPost";
-import { generateExpenseClaimPdf } from "./lib/generateExpenseClaim";
+import { generateExpenseClaimPdf, generateExpenseClaimsPerPerson } from "./lib/generateExpenseClaim";
 import { HIRING_ROLES, HIRING_LOCATIONS, blankHiringPost } from "./lib/hiringTemplates";
 import { generateWorkTrackerPdf, workTrackerMessage } from "./lib/generateWorkTracker";
 import { downloadTaskCalendar } from "./lib/taskCalendar";
@@ -2505,6 +2505,7 @@ function ExpensesGlobal({ data, currentUser, actions }) {
   /* Who filed it. Picking one person turns the export into their claim
      sheet, which is the question this filter is usually asked for. */
   const [personFilter, setPersonFilter] = useState("All");
+  const [splitting, setSplitting] = useState(false);
   const [showPaymentsDue, setShowPaymentsDue] = useState(true);
 
   const projectName = (id) => projects.find(p => p.id === id)?.name || id;
@@ -2599,6 +2600,29 @@ function ExpensesGlobal({ data, currentUser, actions }) {
             .map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
         </select>
         <div className="ml-auto flex items-center gap-2">
+          {/* Everyone selected: one signed sheet per person, as separate
+              files, since each is filed and paid on its own. */}
+          {personFilter === "All" && filtered.length > 0 && (
+            <button onClick={async () => {
+              const people = new Set(filtered.filter(e => e.status !== "Rejected").map(e => e.submittedBy));
+              if (people.size < 2) { window.alert("These bills are all from one person — use the Claim sheet button after picking them in the filter."); return; }
+              if (!window.confirm(`Download ${people.size} claim sheets, one for each person?`)) return;
+              setSplitting(true);
+              try {
+                await generateExpenseClaimsPerPerson({
+                  expenses: filtered, users: data.users || [], projectName,
+                  periodLabel: [
+                    projectFilter === "All" ? null : projectName(projectFilter),
+                    statusFilter === "All" ? null : statusFilter,
+                  ].filter(Boolean).join(" · ") || "All dates",
+                });
+              } catch (err) { window.alert(err.message || "Couldn't produce the claim sheets."); }
+              setSplitting(false);
+            }} disabled={splitting}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40 shrink-0">
+              <Download size={15} /> {splitting ? "Preparing…" : "Claim sheet per person"}
+            </button>
+          )}
           {personFilter !== "All" && filtered.length > 0 && (
             <button onClick={() => generateExpenseClaimPdf({
               person: (data.users || []).find(u => u.id === personFilter),
