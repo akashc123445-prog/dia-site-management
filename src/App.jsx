@@ -7993,7 +7993,9 @@ function OfficeExpensesView({ data, currentUser, actions }) {
   const [month, setMonth] = useState(TODAY.toISOString().slice(0, 7));
   const [rejecting, setRejecting] = useState(null);
   const [reason, setReason] = useState("");
-  const [mineOnly, setMineOnly] = useState(false);
+  /* Supersedes the old "only mine" toggle: that answered one question, this
+     answers it for anyone. "Mine" stays as the first option. */
+  const [personFilter, setPersonFilter] = useState("All");
 
   const all = data.officeExpenses || [];
   const users = data.users || [];
@@ -8010,7 +8012,8 @@ function OfficeExpensesView({ data, currentUser, actions }) {
     if (category !== "All" && e.category !== category) return false;
     if (status !== "All" && e.status !== status) return false;
     if (month !== "All" && (e.date || "").slice(0, 7) !== month) return false;
-    if (mineOnly && e.submittedBy !== currentUser.id) return false;
+    if (personFilter === "Mine" && e.submittedBy !== currentUser.id) return false;
+    if (personFilter !== "All" && personFilter !== "Mine" && e.submittedBy !== personFilter) return false;
     return true;
   });
   const visibleTotal = visible.filter(e => e.status !== "Rejected").reduce((s, e) => s + e.amount, 0);
@@ -8054,11 +8057,14 @@ function OfficeExpensesView({ data, currentUser, actions }) {
           <option value="All">Any status</option>
           {["Pending", "Approved", "Rejected"].map(s => <option key={s}>{s}</option>)}
         </select>
-        <button type="button" onClick={() => setMineOnly(m => !m)}
-          className={`px-4 py-2.5 rounded-lg text-sm font-semibold border shrink-0 transition-colors ${
-            mineOnly ? "dia-btn-gold dia-border-gold" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
-          Only mine
-        </button>
+        <select value={personFilter} onChange={e => setPersonFilter(e.target.value)} className={`${inputCls} sm:w-48`}>
+          <option value="All">Everyone</option>
+          <option value="Mine">Only mine</option>
+          {(data.users || []).filter(u => !u.removed)
+            .slice()
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
         {isFinance && (
           <button onClick={() => exportOfficeExpensesExcel({
             expenses: visible, users,
@@ -8094,9 +8100,25 @@ function OfficeExpensesView({ data, currentUser, actions }) {
         </Card>
       )}
 
-      <Card className="p-4 flex items-center justify-between">
-        <span className="text-sm text-stone-600">{visible.length} expense{visible.length !== 1 ? "s" : ""} shown</span>
-        <span className="font-display text-xl font-semibold text-stone-900">{fmtINR(visibleTotal)}</span>
+      <Card className="p-4">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-stone-600">{visible.length} expense{visible.length !== 1 ? "s" : ""} shown</span>
+          <span className="font-display text-xl font-semibold text-stone-900">{fmtINR(visibleTotal)}</span>
+        </div>
+        {personFilter !== "All" && (
+          <div className="flex flex-wrap gap-x-5 gap-y-1 mt-2 pt-2 border-t border-stone-100 text-xs">
+            <span className="text-stone-500">
+              Filed by <span className="font-semibold text-stone-800">
+                {personFilter === "Mine" ? currentUser.name : (users.find(u => u.id === personFilter)?.name || "—")}
+              </span>
+            </span>
+            <span className="text-stone-500">
+              Not yet reimbursed <span className="font-semibold text-rose-700">
+                {fmtINR(visible.filter(e => !e.paid && e.status !== "Rejected").reduce((s, e) => s + e.amount, 0))}
+              </span>
+            </span>
+          </div>
+        )}
       </Card>
 
       {visible.length === 0 && (
