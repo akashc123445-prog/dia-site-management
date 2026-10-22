@@ -2502,6 +2502,9 @@ function ExpensesGlobal({ data, currentUser, actions }) {
   /* "Ours" is the fit-out cost; "Client scope" is what we paid out at the
      client's request and will recover on their final bill. */
   const [scopeFilter, setScopeFilter] = useState("All");
+  /* Who filed it. Picking one person turns the export into their claim
+     sheet, which is the question this filter is usually asked for. */
+  const [personFilter, setPersonFilter] = useState("All");
   const [showPaymentsDue, setShowPaymentsDue] = useState(true);
 
   const projectName = (id) => projects.find(p => p.id === id)?.name || id;
@@ -2514,6 +2517,7 @@ function ExpensesGlobal({ data, currentUser, actions }) {
     if (categoryFilter !== "All" && e.category !== categoryFilter) return false;
     if (scopeFilter === "Client" && !e.billableToClient) return false;
     if (scopeFilter === "Ours" && e.billableToClient) return false;
+    if (personFilter !== "All" && e.submittedBy !== personFilter) return false;
     return true;
   }).sort((a, b) => new Date(b.date) - new Date(a.date));
 
@@ -2587,10 +2591,32 @@ function ExpensesGlobal({ data, currentUser, actions }) {
           <option value="Ours">Our scope only</option>
           <option value="Client">Client scope only</option>
         </select>
-        <div className="ml-auto">
+        <select className={inputCls + " w-auto"} value={personFilter} onChange={e => setPersonFilter(e.target.value)}>
+          <option value="All">Everyone</option>
+          {(data.users || []).filter(u => !u.removed)
+            .slice()
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+        <div className="ml-auto flex items-center gap-2">
+          {personFilter !== "All" && filtered.length > 0 && (
+            <button onClick={() => generateExpenseClaimPdf({
+              person: (data.users || []).find(u => u.id === personFilter),
+              expenses: filtered, projectName,
+              periodLabel: [
+                projectFilter === "All" ? null : projectName(projectFilter),
+                statusFilter === "All" ? null : statusFilter,
+              ].filter(Boolean).join(" · ") || "All dates",
+            }, "save")}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 shrink-0">
+              <Download size={15} /> Claim sheet
+            </button>
+          )}
           {/* Exports whatever the filters above have left, split by scope. */}
           <ExpenseExportMenu expenses={filtered} projectName={projectName} userName={userName}
-            fileBase="expenses" includeProject />
+            fileBase={personFilter === "All" ? "expenses"
+              : `expenses_${((data.users || []).find(u => u.id === personFilter)?.name || "person").replace(/\W+/g, "_")}`}
+            includeProject />
         </div>
       </div>
 
@@ -2599,6 +2625,18 @@ function ExpensesGlobal({ data, currentUser, actions }) {
           <span className="text-sm text-stone-500">{filtered.length} expense(s) matching filters</span>
           <span className="font-mono font-semibold text-stone-800">{fmtINR(total)}</span>
         </div>
+        {personFilter !== "All" && (
+          <div className="flex flex-wrap gap-x-5 gap-y-1 mt-2 pt-2 border-t border-stone-100 text-xs">
+            <span className="text-stone-500">
+              Filed by <span className="font-semibold text-stone-800">{userName(personFilter)}</span>
+            </span>
+            <span className="text-stone-500">
+              Unpaid <span className="font-semibold text-rose-700">
+                {fmtINR(filtered.filter(e => !e.paid && e.status !== "Rejected").reduce((s, e) => s + e.amount, 0))}
+              </span>
+            </span>
+          </div>
+        )}
         {scopeFilter === "All" && filtered.some(e => e.billableToClient) && (
           <div className="flex flex-wrap gap-x-5 gap-y-1 mt-2 pt-2 border-t border-stone-100 text-xs">
             <span className="text-stone-500">
