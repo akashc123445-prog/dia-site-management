@@ -21,7 +21,10 @@ const CREAM_SOFT = [243, 233, 216];
 
 /* Only money that has actually been approved counts against the client.
    A pending or rejected bill is not yet something to recover. */
-export function recoverableTotals(expenses, advances) {
+export function recoverableTotals(expenses, allAdvances) {
+  /* Fee receipts live in the same table and must never be set against works
+     arranged on the client's behalf. */
+  const advances = (allAdvances || []).filter((a) => (a.kind || "advance") === "advance");
   const recoverable = expenses.filter((e) => e.billableToClient && e.status === "Approved");
   const pending = expenses.filter((e) => e.billableToClient && e.status === "Pending");
   const spent = recoverable.reduce((s, e) => s + e.amount, 0);

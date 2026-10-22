@@ -88,8 +88,18 @@ const mapVendor = (r) => ({
   bankIfsc: r.bank_ifsc, bankName: r.bank_name, createdAt: r.created_at,
 });
 
+const mapHiringPost = (r) => ({
+  id: r.id, roleKey: r.role_key, title: r.title, location: r.location,
+  experience: r.experience || "", intro: r.intro || "",
+  responsibilities: r.responsibilities || [], requirements: r.requirements || [],
+  contactName: r.contact_name || "", contactPhone: r.contact_phone || "",
+  contactEmail: r.contact_email || "", status: r.status, notes: r.notes || "",
+  createdAt: r.created_at,
+});
+
 const mapClientAdvance = (r) => ({
   id: r.id, projectId: r.project_id, date: r.date, amount: Number(r.amount) || 0,
+  kind: r.kind || "advance",
   mode: r.mode, reference: r.reference || "", purpose: r.purpose || "", notes: r.notes || "",
   recordedBy: r.recorded_by, createdAt: r.created_at,
 });
@@ -216,7 +226,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, advancesRaw, clientScopeRaw, attendanceRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, hiringRaw, advancesRaw, clientScopeRaw, attendanceRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -244,6 +254,7 @@ export async function fetchAllData() {
       // Last few weeks only: the board is about today, and the history view
       // never looks further back than a month.
       supabase.from("leave_requests").select("*").order("from_date", { ascending: false }),
+      supabase.from("hiring_posts").select("*").order("created_at", { ascending: false }),
       // Staff-only at the RLS level; empty for everyone else.
       supabase.from("client_advances").select("*").order("date", { ascending: true }),
       supabase.from("client_scope_items").select("*").order("sort_order").order("created_at"),
@@ -267,6 +278,10 @@ export async function fetchAllData() {
   if (boqLibraryRaw.error) {
     // eslint-disable-next-line no-console
     console.warn("BOQ library unavailable:", boqLibraryRaw.error.message);
+  }
+  if (hiringRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("Hiring posts unavailable:", hiringRaw.error.message);
   }
   if (leaveRaw.error) {
     // eslint-disable-next-line no-console
@@ -317,6 +332,7 @@ export async function fetchAllData() {
     attendance: (attendanceRaw.data || []).map(mapAttendance),
     clientScope: (clientScopeRaw.data || []).map(mapClientScopeItem),
     leaveRequests: (leaveRaw.data || []).map(mapLeaveRequest),
+    hiringPosts: (hiringRaw.data || []).map(mapHiringPost),
     clientAdvances: (advancesRaw.data || []).map(mapClientAdvance),
     feedPosts: (feedPostsRaw.data || []).map(mapFeedPost),
     feedComments: (feedCommentsRaw.data || []).map(mapFeedComment),
@@ -774,11 +790,40 @@ export async function dbRegisterVendorFromName(name, details = {}) {
   return vendor;
 }
 
+/* ---- hiring posts --------------------------------------------------------- */
+
+const hiringPayload = (p) => ({
+  role_key: p.roleKey, title: p.title, location: p.location,
+  experience: p.experience || null, intro: p.intro || null,
+  responsibilities: (p.responsibilities || []).filter(Boolean),
+  requirements: (p.requirements || []).filter(Boolean),
+  contact_name: p.contactName || null, contact_phone: p.contactPhone || null,
+  contact_email: p.contactEmail || null, status: p.status || "Open",
+  notes: p.notes || null,
+});
+
+export async function dbAddHiringPost(post, createdBy) {
+  const { error } = await supabase.from("hiring_posts")
+    .insert({ ...hiringPayload(post), created_by: createdBy });
+  if (error) throw error;
+}
+
+export async function dbUpdateHiringPost(id, post) {
+  const { error } = await supabase.from("hiring_posts").update(hiringPayload(post)).eq("id", id);
+  if (error) throw error;
+}
+
+export async function dbDeleteHiringPost(id) {
+  const { error } = await supabase.from("hiring_posts").delete().eq("id", id);
+  if (error) throw error;
+}
+
 /* ---- client advances ------------------------------------------------------ */
 
 export async function dbAddClientAdvance(adv, recordedBy) {
   const { error } = await supabase.from("client_advances").insert({
     project_id: adv.projectId, date: adv.date, amount: Number(adv.amount) || 0,
+    kind: adv.kind || "advance",
     mode: adv.mode, reference: adv.reference || null, purpose: adv.purpose || null,
     notes: adv.notes || null, recorded_by: recordedBy,
   });
@@ -789,6 +834,7 @@ export async function dbUpdateClientAdvance(id, adv) {
   const { error } = await supabase.from("client_advances").update({
     date: adv.date, amount: Number(adv.amount) || 0, mode: adv.mode,
     reference: adv.reference || null, purpose: adv.purpose || null, notes: adv.notes || null,
+    ...(adv.kind ? { kind: adv.kind } : {}),
   }).eq("id", id);
   if (error) throw error;
 }
