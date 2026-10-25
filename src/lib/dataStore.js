@@ -14,6 +14,9 @@ import { DESIGN_PHASES_DESIGNING } from "./constants";
 
 const mapUser = (r) => ({
   id: r.id, name: r.name, email: r.email, role: r.role, rank: r.rank, active: r.active, removed: r.removed,
+  /* Both optional: the attendance register shows an employee code if one has
+     been set, and never marks anyone absent before the day they joined. */
+  empId: r.emp_id || "", joinedOn: r.joined_on || null,
 });
 
 const mapProject = (r) => ({
@@ -226,7 +229,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, hiringRaw, advancesRaw, clientScopeRaw, attendanceRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, hiringRaw, advancesRaw, clientScopeRaw, attendanceRaw, holidaysRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -261,6 +264,7 @@ export async function fetchAllData() {
       supabase.from("attendance").select("*")
         .gte("date", new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10))
         .order("date", { ascending: false }),
+      supabase.from("company_holidays").select("*").order("date"),
     ]);
 
   const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw };
@@ -294,6 +298,10 @@ export async function fetchAllData() {
   if (attendanceRaw.error) {
     // eslint-disable-next-line no-console
     console.warn("Attendance unavailable:", attendanceRaw.error.message);
+  }
+  if (holidaysRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("Holiday list unavailable:", holidaysRaw.error.message);
   }
   if (officeExpensesRaw.error) {
     // eslint-disable-next-line no-console
@@ -330,6 +338,9 @@ export async function fetchAllData() {
     workTasks: (workTasksRaw.data || []).map(mapWorkTask),
     officeExpenses: (officeExpensesRaw.data || []).map(mapOfficeExpense),
     attendance: (attendanceRaw.data || []).map(mapAttendance),
+    holidays: (holidaysRaw.data || []).map((h) => ({
+      date: h.date, name: h.name, office: h.office || null,
+    })),
     clientScope: (clientScopeRaw.data || []).map(mapClientScopeItem),
     leaveRequests: (leaveRaw.data || []).map(mapLeaveRequest),
     hiringPosts: (hiringRaw.data || []).map(mapHiringPost),
@@ -348,6 +359,8 @@ export async function dbUpdateProfile(userId, updates) {
   if (updates.role !== undefined) payload.role = updates.role;
   if (updates.rank !== undefined) payload.rank = updates.rank;
   if (updates.active !== undefined) payload.active = updates.active;
+  if (updates.empId !== undefined) payload.emp_id = updates.empId || null;
+  if (updates.joinedOn !== undefined) payload.joined_on = updates.joinedOn || null;
   const { error } = await supabase.from("profiles").update(payload).eq("id", userId);
   if (error) throw error;
 }
@@ -952,6 +965,29 @@ export async function dbAmendAttendance(id, { checkInAt, checkOutAt, checkInNote
 
 export async function dbDeleteAttendance(id) {
   const { error } = await supabase.from("attendance").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/* The workspace only holds the last six weeks of attendance, which is right
+   for the day view and useless for a register of March. The month view asks
+   for its own window instead of everyone carrying a year of rows around. */
+export async function dbLoadAttendanceRange(from, to) {
+  const { data, error } = await supabase.from("attendance").select("*")
+    .gte("date", from).lte("date", to).order("date");
+  if (error) throw error;
+  return (data || []).map(mapAttendance);
+}
+
+/* ---- holidays ------------------------------------------------------------ */
+
+export async function dbSetHoliday(date, name, office, createdBy) {
+  const { error } = await supabase.from("company_holidays")
+    .upsert({ date, name, office: office || null, created_by: createdBy }, { onConflict: "date" });
+  if (error) throw error;
+}
+
+export async function dbRemoveHoliday(date) {
+  const { error } = await supabase.from("company_holidays").delete().eq("date", date);
   if (error) throw error;
 }
 

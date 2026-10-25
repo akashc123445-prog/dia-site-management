@@ -36,6 +36,7 @@ import {
   dbAddWorkTask, dbUpdateWorkTask, dbDeleteWorkTask, dbClearDoneWorkTasks, dbAddWorkTasksBulk,
   dbAddOfficeExpense, dbApproveOfficeExpense, dbRejectOfficeExpense, dbMarkOfficeExpensePaid, dbDeleteOfficeExpense,
   dbCheckIn, dbCheckOut, uploadAttendancePhoto, dbAmendAttendance, dbDeleteAttendance,
+  dbLoadAttendanceRange, dbSetHoliday, dbRemoveHoliday,
   dbAddClientScopeItem, dbUpdateClientScopeItem, dbDeleteClientScopeItem, dbMarkClientScopeReminded,
   dbAddLeaveRequest, dbDecideLeaveRequest, dbDeleteLeaveRequest,
   dbAddHiringPost, dbUpdateHiringPost, dbDeleteHiringPost,
@@ -58,6 +59,7 @@ import { parseWhatsAppTasks } from "./lib/parseWhatsApp";
 import { parseWorkQuoteFile } from "./lib/importWorkQuote";
 import { generateClientScopePdf, clientScopeReminderText } from "./lib/generateClientScope";
 import { exportAttendanceExcel, exportOfficeExpensesExcel, exportLeaveExcel } from "./lib/exportRegisters";
+import { buildRegister, exportRegisterExcel, CODES, monthName } from "./lib/attendanceRegister";
 import { generateHiringPostPdf, hiringPostMessage } from "./lib/generateHiringPost";
 import { generateExpenseClaimPdf, generateExpenseClaimsPerPerson } from "./lib/generateExpenseClaim";
 import { HIRING_ROLES, HIRING_LOCATIONS, blankHiringPost } from "./lib/hiringTemplates";
@@ -5524,14 +5526,21 @@ function ResetPasswordBlock({ userName, onReset }) {
 }
 
 function EditUserModal({ user, isSelf, onClose, onSave, onRemove, onResetPassword }) {
-  const [form, setForm] = useState({ name: user.name, email: user.email, role: user.role, rank: user.rank || ARCHITECT_RANKS[2], active: user.active !== false });
+  const [form, setForm] = useState({
+    name: user.name, email: user.email, role: user.role, rank: user.rank || ARCHITECT_RANKS[2],
+    active: user.active !== false, empId: user.empId || "", joinedOn: user.joinedOn || "",
+  });
   const [error, setError] = useState("");
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
 
   const handleSave = () => {
     if (!form.name.trim() || !form.email.trim()) { setError("Name and email are required."); return; }
-    onSave({ name: form.name.trim(), email: form.email.trim(), role: form.role, active: form.active, rank: form.role === "Architect" ? form.rank : null });
+    onSave({
+      name: form.name.trim(), email: form.email.trim(), role: form.role, active: form.active,
+      rank: form.role === "Architect" ? form.rank : null,
+      empId: form.empId.trim(), joinedOn: form.joinedOn || null,
+    });
   };
 
   return (
@@ -5550,6 +5559,18 @@ function EditUserModal({ user, isSelf, onClose, onSave, onRemove, onResetPasswor
           </select>
         </Field>
       )}
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Employee ID">
+          <input className={inputCls} value={form.empId} onChange={set("empId")} placeholder="DIA-014" />
+        </Field>
+        <Field label="Joined on">
+          <input type="date" className={inputCls} value={form.joinedOn || ""} onChange={set("joinedOn")} />
+        </Field>
+      </div>
+      <p className="text-[11px] text-stone-400 -mt-2 mb-3">
+        Both show on the attendance register. A joining date stops someone counting as absent
+        for the months before they started.
+      </p>
       <Field label="Account status">
         <button type="button" disabled={isSelf}
           onClick={() => setForm(f => ({ ...f, active: !f.active }))}
@@ -7692,7 +7713,278 @@ function AttendanceAmendForm({ record, person, onSave, onDelete }) {
   );
 }
 
+/* ------------------------------------------------------------------------
+   The month register: everyone down the side, the month across the top.
+
+   This is the sheet an office files — one page that says what the month
+   looked like. Every cell is worked out from the attendance records and the
+   approved leave, so nothing here is typed in twice and nothing can drift
+   from what people actually marked.
+   ------------------------------------------------------------------------ */
+function AttendanceRegisterTab({ data, currentUser, actions }) {
+  const today = localToday();
+  const [ym, setYm] = useState(today.slice(0, 7));
+  const [person, setPerson] = useState("All");
+  const [monthRecords, setMonthRecords] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [holidayFor, setHolidayFor] = useState(null);
+
+  const [year, month] = ym.split("-").map(Number);
+  const isAdmin = currentUser.role === "Admin";
+  const isFinance = isAdmin || currentUser.role === "Accounts";
+
+  /* Only an administrator or accounts sees the whole team; everyone else sees
+     their own line and nothing more. */
+  const everyone = (data.users || []).filter(u => u.active && !u.removed)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const allowed = isFinance ? everyone : everyone.filter(u => u.id === currentUser.id);
+  const users = person === "All" ? allowed : allowed.filter(u => u.id === person);
+
+  /* The workspace holds six weeks; a register of March has to go and get its
+     own month. Keyed on the month alone — anything else in the dependency
+     list re-fetches on every render of the page above. */
+  const load = useRef(actions.loadAttendanceRange);
+  load.current = actions.loadAttendanceRange;
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    const [y, m] = ym.split("-").map(Number);
+    const from = `${ym}-01`;
+    const to = `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+    load.current(from, to)
+      .then(rows => { if (live) setMonthRecords(rows); })
+      .catch(() => { if (live) setMonthRecords(null); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [ym]);
+
+  /* The fetched month is a snapshot. Anything the workspace has reloaded
+     since — a check-in a minute ago, a correction — wins over it, so the
+     current month doesn't go stale while you're looking at it. */
+  const fresh = (data.attendance || []).filter(r => (r.date || "").startsWith(ym));
+  const records = [
+    ...(monthRecords ?? []).filter(r => !fresh.some(f => f.id === r.id)),
+    ...fresh,
+  ];
+  const holidays = (data.holidays || []).filter(h => h.date.startsWith(ym));
+
+  const register = buildRegister({
+    users, records, leaves: data.leaveRequests || [],
+    year, month: month - 1, holidays, today,
+  });
+
+  const shiftMonth = (by) => {
+    const d = new Date(year, month - 1 + by, 1);
+    setYm(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
+
+  const selected = person === "All" ? null : allowed.find(u => u.id === person);
+  const theirRow = selected ? register.rows[0] : null;
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+        <div className="flex items-center gap-1 shrink-0">
+          <button onClick={() => shiftMonth(-1)} aria-label="Previous month"
+            className="p-2.5 rounded-lg border border-stone-300 text-stone-600 hover:bg-stone-50">
+            <ChevronLeft size={15} />
+          </button>
+          <input type="month" value={ym} onChange={e => setYm(e.target.value)}
+            className={`${inputCls} w-44`} />
+          <button onClick={() => shiftMonth(1)} aria-label="Next month"
+            className="p-2.5 rounded-lg border border-stone-300 text-stone-600 hover:bg-stone-50">
+            <ChevronRight size={15} />
+          </button>
+        </div>
+
+        {isFinance && (
+          <select value={person} onChange={e => setPerson(e.target.value)} className={`${inputCls} lg:w-56`}>
+            <option value="All">Everyone — {allowed.length} on the team</option>
+            {allowed.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        )}
+
+        <div className="flex-1" />
+
+        {loading && <span className="text-xs text-stone-400 shrink-0">Loading {monthName(month - 1)}…</span>}
+
+        {isFinance && (
+          <button onClick={() => exportRegisterExcel({
+            users, records, leaves: data.leaveRequests || [],
+            year, month: month - 1, holidays, today,
+            personName: selected?.name,
+          })}
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 shrink-0">
+            <FileSpreadsheet size={15} /> Export this sheet
+          </button>
+        )}
+      </div>
+
+      {/* The grid. Names stay put; the month scrolls under them. */}
+      <Card className="p-0 overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="border-collapse text-[11px] min-w-full">
+            <thead>
+              <tr>
+                <th className="sticky left-0 z-20 bg-white border-b border-r border-stone-200 px-3 py-1.5 text-left font-label uppercase tracking-wide text-[9px] text-stone-400 min-w-[190px]">
+                  {monthName(month - 1)} {year}
+                </th>
+                {register.days.map(d => (
+                  <th key={d.date}
+                    className={`border-b border-stone-200 w-7 py-1 text-center font-semibold ${
+                      d.type === "H" ? "bg-stone-100 text-stone-400" : "text-stone-600"}`}>
+                    {d.n}
+                  </th>
+                ))}
+                <th colSpan={4} className="border-b border-l border-stone-200 px-2 py-1 text-center font-label uppercase tracking-wide text-[9px] text-stone-400">
+                  This month
+                </th>
+              </tr>
+              <tr>
+                <th className="sticky left-0 z-20 bg-white border-b border-r border-stone-200 px-3 py-1 text-left text-[9px] font-normal text-stone-400">
+                  {isAdmin ? "Click a day to mark it a holiday" : "Type of day"}
+                </th>
+                {register.days.map(d => (
+                  <th key={d.date}
+                    onClick={isAdmin ? () => setHolidayFor(d) : undefined}
+                    title={d.holiday ? d.holiday.name : d.sunday ? "Weekly off" : isAdmin ? "Mark as a holiday" : ""}
+                    className={`border-b border-stone-200 py-1 text-center text-[9px] font-normal ${
+                      d.holiday ? "bg-violet-100 text-violet-700 font-semibold"
+                        : d.sunday ? "bg-stone-100 text-stone-400" : "text-stone-400"
+                    } ${isAdmin ? "cursor-pointer hover:bg-amber-50" : ""}`}>
+                    {d.dow[0]}
+                  </th>
+                ))}
+                {["P", "L", "A", "Worked"].map(h => (
+                  <th key={h} className="border-b border-l border-stone-200 px-1.5 py-1 text-center text-[9px] font-semibold text-stone-500">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {register.rows.map(row => (
+                <tr key={row.user.id} className="hover:bg-amber-50/30">
+                  <td className="sticky left-0 z-10 bg-white border-r border-b border-stone-100 px-3 py-1.5">
+                    <div className="font-semibold text-stone-800 text-xs whitespace-nowrap">{row.user.name}</div>
+                    <div className="text-[9px] text-stone-400 whitespace-nowrap">
+                      {row.user.empId ? `${row.user.empId} · ` : ""}{row.user.role}
+                    </div>
+                  </td>
+                  {row.cells.map(c => (
+                    <td key={c.day.date}
+                      title={`${row.user.name} — ${fmtDate(c.day.date)}: ${c.note || CODES[c.code].label}`}
+                      className={`border-b border-stone-100 text-center py-1.5 ${CODES[c.code].cell} ${
+                        CODES[c.code].strong ? "font-bold" : "font-semibold"}`}>
+                      {c.code}
+                    </td>
+                  ))}
+                  <td className="border-l border-b border-stone-100 text-center font-semibold text-stone-700">{row.summary.P}</td>
+                  <td className="border-b border-stone-100 text-center text-stone-600">{row.summary.L}</td>
+                  <td className={`border-b border-stone-100 text-center font-semibold ${row.summary.A ? "text-rose-700" : "text-stone-400"}`}>{row.summary.A}</td>
+                  <td className="border-b border-stone-100 text-center font-bold dia-text-bronze">{row.summary.worked}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {Object.entries(CODES).filter(([c]) => c !== "·").map(([code, spec]) => (
+          <span key={code} className="flex items-center gap-1.5 text-[11px] text-stone-500">
+            <span className={`w-6 h-5 rounded flex items-center justify-center font-bold text-[10px] ${spec.cell}`}>{code}</span>
+            {spec.label}
+          </span>
+        ))}
+      </div>
+
+      {/* One person chosen: the month in words, under the grid. */}
+      {theirRow && (
+        <div>
+          <div className="flex items-center gap-3 mb-3">
+            <span className="font-display text-base font-semibold text-stone-800">
+              {selected.name} — {monthName(month - 1)} day by day
+            </span>
+            <div className="flex-1 h-px bg-stone-200" />
+            <span className="text-[11px] text-stone-400">
+              {theirRow.summary.worked} day{theirRow.summary.worked === 1 ? "" : "s"} worked
+              {theirRow.summary.A ? ` · ${theirRow.summary.A} absent` : ""}
+            </span>
+          </div>
+          <Card className="divide-y divide-stone-100">
+            {theirRow.cells.filter(c => c.code !== "·").map(c => (
+              <div key={c.day.date} className="flex items-start gap-3 px-4 py-2.5">
+                <span className={`w-8 h-6 shrink-0 rounded flex items-center justify-center font-bold text-[10px] ${CODES[c.code].cell}`}>
+                  {c.code}
+                </span>
+                <span className="text-xs text-stone-500 w-28 shrink-0">{fmtDate(c.day.date)} · {c.day.dow}</span>
+                <div className="min-w-0 flex-1">
+                  {c.record ? (
+                    <>
+                      <div className="text-xs text-stone-700">
+                        In {clockTime(c.record.checkInAt)}
+                        {c.record.checkOutAt ? ` · out ${clockTime(c.record.checkOutAt)}` : " · never signed off"}
+                        {c.record.location ? ` · ${c.record.location}` : ""}
+                        {c.record.amendedAt ? " · amended" : ""}
+                      </div>
+                      {c.record.checkInNote && (
+                        <p className="text-[11px] text-stone-500 mt-0.5 line-clamp-2">{c.record.checkInNote}</p>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-xs text-stone-500">{c.note || CODES[c.code].label}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </Card>
+        </div>
+      )}
+
+      {holidayFor && (
+        <Modal title={`${fmtDate(holidayFor.date)} — ${holidayFor.dow}`} onClose={() => setHolidayFor(null)}>
+          <HolidayForm day={holidayFor}
+            onSave={async (name) => { await actions.setHoliday(holidayFor.date, name); setHolidayFor(null); }}
+            onRemove={async () => { await actions.removeHoliday(holidayFor.date); setHolidayFor(null); }} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function HolidayForm({ day, onSave, onRemove }) {
+  const [name, setName] = useState(day.holiday?.name || "");
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-stone-500">
+        A holiday shows as <span className="font-semibold">H</span> for everyone and stops the day
+        counting as an absence.
+      </p>
+      <Field label="What is the holiday?">
+        <input autoFocus className={inputCls} value={name} onChange={e => setName(e.target.value)}
+          placeholder="Deepavali, Pongal, Independence Day…" />
+      </Field>
+      <div className="flex gap-2">
+        <button disabled={!name.trim() || busy}
+          onClick={async () => { setBusy(true); try { await onSave(name.trim()); } finally { setBusy(false); } }}
+          className="dia-btn-gold flex-1 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+          {busy ? "Saving…" : day.holiday ? "Update" : "Mark as holiday"}
+        </button>
+        {day.holiday && (
+          <button disabled={busy}
+            onClick={async () => { setBusy(true); try { await onRemove(); } finally { setBusy(false); } }}
+            className="px-4 py-2.5 rounded-lg text-sm font-semibold border border-rose-200 text-rose-700 hover:bg-rose-50">
+            Remove
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AttendanceView({ data, currentUser, actions }) {
+  const [tab, setTab] = useState("today");
   const [showIn, setShowIn] = useState(false);
   const [showOut, setShowOut] = useState(false);
   const [amending, setAmending] = useState(null);
@@ -7724,6 +8016,21 @@ function AttendanceView({ data, currentUser, actions }) {
 
   return (
     <div className="p-4 sm:p-8 space-y-5">
+      <div className="flex gap-1 border-b border-stone-200">
+        {[["today", "Today"], ["register", "Month register"]].map(([k, label]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
+              tab === k ? "dia-border-gold dia-text-bronze" : "border-transparent text-stone-500 hover:text-stone-700"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "register" && (
+        <AttendanceRegisterTab data={data} currentUser={currentUser} actions={actions} />
+      )}
+
+      {tab === "today" && (<>
       {/* Your own state first: the thing you came here to do. */}
       <Card className="p-5">
         {!mine ? (
@@ -7881,6 +8188,7 @@ function AttendanceView({ data, currentUser, actions }) {
           </div>
         )}
       </div>
+      </>)}
 
       {showIn && (
         <Modal title="Mark Yourself Present" onClose={() => setShowIn(false)}>
@@ -9525,6 +9833,12 @@ export default function App() {
       throw err;
     }),
     deleteAttendance: (id) => dbDeleteAttendance(id).then(reload),
+    loadAttendanceRange: (from, to) => dbLoadAttendanceRange(from, to),
+    setHoliday: (date, name, office) => dbSetHoliday(date, name, office, profile?.id).then(reload).catch((err) => {
+      window.alert(`Couldn't save the holiday.\n\n${err.message || err}`);
+      throw err;
+    }),
+    removeHoliday: (date) => dbRemoveHoliday(date).then(reload),
     checkIn: (payload) => dbCheckIn(profile?.id, payload).then(reload).catch((err) => {
       window.alert(`Couldn't mark you present.\n\n${err.message || err}`);
       throw err;
