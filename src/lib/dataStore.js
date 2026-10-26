@@ -17,6 +17,7 @@ const mapUser = (r) => ({
   /* Both optional: the attendance register shows an employee code if one has
      been set, and never marks anyone absent before the day they joined. */
   empId: r.emp_id || "", joinedOn: r.joined_on || null,
+  whatsapp: r.whatsapp || "",
 });
 
 const mapProject = (r) => ({
@@ -229,7 +230,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, hiringRaw, advancesRaw, clientScopeRaw, attendanceRaw, holidaysRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, hiringRaw, advancesRaw, clientScopeRaw, attendanceRaw, holidaysRaw, reminderSettingsRaw, reminderLogRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -265,6 +266,11 @@ export async function fetchAllData() {
         .gte("date", new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10))
         .order("date", { ascending: false }),
       supabase.from("company_holidays").select("*").order("date"),
+      supabase.from("attendance_reminder_settings").select("*").eq("id", true).maybeSingle(),
+      // Admin-only at the RLS level; empty for everyone else.
+      supabase.from("attendance_reminder_log").select("*")
+        .gte("date", new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10))
+        .order("sent_at", { ascending: false }),
     ]);
 
   const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw };
@@ -302,6 +308,10 @@ export async function fetchAllData() {
   if (holidaysRaw.error) {
     // eslint-disable-next-line no-console
     console.warn("Holiday list unavailable:", holidaysRaw.error.message);
+  }
+  if (reminderSettingsRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("Reminder settings unavailable:", reminderSettingsRaw.error.message);
   }
   if (officeExpensesRaw.error) {
     // eslint-disable-next-line no-console
@@ -341,6 +351,18 @@ export async function fetchAllData() {
     holidays: (holidaysRaw.data || []).map((h) => ({
       date: h.date, name: h.name, office: h.office || null,
     })),
+    reminderSettings: reminderSettingsRaw.data ? {
+      enabled: !!reminderSettingsRaw.data.enabled,
+      sendAt: (reminderSettingsRaw.data.send_at || "10:15").slice(0, 5),
+      saturdaysOff: reminderSettingsRaw.data.saturdays_off || [2, 4],
+      message: reminderSettingsRaw.data.message || "",
+      templateName: reminderSettingsRaw.data.template_name || "attendance_reminder",
+      templateLang: reminderSettingsRaw.data.template_lang || "en",
+    } : null,
+    reminderLog: (reminderLogRaw.data || []).map((r) => ({
+      id: r.id, date: r.date, userId: r.user_id, channel: r.channel,
+      status: r.status, detail: r.detail || "", sentAt: r.sent_at,
+    })),
     clientScope: (clientScopeRaw.data || []).map(mapClientScopeItem),
     leaveRequests: (leaveRaw.data || []).map(mapLeaveRequest),
     hiringPosts: (hiringRaw.data || []).map(mapHiringPost),
@@ -361,6 +383,7 @@ export async function dbUpdateProfile(userId, updates) {
   if (updates.active !== undefined) payload.active = updates.active;
   if (updates.empId !== undefined) payload.emp_id = updates.empId || null;
   if (updates.joinedOn !== undefined) payload.joined_on = updates.joinedOn || null;
+  if (updates.whatsapp !== undefined) payload.whatsapp = updates.whatsapp || null;
   const { error } = await supabase.from("profiles").update(payload).eq("id", userId);
   if (error) throw error;
 }
@@ -989,6 +1012,32 @@ export async function dbSetHoliday(date, name, office, createdBy) {
 export async function dbRemoveHoliday(date) {
   const { error } = await supabase.from("company_holidays").delete().eq("date", date);
   if (error) throw error;
+}
+
+/* ---- attendance reminders ------------------------------------------------ */
+
+export async function dbSaveReminderSettings(patch, updatedBy) {
+  const payload = { updated_by: updatedBy, updated_at: new Date().toISOString() };
+  if (patch.enabled !== undefined) payload.enabled = patch.enabled;
+  if (patch.sendAt !== undefined) payload.send_at = patch.sendAt;
+  if (patch.saturdaysOff !== undefined) payload.saturdays_off = patch.saturdaysOff;
+  if (patch.message !== undefined) payload.message = patch.message;
+  if (patch.templateName !== undefined) payload.template_name = patch.templateName;
+  if (patch.templateLang !== undefined) payload.template_lang = patch.templateLang;
+  const { error } = await supabase.from("attendance_reminder_settings").update(payload).eq("id", true);
+  if (error) throw error;
+}
+
+/* Runs the sender by hand. "test" sends one message to the admin who asked;
+   "run_now" does a real round regardless of the clock, for the day somebody
+   needs chasing early. */
+export async function dbRunReminders(action = "test") {
+  const { data, error } = await supabase.functions.invoke("attendance-reminder", {
+    body: { action },
+  });
+  if (error) throw error;
+  if (!data?.ok) throw new Error(data?.error || "The reminder run failed.");
+  return data;
 }
 
 export const attendanceToday = todayISO;

@@ -37,6 +37,7 @@ import {
   dbAddOfficeExpense, dbApproveOfficeExpense, dbRejectOfficeExpense, dbMarkOfficeExpensePaid, dbDeleteOfficeExpense,
   dbCheckIn, dbCheckOut, uploadAttendancePhoto, dbAmendAttendance, dbDeleteAttendance,
   dbLoadAttendanceRange, dbSetHoliday, dbRemoveHoliday,
+  dbSaveReminderSettings, dbRunReminders,
   dbAddClientScopeItem, dbUpdateClientScopeItem, dbDeleteClientScopeItem, dbMarkClientScopeReminded,
   dbAddLeaveRequest, dbDecideLeaveRequest, dbDeleteLeaveRequest,
   dbAddHiringPost, dbUpdateHiringPost, dbDeleteHiringPost,
@@ -3242,6 +3243,14 @@ function VendorForm({ vendor, onSave, onDelete }) {
       <div className="grid sm:grid-cols-2 gap-x-4">
         <Field label="Phone"><input className={inputCls} value={form.phone} onChange={set("phone")} /></Field>
         <Field label="Email"><input type="email" className={inputCls} value={form.email} onChange={set("email")} /></Field>
+      <Field label="WhatsApp number">
+        <input type="tel" className={inputCls} value={form.whatsapp} onChange={set("whatsapp")}
+          placeholder="98765 43210" />
+      </Field>
+      <p className="text-[11px] text-stone-400 -mt-2 mb-3">
+        Where the daily attendance reminder goes. An Indian mobile is enough — the country code is
+        added for you. Leave it blank and this person simply isn't reminded.
+      </p>
       </div>
       <div className="pt-1 pb-2 text-xs font-semibold text-stone-500 uppercase tracking-wide">Bank details</div>
       <Field label="Account holder name"><input className={inputCls} value={form.bankAccountName} onChange={set("bankAccountName")} /></Field>
@@ -5529,6 +5538,7 @@ function EditUserModal({ user, isSelf, onClose, onSave, onRemove, onResetPasswor
   const [form, setForm] = useState({
     name: user.name, email: user.email, role: user.role, rank: user.rank || ARCHITECT_RANKS[2],
     active: user.active !== false, empId: user.empId || "", joinedOn: user.joinedOn || "",
+    whatsapp: user.whatsapp || "",
   });
   const [error, setError] = useState("");
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -5540,6 +5550,7 @@ function EditUserModal({ user, isSelf, onClose, onSave, onRemove, onResetPasswor
       name: form.name.trim(), email: form.email.trim(), role: form.role, active: form.active,
       rank: form.role === "Architect" ? form.rank : null,
       empId: form.empId.trim(), joinedOn: form.joinedOn || null,
+      whatsapp: form.whatsapp.trim(),
     });
   };
 
@@ -7714,6 +7725,236 @@ function AttendanceAmendForm({ record, person, onSave, onDelete }) {
 }
 
 /* ------------------------------------------------------------------------
+   Daily attendance reminders.
+
+   The office keeps forgetting to mark in, so the portal chases them. The
+   sending happens on the server to a schedule; this screen is where the
+   rules are set and where you can see what actually went out — including
+   the failures, which are the whole reason the log exists.
+   ------------------------------------------------------------------------ */
+
+/* Meta wants digits with a country code. People type numbers every which
+   way, so the number is cleaned here and on the server, the same way. */
+function waNumber(raw) {
+  const d = String(raw || "").replace(/\D/g, "");
+  if (d.length === 10) return `91${d}`;
+  if (d.length === 12 && d.startsWith("91")) return d;
+  if (d.length === 11 && d.startsWith("0")) return `91${d.slice(1)}`;
+  if (d.length > 12) return d;
+  return null;
+}
+
+const NTH = ["1st", "2nd", "3rd", "4th", "5th"];
+
+function AttendanceRemindersTab({ data, currentUser, actions }) {
+  const settings = data.reminderSettings;
+  const [form, setForm] = useState(() => settings || {
+    enabled: false, sendAt: "10:15", saturdaysOff: [2, 4], message: "",
+    templateName: "attendance_reminder", templateLang: "en",
+  });
+  const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState("");
+  const [result, setResult] = useState(null);
+
+  const today = localToday();
+  const users = (data.users || []).filter(u => u.active && !u.removed)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const markedToday = new Set((data.attendance || []).filter(r => r.date === today).map(r => r.userId));
+  const onLeave = new Set((data.leaveRequests || [])
+    .filter(l => l.status === "Approved" && l.kind === "Leave"
+      && today >= l.fromDate && today <= (l.toDate || l.fromDate))
+    .map(l => l.userId));
+
+  const missing = users.filter(u => !markedToday.has(u.id) && !onLeave.has(u.id));
+  const withoutNumber = users.filter(u => !waNumber(u.whatsapp));
+  const log = (data.reminderLog || []).slice(0, 40);
+  const userName = (id) => (data.users || []).find(u => u.id === id)?.name || "—";
+
+  const dirty = settings && JSON.stringify(form) !== JSON.stringify(settings);
+
+  const run = async (action) => {
+    setRunning(action); setResult(null);
+    try {
+      setResult({ ok: true, ...(await actions.runReminders(action)) });
+    } catch (err) {
+      setResult({ ok: false, error: err.message || String(err) });
+    }
+    setRunning("");
+  };
+
+  const toggleSaturday = (n) => setForm(f => ({
+    ...f,
+    saturdaysOff: f.saturdaysOff.includes(n)
+      ? f.saturdaysOff.filter(x => x !== n)
+      : [...f.saturdaysOff, n].sort((a, b) => a - b),
+  }));
+
+  if (!settings) {
+    return (
+      <Card className="p-8 text-center">
+        <p className="text-sm text-stone-500">
+          Reminder settings aren't set up on this database yet.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <Card className="p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+          <div className="min-w-0 flex-1">
+            <h3 className="font-display text-lg font-semibold text-stone-900">
+              Daily WhatsApp reminder
+            </h3>
+            <p className="text-sm text-stone-500 mt-1">
+              Sent only to people who haven't marked in — never on a Sunday, a closed Saturday,
+              a company holiday, or to someone on approved leave.
+            </p>
+          </div>
+          <button type="button" onClick={() => setForm(f => ({ ...f, enabled: !f.enabled }))}
+            className={`px-4 py-2.5 rounded-lg text-sm font-semibold border shrink-0 ${
+              form.enabled ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                : "bg-stone-50 text-stone-500 border-stone-200"}`}>
+            {form.enabled ? "On" : "Off"}
+          </button>
+        </div>
+
+        <div className="grid sm:grid-cols-2 gap-4">
+          <Field label="Send at">
+            <input type="time" className={inputCls} value={form.sendAt}
+              onChange={e => setForm(f => ({ ...f, sendAt: e.target.value }))} />
+          </Field>
+          <Field label="Saturdays the office is closed">
+            <div className="flex gap-1.5">
+              {[1, 2, 3, 4, 5].map(n => (
+                <button key={n} type="button" onClick={() => toggleSaturday(n)}
+                  className={`flex-1 py-2.5 rounded-lg text-xs font-semibold border transition-colors ${
+                    form.saturdaysOff.includes(n)
+                      ? "dia-btn-gold dia-border-gold"
+                      : "border-stone-300 text-stone-500 hover:bg-stone-50"}`}>
+                  {NTH[n - 1]}
+                </button>
+              ))}
+            </div>
+          </Field>
+        </div>
+
+        <Field label="What the message says">
+          <textarea rows={3} className={inputCls} value={form.message}
+            onChange={e => setForm(f => ({ ...f, message: e.target.value }))} />
+        </Field>
+        <p className="text-[11px] text-stone-400 -mt-2">
+          <code>{"{{name}}"}</code> becomes their first name. WhatsApp only delivers wording Meta has
+          approved, so this has to match the approved template — change it here and in Meta together.
+        </p>
+
+        <div className="flex flex-wrap gap-2 pt-1">
+          <button disabled={!dirty || saving}
+            onClick={async () => { setSaving(true); try { await actions.saveReminderSettings(form); } finally { setSaving(false); } }}
+            className="dia-btn-gold px-5 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-40">
+            {saving ? "Saving…" : dirty ? "Save changes" : "Saved"}
+          </button>
+          <button disabled={!!running} onClick={() => run("test")}
+            className="px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40">
+            {running === "test" ? "Sending…" : "Send a test to me"}
+          </button>
+          <button disabled={!!running} onClick={() => run("run_now")}
+            className="px-4 py-2.5 rounded-lg text-sm font-semibold border border-stone-300 text-stone-700 hover:bg-stone-50 disabled:opacity-40">
+            {running === "run_now" ? "Sending…" : "Send today's round now"}
+          </button>
+        </div>
+
+        {result && (
+          <div className={`text-xs rounded-lg px-3 py-2.5 ${
+            result.ok ? "bg-emerald-50 text-emerald-800" : "bg-rose-50 text-rose-700"}`}>
+            {result.ok
+              ? result.skipped
+                ? `Nothing sent — ${result.skipped}`
+                : result.detail || `Sent ${result.sent}${result.failed ? `, ${result.failed} failed` : ""}.`
+              : result.error}
+          </div>
+        )}
+      </Card>
+
+      {withoutNumber.length > 0 && (
+        <Card className="p-4">
+          <p className="text-xs font-semibold text-amber-700 mb-2">
+            {withoutNumber.length} {withoutNumber.length === 1 ? "person has" : "people have"} no WhatsApp number — they can't be reminded
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {withoutNumber.map(u => (
+              <span key={u.id} className="text-xs px-3 py-1.5 rounded-lg bg-amber-50 text-amber-800">{u.name}</span>
+            ))}
+          </div>
+          <p className="text-[11px] text-stone-400 mt-2">Add numbers under Team — the pencil on each person.</p>
+        </Card>
+      )}
+
+      {/* Works today, with or without Meta: tap and send it yourself. */}
+      <div>
+        <div className="flex items-center gap-3 mb-3">
+          <span className="font-display text-base font-semibold text-stone-800">
+            Not marked in yet — {fmtDate(today)}
+          </span>
+          <div className="flex-1 h-px bg-stone-200" />
+          <span className="text-[11px] text-stone-400">{missing.length} of {users.length}</span>
+        </div>
+        {missing.length === 0 ? (
+          <Card className="p-8 text-center">
+            <p className="text-sm text-stone-400">Everyone is accounted for.</p>
+          </Card>
+        ) : (
+          <Card className="divide-y divide-stone-100">
+            {missing.map(u => {
+              const num = waNumber(u.whatsapp);
+              const text = encodeURIComponent((form.message || "").replace(/\{\{name\}\}/g, u.name.split(" ")[0]));
+              return (
+                <div key={u.id} className="flex items-center gap-3 px-4 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-stone-800">{u.name}</div>
+                    <div className="text-[11px] text-stone-400">{u.role}{num ? ` · +${num}` : " · no number"}</div>
+                  </div>
+                  {num && (
+                    <a href={`https://wa.me/${num}?text=${text}`} target="_blank" rel="noreferrer"
+                      className="text-xs font-semibold dia-text-bronze shrink-0">Message now</a>
+                  )}
+                </div>
+              );
+            })}
+          </Card>
+        )}
+      </div>
+
+      {log.length > 0 && (
+        <div>
+          <div className="flex items-center gap-3 mb-3">
+            <span className="font-display text-base font-semibold text-stone-800">What has gone out</span>
+            <div className="flex-1 h-px bg-stone-200" />
+            <span className="text-[11px] text-stone-400">last two weeks</span>
+          </div>
+          <Card className="divide-y divide-stone-100">
+            {log.map(r => (
+              <div key={r.id} className="flex items-start gap-3 px-4 py-2">
+                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${
+                  r.status === "sent" ? "bg-emerald-50 text-emerald-700"
+                    : r.status === "failed" ? "bg-rose-50 text-rose-700"
+                      : "bg-stone-100 text-stone-500"}`}>
+                  {r.status}
+                </span>
+                <span className="text-xs text-stone-500 w-24 shrink-0">{fmtDate(r.date)}</span>
+                <span className="text-xs font-semibold text-stone-700 w-36 shrink-0 truncate">{userName(r.userId)}</span>
+                {r.status === "failed" && <span className="text-[11px] text-rose-600 min-w-0 flex-1">{r.detail}</span>}
+              </div>
+            ))}
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------------
    The month register: everyone down the side, the month across the top.
 
    This is the sheet an office files — one page that says what the month
@@ -8017,7 +8258,8 @@ function AttendanceView({ data, currentUser, actions }) {
   return (
     <div className="p-4 sm:p-8 space-y-5">
       <div className="flex gap-1 border-b border-stone-200">
-        {[["today", "Today"], ["register", "Month register"]].map(([k, label]) => (
+        {[["today", "Today"], ["register", "Month register"],
+          ...(currentUser.role === "Admin" ? [["reminders", "Reminders"]] : [])].map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
               tab === k ? "dia-border-gold dia-text-bronze" : "border-transparent text-stone-500 hover:text-stone-700"}`}>
@@ -8028,6 +8270,10 @@ function AttendanceView({ data, currentUser, actions }) {
 
       {tab === "register" && (
         <AttendanceRegisterTab data={data} currentUser={currentUser} actions={actions} />
+      )}
+
+      {tab === "reminders" && currentUser.role === "Admin" && (
+        <AttendanceRemindersTab data={data} currentUser={currentUser} actions={actions} />
       )}
 
       {tab === "today" && (<>
@@ -9839,6 +10085,11 @@ export default function App() {
       throw err;
     }),
     removeHoliday: (date) => dbRemoveHoliday(date).then(reload),
+    saveReminderSettings: (patch) => dbSaveReminderSettings(patch, profile?.id).then(reload).catch((err) => {
+      window.alert(`Couldn't save that.\n\n${err.message || err}`);
+      throw err;
+    }),
+    runReminders: (action) => dbRunReminders(action).then(async (r) => { await reload(); return r; }),
     checkIn: (payload) => dbCheckIn(profile?.id, payload).then(reload).catch((err) => {
       window.alert(`Couldn't mark you present.\n\n${err.message || err}`);
       throw err;
