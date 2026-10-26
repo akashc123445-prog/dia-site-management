@@ -10,14 +10,49 @@ roughly **₹0.12 a message** — about **₹40–50 a month** for 15 staff.
 
 ---
 
-## 1. A phone number for the robot
+## 1. The phone number
 
-You need a number that is **not** currently used on the normal WhatsApp app.
-A new SIM is the usual answer. If you point an existing business number at the
-API, it stops working as a normal WhatsApp account — don't use the number
-people already message you on.
+A number can be on **either** the WhatsApp app **or** the Cloud API — never
+both. So there are two routes, and the right one depends on whether people
+message that number.
 
-The number only ever sends; nobody needs to answer it.
+### Route A — a fresh SIM (simplest)
+
+Buy a prepaid SIM, never put it in a phone, register it on the API. Your
+existing numbers are untouched. The staff still see the sender as
+"DIA Retail Solutions" — the display name is set in Meta, not by the number.
+
+### Route B — move your existing number
+
+Only do this if nobody needs to *receive* on it. Once migrated:
+
+- The number can't be opened in WhatsApp or WhatsApp Business on any phone.
+- **The chat history on it is lost.** Back it up first if you want a copy, but
+  the backup does not come across to the API side.
+- Incoming messages go to the API, and the portal has no inbox — it only
+  sends. Anyone who replies to a reminder is replying into silence.
+
+To migrate ([Meta's instructions](https://developers.facebook.com/docs/whatsapp/cloud-api/get-started/migrate-existing-whatsapp-number-to-a-business-account/)):
+
+1. If two-step verification is on for that number, turn it off first
+   (Settings → Account → Two-step verification). It can otherwise block
+   re-registration.
+2. Back up the chat history if you want to keep a copy.
+3. In WhatsApp or WhatsApp Business: **Settings → Account → Delete my account**.
+   Messages sent to the number queue up meanwhile.
+4. Wait about three minutes for the number to be released.
+5. Register it in the Cloud API as in step 2 below.
+
+To undo it later you deregister from the Cloud API and set the number up in
+the app again — but the history from before is still gone.
+
+### Route C — a partner, if you want to keep the number *and* the app
+
+A BSP (AiSensy, Interakt, Wati, Gupshup are the common Indian ones) can onboard
+your existing number without deleting it: the chat history survives and you can
+keep using the WhatsApp Business app alongside their inbox. They charge a
+monthly fee on top of Meta's per-message cost, and the portal's sender would
+need pointing at their API instead of Meta's — a small change, ask for it.
 
 ## 2. Meta Business setup
 
