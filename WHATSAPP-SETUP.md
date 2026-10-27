@@ -112,16 +112,27 @@ These live on the server. They are never sent to anyone's browser.
 
 ## 5. Start the daily schedule
 
-Open **Supabase → SQL Editor** and run the second half of
-`supabase/migrations/2026-10-26-attendance-reminders.sql`, replacing
-`PASTE_SERVICE_ROLE_KEY_HERE` with the **service_role** key from
-Project Settings → API Keys.
+The job is already scheduled and running every ten minutes. It just needs the
+key it calls with, which is yours to store and never mine to see.
 
-That key is full access to your database. Paste it into the SQL editor, run it,
-and don't leave a filled-in copy lying in a file or a chat.
+Open **Supabase → SQL Editor**, and run this one line with your **service_role**
+key from Project Settings → API Keys pasted in:
 
-The tables and the extensions are already in place — only the `cron.schedule`
-block at the bottom still needs running.
+```sql
+select vault.create_secret('PASTE_SERVICE_ROLE_KEY_HERE', 'reminder_service_key');
+```
+
+The key is encrypted at rest in Supabase's vault — it isn't sitting in the job
+definition where anyone browsing the database would read it. Paste it, run it,
+and don't keep a filled-in copy of that line anywhere.
+
+To change it later:
+
+```sql
+select vault.update_secret(
+  (select id from vault.secrets where name = 'reminder_service_key'),
+  'NEW_KEY_HERE');
+```
 
 ## 6. Switch it on and test
 

@@ -68,12 +68,13 @@ create policy arl_select on public.attendance_reminder_log
 
 -- ---- part 2: the daily schedule --------------------------------------------
 --
--- Run this only after the edge function is deployed.
+-- Already applied: pg_cron and pg_net are enabled and the job below is
+-- scheduled and active. Kept here as the record of what was run.
 --
--- Replace PASTE_SERVICE_ROLE_KEY_HERE with the service_role key from
---   Supabase → Project Settings → API Keys.
--- That key is a full-access credential: paste it into the SQL Editor, run it,
--- and do not keep the filled-in version anywhere.
+-- The only thing left is the key the job calls with, which is stored in the
+-- vault rather than in the job definition:
+--
+--   select vault.create_secret('PASTE_SERVICE_ROLE_KEY_HERE', 'reminder_service_key');
 --
 -- The job runs every ten minutes and the function itself decides whether it
 -- is the right time, so the send time can be changed in the portal without
@@ -82,22 +83,20 @@ create policy arl_select on public.attendance_reminder_log
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
-select cron.unschedule('attendance-reminder')
-  where exists (select 1 from cron.job where jobname = 'attendance-reminder');
-
 select cron.schedule(
   'attendance-reminder',
   '*/10 * * * *',
-  $$
+  $job$
   select net.http_post(
     url     := 'https://zewbcjwelnutbjetiahp.supabase.co/functions/v1/attendance-reminder',
     headers := jsonb_build_object(
       'Content-Type',  'application/json',
-      'Authorization', 'Bearer PASTE_SERVICE_ROLE_KEY_HERE'
+      'Authorization', 'Bearer ' || coalesce(
+        (select decrypted_secret from vault.decrypted_secrets where name = 'reminder_service_key'), '')
     ),
     body    := jsonb_build_object('action', 'run')
   );
-  $$
+  $job$
 );
 
 -- To check it afterwards:
