@@ -97,7 +97,7 @@
     position:fixed; inset:0; z-index:9999;
     background:var(--maroon);
     display:flex; align-items:center; justify-content:center;
-    transition:opacity .9s var(--ease) .35s, visibility .9s var(--ease) .35s;
+    transition:opacity 1.1s var(--ease) .65s, visibility 1.1s var(--ease) .65s;
   }
   .preloader.done{ opacity:0; visibility:hidden; pointer-events:none; }
   .preloader-inner{
@@ -120,7 +120,7 @@
     position:absolute;
     inset:0;
     transform-style:preserve-3d;
-    animation:tunnelIn 1.25s var(--ease) both;
+    animation:tunnelIn 2.1s var(--ease) both;
   }
   .pre-layer{
     position:absolute;
@@ -132,8 +132,8 @@
     transform:translateZ(calc(var(--i) * -46px));
     /* The near faces burn bright; the depths fall away to a warm ember. */
     opacity:calc(1 - var(--i) * 0.062);
-    animation:layerIn .9s var(--ease) both;
-    animation-delay:calc(var(--i) * 45ms);
+    animation:layerIn 1.2s var(--ease) both;
+    animation-delay:calc(var(--i) * 80ms);
   }
   /* Only the front faces carry the expensive glow — fourteen glowing
      layers is a lot of work for a phone, and the ones behind are too
@@ -168,7 +168,7 @@
     transform:translateZ(620px) scale(1.25);
     opacity:0;
     filter:blur(26px);
-    transition:transform 1.15s cubic-bezier(.5,0,.75,0), opacity .95s ease-in .2s, filter 1.15s ease-in;
+    transition:transform 1.7s cubic-bezier(.5,0,.75,0), opacity 1.35s ease-in .35s, filter 1.7s ease-in;
   }
   .preloader.done .preloader-line{
     opacity:0;
@@ -187,10 +187,10 @@
   }
   @keyframes preloaderBar{ to{ width:100%; } }
   /* Second time around in the same session. */
-  html.intro-seen .pre-tunnel{ animation-duration:.5s; }
-  html.intro-seen .pre-layer{ animation-duration:.35s; animation-delay:calc(var(--i) * 14ms); }
+  html.intro-seen .pre-tunnel{ animation-duration:.85s; }
+  html.intro-seen .pre-layer{ animation-duration:.6s; animation-delay:calc(var(--i) * 26ms); }
   html.intro-seen .preloader.done .pre-tunnel{
-    transition:transform .6s cubic-bezier(.5,0,.75,0), opacity .45s ease-in .05s, filter .6s ease-in;
+    transition:transform .95s cubic-bezier(.5,0,.75,0), opacity .75s ease-in .1s, filter .95s ease-in;
   }
 
   @media (max-width:700px){
@@ -1814,7 +1814,7 @@
     try { sessionStorage.setItem('dia-intro', '1'); } catch (e) { /* ignore */ }
     if(seen) document.documentElement.classList.add('intro-seen');
 
-    const minTime = reduced ? 150 : (seen ? 700 : 1900);
+    const minTime = reduced ? 150 : (seen ? 1100 : 3400);
     const startedAt = performance.now();
     let revealed = false;
 
@@ -1824,7 +1824,7 @@
       preloader.classList.add('done');
       htmlEl.classList.remove('is-loading');
       heroContent.classList.add('hero-in');
-      setTimeout(()=>{ preloader.remove(); }, reduced ? 300 : (seen ? 700 : 1400));
+      setTimeout(()=>{ preloader.remove(); }, reduced ? 300 : (seen ? 1100 : 2000));
     }
 
     function onReady(){
