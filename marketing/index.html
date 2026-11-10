@@ -31,11 +31,19 @@
     --gold-light:#E4C892;
     --cream:#F4E9D8;
     --ivory:#FBF6EC;
-    --ink:#241811;
-    --ink-soft:#5A4A3D;
+    --ink:#F6EDDF;
+    --ink-soft:rgba(246,237,223,0.70);
     --taupe:#CBB79A;
-    --line:rgba(36,24,17,0.12);
-    --shadow: 0 30px 60px -20px rgba(36,18,12,0.35);
+    /* The page is dark now: ink is what sits ON the maroon, not under it.
+       --cream and --ivory stay the light tones they always were, because
+       they are still the text. */
+    --line:rgba(246,237,223,0.14);
+    --shadow: 0 30px 60px -20px rgba(12,4,6,0.6);
+    --bg:#2A0E13;
+    --surface-1:#33121A;
+    --surface-2:#3B141C;
+    --panel:rgba(246,237,223,0.04);
+    --panel-hover:rgba(246,237,223,0.075);
     --ease: cubic-bezier(.22,.61,.25,1);
   }
 
@@ -43,7 +51,7 @@
   html{scroll-behavior:smooth;}
   body{
     font-family:'Manrope',sans-serif;
-    background:var(--cream);
+    background:var(--bg);
     color:var(--ink);
     overflow-x:hidden;
     -webkit-font-smoothing:antialiased;
@@ -207,8 +215,8 @@
   }
   header.nav.solid{
     padding:16px 48px;
-    background:rgba(251,246,236,0.92);
-    backdrop-filter:blur(10px);
+    background:rgba(42,14,19,0.88);
+    backdrop-filter:blur(12px);
     box-shadow:0 1px 0 var(--line);
   }
   .logo{
@@ -226,8 +234,6 @@
     transition:opacity .45s var(--ease);
   }
   .logo .logo-dark{ opacity:0; }
-  header.nav.solid .logo .logo-light{ opacity:0; }
-  header.nav.solid .logo .logo-dark{ opacity:1; }
   header.nav.solid .logo{ height:42px; }
 
   nav.links{
@@ -247,7 +253,7 @@
     transition:color .45s var(--ease);
   }
   nav.links a:last-child{ margin-right:0; }
-  header.nav.solid nav.links a{ color:var(--ink); }
+  header.nav.solid nav.links a{ color:var(--ivory); }
   nav.links a::after{
     content:"";
     position:absolute;
@@ -269,7 +275,7 @@
     border-radius:2px;
     transition:all .35s var(--ease);
   }
-  header.nav.solid .nav-cta{ color:var(--maroon); border-color:var(--maroon); }
+  header.nav.solid .nav-cta{ color:var(--ivory); border-color:var(--gold-light); }
   .nav-cta:hover{ background:var(--gold); border-color:var(--gold); color:var(--maroon) !important; }
 
   .nav-staff{
@@ -284,8 +290,8 @@
     transition:color .35s var(--ease);
   }
   .nav-staff:hover{ color:var(--gold-light); }
-  header.nav.solid .nav-staff{ color:var(--ink-soft); }
-  header.nav.solid .nav-staff:hover{ color:var(--maroon); }
+  header.nav.solid .nav-staff{ color:rgba(246,237,223,0.78); }
+  header.nav.solid .nav-staff:hover{ color:var(--gold-light); }
   .mobile-menu-staff{
     display:inline-flex;
     align-items:center;
@@ -317,7 +323,7 @@
       background:var(--ivory);
       transition:background .35s var(--ease), transform .35s var(--ease), opacity .25s var(--ease);
     }
-    header.nav.solid .burger span{ background:var(--maroon); }
+    header.nav.solid .burger span{ background:var(--ivory); }
     .burger.open span{ background:var(--ivory) !important; }
     .burger.open span:nth-child(1){ transform:translateY(7px) rotate(45deg); }
     .burger.open span:nth-child(2){ opacity:0; }
@@ -430,7 +436,9 @@
     font-family:'Trajan Pro',serif;
     font-weight:400;
     color:var(--ivory);
-    font-size:clamp(40px, 6.4vw, 92px);
+    /* The vh term only bites below roughly 900px of window height — on a
+       normal screen this is the size it always was. */
+    font-size:clamp(40px, min(6.4vw, 10.2vh), 92px);
     line-height:1.03;
     letter-spacing:-0.01em;
     max-width:920px;
@@ -501,8 +509,10 @@
     color:var(--ivory);
   }
   .btn-outline:hover{border-color:var(--gold-light); color:var(--gold-light); transform:translateY(-2px);}
-  .btn-outline.dark{ border-color:rgba(36,24,17,0.35); color:var(--ink); }
-  .btn-outline.dark:hover{ border-color:var(--maroon); color:var(--maroon); }
+  /* ".dark" meant "sitting on a light band". There are none left, so it
+     behaves like the ordinary outline rather than disappearing. */
+  .btn-outline.dark{ border-color:rgba(246,237,223,0.4); color:var(--ivory); }
+  .btn-outline.dark:hover{ border-color:var(--gold-light); color:var(--gold-light); }
 
   .scroll-cue{
     position:absolute;
@@ -587,7 +597,7 @@
     font-weight:400;
     font-size:clamp(32px,4.2vw,56px);
     line-height:1.08;
-    color:var(--maroon);
+    color:var(--ivory);
     margin-top:18px;
   }
   p.body-lg{
@@ -652,7 +662,7 @@
   }
 
   /* ---------- Services ---------- */
-  .services{ background:var(--ivory); }
+  .services{ background:var(--surface-1); }
   .service-grid{
     margin-top:64px;
     display:grid;
@@ -664,14 +674,16 @@
   @media (max-width:900px){ .service-grid{grid-template-columns:repeat(2,1fr);} }
   @media (max-width:560px){ .service-grid{grid-template-columns:1fr;} }
   .service-card{
-    background:var(--ivory);
+    background:var(--panel);
+    border:1px solid var(--line);
     padding:44px 32px;
-    transition:background .4s var(--ease);
+    transition:background .4s var(--ease), border-color .4s var(--ease);
   }
-  .service-card:hover{ background:var(--cream); }
+  .service-card:hover{ border-color:rgba(228,200,146,0.38); }
+  .service-card:hover{ background:var(--panel-hover); }
   .service-card .icon{
     width:46px;height:46px;
-    color:var(--maroon);
+    color:var(--gold-light);
     margin-bottom:26px;
   }
   .service-card .icon svg{ width:100%; height:100%; }
@@ -679,7 +691,7 @@
     font-family:'Trajan Pro',serif;
     font-weight:500;
     font-size:20px;
-    color:var(--maroon);
+    color:var(--ivory);
     margin-bottom:12px;
   }
   .service-card p{
@@ -689,7 +701,7 @@
   }
 
   /* ---------- Footprint ---------- */
-  .footprint{ background:var(--cream); }
+  .footprint{ background:transparent; }
   .state-list{
     margin-top:30px;
     display:flex;
@@ -699,7 +711,7 @@
   .state-pill{
     display:flex; align-items:center; gap:8px;
     padding:9px 16px 9px 12px;
-    border:1px solid var(--taupe);
+    border:1px solid var(--line);
     border-radius:20px;
     font-size:12px;
     letter-spacing:0.04em;
@@ -716,7 +728,7 @@
     color:var(--ink-soft);
     letter-spacing:0.03em;
   }
-  .hq-line strong{ color:var(--maroon); font-weight:700; }
+  .hq-line strong{ color:var(--gold-light); font-weight:700; }
 
   /* ---------- Portfolio ---------- */
   .portfolio{ background:var(--maroon); color:var(--ivory); }
@@ -785,7 +797,7 @@
   .proj-card:hover::after{ border-color:rgba(228,200,146,0.5); }
 
   /* ---------- Process ---------- */
-  .process{ background:var(--ivory); }
+  .process{ background:var(--surface-1); }
   .process-rail{
     margin-top:70px;
     display:grid;
@@ -798,7 +810,7 @@
     position:absolute;
     top:26px; left:6%; right:6%;
     height:1px;
-    background:repeating-linear-gradient(to right, var(--taupe) 0 8px, transparent 8px 16px);
+    background:repeating-linear-gradient(to right, rgba(246,237,223,0.22) 0 8px, transparent 8px 16px);
   }
   @media (max-width:860px){
     .process-rail{ grid-template-columns:1fr; gap:44px; }
@@ -808,9 +820,9 @@
   .p-step .p-num{
     width:52px;height:52px;
     border-radius:50%;
-    background:var(--ivory);
-    border:1.5px solid var(--maroon);
-    color:var(--maroon);
+    background:var(--surface-2);
+    border:1.5px solid var(--gold);
+    color:var(--gold-light);
     display:flex; align-items:center; justify-content:center;
     font-family:'Trajan Pro',serif;
     font-size:18px;
@@ -821,7 +833,7 @@
     font-family:'Trajan Pro',serif;
     font-weight:500;
     font-size:20px;
-    color:var(--maroon);
+    color:var(--ivory);
     margin-top:24px;
   }
   .p-step p{
@@ -887,7 +899,7 @@
   }
 
   /* ---------- Clients ---------- */
-  .clients{ background:var(--cream); text-align:center; }
+  .clients{ background:transparent; text-align:center; }
   .clients .eyebrow{ justify-content:center; }
   .clients .eyebrow::before{ display:none; }
   .clients h2.h-serif{ max-width:680px; margin-left:auto; margin-right:auto; }
@@ -895,7 +907,7 @@
   .trust-num{
     font-family:'Trajan Pro',serif;
     font-size:clamp(64px,10vw,120px);
-    color:var(--maroon);
+    color:var(--gold-light);
     line-height:0.9;
     margin-top:8px;
   }
@@ -910,14 +922,14 @@
   .logo-chip{
     padding:12px 20px;
     border:1px solid var(--line);
-    background:var(--ivory);
+    background:var(--panel);
     font-family:'Trajan Pro',serif;
     font-size:14.5px;
     color:var(--ink-soft);
     letter-spacing:0.01em;
     transition:all .3s var(--ease);
   }
-  .logo-chip:hover{ border-color:var(--gold); color:var(--maroon); transform:translateY(-2px); }
+  .logo-chip:hover{ border-color:var(--gold); color:var(--gold-light); background:var(--panel-hover); transform:translateY(-2px); }
 
   /* ---------- Closing CTA ---------- */
   .closing{
@@ -1062,6 +1074,25 @@
   .marquee span::after{ content:"◆"; margin-left:34px; font-style:normal; font-size:9px; color:var(--gold); opacity:0.6; }
   @keyframes scrollx{ from{transform:translateX(0);} to{transform:translateX(-50%);} }
 
+  /* ---------- The underlay ----------
+     Slow ribbons of light drawn behind everything, drifting on their own
+     and leaning as the page scrolls. It sits under the content and above
+     the page colour, so the open sections read as depth rather than as
+     flat maroon. A section that wants to stay solid simply keeps its own
+     background and covers it. */
+  .underlay{
+    position:fixed;
+    inset:0;
+    z-index:0;
+    pointer-events:none;
+    opacity:0.85;
+  }
+  /* Only the stacking order, never the positioning: the rail is fixed and
+     the scroll cue is absolute, and forcing either to relative drops it
+     into normal flow and shoves the hero down the page. */
+  section, footer{ position:relative; z-index:1; }
+  .rail, .scroll-cue{ z-index:2; }
+
   /* ------------------------------------------------------------------
      Motion
 
@@ -1144,6 +1175,8 @@
 <body>
 
 <noscript><style>.preloader{display:none !important;}</style></noscript>
+<canvas class="underlay" id="underlay" aria-hidden="true"></canvas>
+
 <div class="preloader" id="preloader" role="presentation" aria-hidden="true">
   <div class="preloader-inner">
     <img class="preloader-mark" src="images/logo/dia-logo-cream.png" alt="Dia Retail Solutions">
@@ -1791,6 +1824,69 @@
    otherwise, so a blocked CDN or an old browser costs the page nothing
    but the effect.
    --------------------------------------------------------------------- */
+/* ---- the underlay ----
+   Stacked sine curves in gold at very low opacity. Each line carries two
+   waves of different wavelengths, so the pattern never visibly repeats;
+   it drifts on its own clock and leans with the scroll position, which
+   means scrolling changes the shape rather than just sliding it past. */
+(function(){
+  const canvas = document.getElementById('underlay');
+  if(!canvas || !canvas.getContext) return;
+  const ctx = canvas.getContext('2d');
+  const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  let w = 0, h = 0, dpr = 1, lines = 26;
+
+  function size(){
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = canvas.width = Math.floor(window.innerWidth * dpr);
+    h = canvas.height = Math.floor(window.innerHeight * dpr);
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    /* Fewer ribbons on a phone: smaller screen, smaller power budget. */
+    lines = window.innerWidth < 700 ? 16 : 26;
+  }
+
+  function draw(t){
+    ctx.clearRect(0, 0, w, h);
+    const scroll = window.scrollY || 0;
+    const step = w / 44;
+    for(let i = 0; i < lines; i++){
+      const p = i / (lines - 1);
+      const base = h * 0.14 + p * h * 0.86;
+      const amp = h * 0.115 * (0.35 + p);
+      ctx.beginPath();
+      for(let x = 0; x <= w + step; x += step){
+        const k = x / w;
+        const y = base
+          + Math.sin(k * 2.1 + t * 0.00020 + i * 0.16 + scroll * 0.0016) * amp
+          + Math.sin(k * 5.3 - t * 0.00012 + i * 0.08) * amp * 0.30;
+        if(x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      /* Faint at the top, stronger lower down, so the eye reads a floor
+         rather than a curtain. */
+      ctx.strokeStyle = 'rgba(185,136,79,' + (0.055 + 0.105 * p).toFixed(3) + ')';
+      ctx.lineWidth = dpr;
+      ctx.stroke();
+    }
+  }
+
+  size();
+  window.addEventListener('resize', ()=>{ size(); if(still) draw(0); });
+
+  if(still){ draw(0); return; }
+
+  let running = true;
+  const frame = (t)=>{ if(!running) return; draw(t); requestAnimationFrame(frame); };
+  requestAnimationFrame(frame);
+
+  /* Nothing to draw for a tab nobody is looking at. */
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.hidden){ running = false; }
+    else if(!running){ running = true; requestAnimationFrame(frame); }
+  });
+})();
+
 (function(){
   const root = document.documentElement;
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
