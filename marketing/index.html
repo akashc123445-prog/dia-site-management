@@ -662,7 +662,7 @@
   }
 
   /* ---------- Services ---------- */
-  .services{ background:var(--surface-1); }
+  .services{ background:transparent; }
   .service-grid{
     margin-top:64px;
     display:grid;
@@ -674,13 +674,13 @@
   @media (max-width:900px){ .service-grid{grid-template-columns:repeat(2,1fr);} }
   @media (max-width:560px){ .service-grid{grid-template-columns:1fr;} }
   .service-card{
-    background:var(--panel);
+    background:transparent;
     border:1px solid var(--line);
     padding:44px 32px;
     transition:background .4s var(--ease), border-color .4s var(--ease);
   }
   .service-card:hover{ border-color:rgba(228,200,146,0.38); }
-  .service-card:hover{ background:var(--panel-hover); }
+  .service-card:hover{ background:var(--panel); }
   .service-card .icon{
     width:46px;height:46px;
     color:var(--gold-light);
@@ -731,7 +731,7 @@
   .hq-line strong{ color:var(--gold-light); font-weight:700; }
 
   /* ---------- Portfolio ---------- */
-  .portfolio{ background:var(--maroon); color:var(--ivory); }
+  .portfolio{ background:transparent; color:var(--ivory); }
   .portfolio .eyebrow{ color:var(--gold-light); }
   .portfolio .eyebrow::before{ background:var(--gold-light); }
   .portfolio h2.h-serif{ color:var(--ivory); }
@@ -745,6 +745,71 @@
   }
   @media (max-width:980px){ .port-grid{grid-template-columns:repeat(2,1fr);} }
   @media (max-width:620px){ .port-grid{grid-template-columns:1fr;} }
+
+  /* ---------- Portfolio as a pinned horizontal run ----------
+     The grid above is what the markup says and what anyone without
+     JavaScript gets. With it, the script lifts the same cards into a
+     track: the section pins, and scrolling down walks the projects
+     sideways, the one at the centre brought forward while its
+     neighbours fall back. */
+  .port-stage{
+    position:relative;
+    /* Full bleed out of the 1280px column the cards sit in. */
+    margin-left:calc(50% - 50vw);
+    margin-right:calc(50% - 50vw);
+  }
+  .port-pin{
+    position:sticky;
+    top:0;
+    height:100vh;
+    display:flex;
+    align-items:center;
+    overflow:hidden;
+  }
+  .port-grid.port-track{
+    display:flex;
+    gap:0;
+    margin-top:0;
+    /* Half a screen minus half a card, so the run starts with the first
+       project in the middle and ends with the last one there. */
+    padding:0 calc(50vw - min(15vw, 210px));
+    will-change:transform;
+  }
+  .port-track .proj-card{
+    flex:0 0 min(30vw, 420px);
+    margin-right:-5.5vw;
+    transform:scale(0.9);
+    filter:brightness(0.42) saturate(0.7);
+    transition:transform .75s var(--ease-expo), filter .6s var(--ease-expo);
+  }
+  /* The one in the middle of the screen: forward, lit, and over its
+     neighbours. */
+  .port-track .proj-card.is-front{
+    transform:scale(1);
+    filter:brightness(1) saturate(1);
+    z-index:3;
+  }
+  .port-track .proj-card .proj-info{
+    opacity:0;
+    transition:opacity .5s var(--ease-expo), transform .5s var(--ease);
+  }
+  .port-track .proj-card.is-front .proj-info{ opacity:1; }
+  .port-track .proj-card:last-child{ margin-right:0; }
+
+  .port-progress{
+    position:absolute;
+    left:12vw; right:12vw; bottom:8vh;
+    height:1px;
+    background:var(--line);
+  }
+  .port-progress span{
+    display:block; height:100%; width:0%;
+    background:linear-gradient(to right, var(--gold), var(--gold-light));
+  }
+  @media (prefers-reduced-motion: reduce){
+    .port-track .proj-card{ transform:none; filter:none; transition:none; }
+    .port-track .proj-card .proj-info{ opacity:1; }
+  }
 
   .proj-card{
     position:relative;
@@ -797,7 +862,7 @@
   .proj-card:hover::after{ border-color:rgba(228,200,146,0.5); }
 
   /* ---------- Process ---------- */
-  .process{ background:var(--surface-1); }
+  .process{ background:transparent; }
   .process-rail{
     margin-top:70px;
     display:grid;
@@ -820,7 +885,7 @@
   .p-step .p-num{
     width:52px;height:52px;
     border-radius:50%;
-    background:var(--surface-2);
+    background:transparent;
     border:1.5px solid var(--gold);
     color:var(--gold-light);
     display:flex; align-items:center; justify-content:center;
@@ -922,7 +987,7 @@
   .logo-chip{
     padding:12px 20px;
     border:1px solid var(--line);
-    background:var(--panel);
+    background:transparent;
     font-family:'Trajan Pro',serif;
     font-size:14.5px;
     color:var(--ink-soft);
@@ -998,7 +1063,8 @@
 
   /* ---------- Footer ---------- */
   footer{
-    background:var(--maroon-2);
+    background:transparent;
+    border-top:1px solid var(--line);
     color:rgba(251,246,236,0.78);
     padding:70px 0 30px;
   }
@@ -1174,7 +1240,16 @@
 </head>
 <body>
 
-<noscript><style>.preloader{display:none !important;}</style></noscript>
+<noscript><style>
+  /* Without JavaScript nothing ever adds the classes that reveal this
+     content, so the hero and every .reveal block would sit at opacity 0
+     over a photograph. Show it all, unanimated. */
+  .preloader{display:none !important;}
+  .hero-eyebrow, .hero h1, .hero-sub, .hero-actions, .reveal{
+    opacity:1 !important;
+    transform:none !important;
+  }
+</style></noscript>
 <canvas class="underlay" id="underlay" aria-hidden="true"></canvas>
 
 <div class="preloader" id="preloader" role="presentation" aria-hidden="true">
@@ -2123,6 +2198,67 @@
       });
     }, 220);
   });
+
+  /* ---- the portfolio, walked sideways ----
+     Built here rather than in the markup, so that without JavaScript the
+     section stays the plain grid it has always been. */
+  (function(){
+    const grid = document.querySelector('.port-grid');
+    if(!grid || window.innerWidth < 900) return;
+    const cards = Array.from(grid.children);
+    if(cards.length < 3) return;
+
+    const stage = document.createElement('div');
+    stage.className = 'port-stage';
+    const pin = document.createElement('div');
+    pin.className = 'port-pin';
+    grid.parentNode.insertBefore(stage, grid);
+    stage.appendChild(pin);
+    pin.appendChild(grid);
+    grid.classList.add('port-track');
+
+    const progress = document.createElement('div');
+    progress.className = 'port-progress';
+    progress.innerHTML = '<span></span>';
+    pin.appendChild(progress);
+    const bar = progress.firstElementChild;
+
+    let travel = 0;
+
+    function measure(){
+      /* How far the track has to move for its last card to arrive. */
+      travel = Math.max(0, grid.scrollWidth - window.innerWidth);
+      stage.style.height = (window.innerHeight + travel) + 'px';
+    }
+
+    function place(){
+      const top = stage.getBoundingClientRect().top;
+      const span = stage.offsetHeight - window.innerHeight;
+      const p = span > 0 ? Math.min(Math.max(-top / span, 0), 1) : 0;
+      grid.style.transform = 'translate3d(' + (-travel * p).toFixed(1) + 'px,0,0)';
+      bar.style.width = (p * 100).toFixed(2) + '%';
+
+      /* Whichever card is nearest the middle of the screen is the one
+         being looked at. */
+      const centre = window.innerWidth / 2;
+      let best = null, bestDist = Infinity;
+      cards.forEach(card=>{
+        const r = card.getBoundingClientRect();
+        const d = Math.abs(r.left + r.width / 2 - centre);
+        if(d < bestDist){ bestDist = d; best = card; }
+      });
+      cards.forEach(card=> card.classList.toggle('is-front', card === best));
+    }
+
+    measure();
+    place();
+    window.addEventListener('scroll', ()=>requestAnimationFrame(place), {passive:true});
+    window.addEventListener('resize', ()=>{ measure(); place(); });
+    /* Images changing size as they load changes the track's width. */
+    grid.querySelectorAll('img').forEach(img=>{
+      if(!img.complete) img.addEventListener('load', ()=>{ measure(); place(); }, {once:true});
+    });
+  })();
 
   /* ---- photography ----
      Project cards wipe open in sequence rather than fading in together.
