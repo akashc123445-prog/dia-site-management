@@ -97,8 +97,8 @@
     position:fixed; inset:0; z-index:9999;
     background:var(--bg);
     display:flex; align-items:center; justify-content:center;
-    transition:opacity .8s var(--ease) .85s, visibility .8s var(--ease) .85s,
-               background-color .7s var(--ease) .7s;
+    transition:opacity .9s ease-in-out 1.15s, visibility .9s ease-in-out 1.15s,
+               background-color 1s ease-in-out .85s;
   }
   /* As the mark flies out the panel's own colour drains away, so what it
      dissolves into is the real page — same maroon, same ribbons, already
@@ -182,12 +182,19 @@
   /* A bounce: the mark swells, then drops away to nothing, and the page
      is what is left. */
   .preloader.done .pre-tunnel{
-    animation:tunnelBounceOut 1.25s both;
+    animation:tunnelBounceOut 1.9s both;
+    will-change:transform, opacity;
   }
+  /* One continuous breath rather than two moves with a stop between
+     them: the same sine-like curve carries it up and back down, so it
+     turns over at the top instead of parking there. It never reaches
+     zero size — it fades out while still shrinking, which is what makes
+     the end soft instead of a snap. */
   @keyframes tunnelBounceOut{
-    0%  { transform:scale(1);    opacity:1; animation-timing-function:cubic-bezier(.3,0,.3,1); }
-    38% { transform:scale(1.32); opacity:1; animation-timing-function:cubic-bezier(.6,0,.8,.3); }
-    100%{ transform:scale(0);    opacity:0; }
+    0%  { transform:scale(1);    opacity:1; animation-timing-function:cubic-bezier(.45,0,.55,1); }
+    42% { transform:scale(1.24); opacity:1; animation-timing-function:cubic-bezier(.45,0,.55,1); }
+    70% { opacity:.85; }
+    100%{ transform:scale(.38);  opacity:0; }
   }
   .preloader.done .preloader-line{
     opacity:0;
@@ -208,10 +215,10 @@
   /* Second time around in the same session. */
   html.intro-seen .pre-tunnel{ animation-duration:.85s; }
   html.intro-seen .pre-layer{ animation-duration:.6s; animation-delay:calc(var(--i) * 26ms); }
-  html.intro-seen .preloader.done .pre-tunnel{ animation-duration:.8s; }
+  html.intro-seen .preloader.done .pre-tunnel{ animation-duration:1.2s; }
   html.intro-seen .preloader{
-    transition:opacity .5s var(--ease) .5s, visibility .5s var(--ease) .5s,
-               background-color .45s var(--ease) .4s;
+    transition:opacity .6s ease-in-out .7s, visibility .6s ease-in-out .7s,
+               background-color .65s ease-in-out .5s;
   }
 
   @media (max-width:700px){
@@ -1882,7 +1889,7 @@
       preloader.classList.add('done');
       htmlEl.classList.remove('is-loading');
       heroContent.classList.add('hero-in');
-      setTimeout(()=>{ preloader.remove(); }, reduced ? 300 : (seen ? 1100 : 2000));
+      setTimeout(()=>{ preloader.remove(); }, reduced ? 300 : (seen ? 1500 : 2300));
     }
 
     function onReady(){
