@@ -119,8 +119,8 @@
      screen's colour and below the mark. */
   .underlay.in-preloader{ z-index:1; opacity:0.9; }
   .pre-stage{
-    perspective:820px;
-    width:min(62vw, 440px);
+    perspective:640px;
+    width:min(44vw, 310px);
     aspect-ratio:1514/1990;
     position:relative;
   }
@@ -137,7 +137,7 @@
     height:100%;
     object-fit:contain;
     /* Each copy a fixed step deeper than the one in front of it. */
-    transform:translateZ(calc(var(--i) * -74px));
+    transform:translateZ(calc(var(--i) * -54px));
     /* Hollowed out: an edge of light rather than a filled shape. */
     filter:url(#neonEdge);
     /* The near faces burn bright; the depths fall away to a warm ember. */
@@ -214,8 +214,8 @@
        depth — so the mark goes wider here, not narrower, and the steps
        stay far apart. Fewer of them instead, which is where the saving
        comes from. */
-    .pre-stage{ width:min(82vw, 360px); }
-    .pre-layer{ transform:translateZ(calc(var(--i) * -62px)); }
+    .pre-stage{ width:min(70vw, 300px); }
+    .pre-layer{ transform:translateZ(calc(var(--i) * -48px)); }
     .pre-layer[style*="--i:9"], .pre-layer[style*="--i:10"],
     .pre-layer[style*="--i:11"], .pre-layer[style*="--i:12"],
     .pre-layer[style*="--i:13"]{ display:none; }
@@ -1361,11 +1361,11 @@
        punch the original back out of it, and what is left is the rim. Then
        colour it, blur a copy for the bloom, and stack the two. -->
   <filter id="neonEdge" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
-    <feMorphology in="SourceAlpha" operator="dilate" radius="1.5" result="grown"/>
+    <feMorphology in="SourceAlpha" operator="dilate" radius="0.85" result="grown"/>
     <feComposite in="grown" in2="SourceAlpha" operator="out" result="rim"/>
     <feFlood flood-color="#F3E2C4" result="tint"/>
     <feComposite in="tint" in2="rim" operator="in" result="edge"/>
-    <feGaussianBlur in="edge" stdDeviation="1.8" result="bloom"/>
+    <feGaussianBlur in="edge" stdDeviation="1.1" result="bloom"/>
     <feMerge>
       <feMergeNode in="bloom"/>
       <feMergeNode in="bloom"/>
@@ -1374,11 +1374,11 @@
   </filter>
   <!-- The face nearest the viewer carries a wider, hotter edge. -->
   <filter id="neonEdgeFront" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
-    <feMorphology in="SourceAlpha" operator="dilate" radius="2.1" result="grown"/>
+    <feMorphology in="SourceAlpha" operator="dilate" radius="1.15" result="grown"/>
     <feComposite in="grown" in2="SourceAlpha" operator="out" result="rim"/>
     <feFlood flood-color="#FFF6E2" result="tint"/>
     <feComposite in="tint" in2="rim" operator="in" result="edge"/>
-    <feGaussianBlur in="edge" stdDeviation="3.4" result="bloom"/>
+    <feGaussianBlur in="edge" stdDeviation="2" result="bloom"/>
     <feMerge>
       <feMergeNode in="bloom"/>
       <feMergeNode in="bloom"/>
