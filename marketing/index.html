@@ -1377,20 +1377,24 @@
        stays smooth on any screen density. Then tint it and add a bloom. -->
   <filter id="neonEdge" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
     <feGaussianBlur in="SourceAlpha" stdDeviation="0.55" result="soft"/>
-    <feComponentTransfer in="soft" result="rim"><feFuncA type="table" tableValues="0 1 0"/></feComponentTransfer>
+    <feComponentTransfer in="soft" result="rim"><feFuncA type="table" tableValues="0 0.3 1 0.3 0"/></feComponentTransfer>
     <feFlood flood-color="#F3E2C4" result="tint"/>
     <feComposite in="tint" in2="rim" operator="in" result="edge"/>
-    <feGaussianBlur in="edge" stdDeviation="0.9" result="bloom"/>
+    <feGaussianBlur in="edge" stdDeviation="0.7" result="bloom"/>
     <feMerge><feMergeNode in="bloom"/><feMergeNode in="edge"/></feMerge>
   </filter>
-  <!-- The face nearest the viewer: the same hairline, a little hotter. -->
+  <!-- The face nearest the viewer: finer than the ones behind it, not heavier. -->
   <filter id="neonEdgeFront" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
-    <feGaussianBlur in="SourceAlpha" stdDeviation="0.7" result="soft"/>
-    <feComponentTransfer in="soft" result="rim"><feFuncA type="table" tableValues="0 1 0"/></feComponentTransfer>
+    <feGaussianBlur in="SourceAlpha" stdDeviation="0.6" result="soft"/>
+    <!-- A five-point table instead of three: mostly just the middle of
+         the inside-to-outside band survives, which narrows the line again.
+         The shoulders are not quite zero — at zero the line breaks into
+         dashes on a standard-density screen. -->
+    <feComponentTransfer in="soft" result="rim"><feFuncA type="table" tableValues="0 0.3 1 0.3 0"/></feComponentTransfer>
     <feFlood flood-color="#FFF6E2" result="tint"/>
     <feComposite in="tint" in2="rim" operator="in" result="edge"/>
-    <feGaussianBlur in="edge" stdDeviation="1.8" result="bloom"/>
-    <feMerge><feMergeNode in="bloom"/><feMergeNode in="bloom"/><feMergeNode in="edge"/><feMergeNode in="edge"/></feMerge>
+    <feGaussianBlur in="edge" stdDeviation="1" result="bloom"/>
+    <feMerge><feMergeNode in="bloom"/><feMergeNode in="edge"/></feMerge>
   </filter>
 </defs></svg>
 
