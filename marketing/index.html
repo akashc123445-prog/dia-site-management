@@ -1089,7 +1089,12 @@
   html.lenis body{ overscroll-behavior-y:none; }
 
   /* ---- headlines, line by line ---- */
-  .line-mask{ display:block; overflow:hidden; padding-bottom:0.04em; }
+  /* The padding gives descenders — the g in "Designing", the p in
+     "spaces" — room inside a box that has to clip, and the equal negative
+     margin takes that room straight back out of the layout. Without the
+     second half, every masked line makes the headline taller, which on a
+     short window pushes it up under the navigation. */
+  .line-mask{ display:block; overflow:hidden; padding-bottom:0.08em; margin-bottom:-0.08em; }
   .line-in{
     display:block;
     transform:translateY(110%);
