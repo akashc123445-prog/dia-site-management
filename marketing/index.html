@@ -1370,34 +1370,27 @@
 <canvas class="underlay" id="underlay" aria-hidden="true"></canvas>
 
 <svg class="pre-defs" aria-hidden="true" focusable="false"><defs>
-  <!-- Turns the solid mark into a neon edge. Grow the silhouette a little,
-       punch the original back out of it, and what is left is the rim. Then
-       colour it, blur a copy for the bloom, and stack the two. -->
+  <!-- Turns the solid mark into a hairline of light. Soften the silhouette
+       by a fraction of a pixel, then keep only the alpha values half way
+       between inside and outside: that band IS the edge. Unlike growing
+       the shape by a whole pixel, the line can be finer than a pixel and
+       stays smooth on any screen density. Then tint it and add a bloom. -->
   <filter id="neonEdge" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
-    <feMorphology in="SourceAlpha" operator="dilate" radius="0.85" result="grown"/>
-    <feComposite in="grown" in2="SourceAlpha" operator="out" result="rim"/>
+    <feGaussianBlur in="SourceAlpha" stdDeviation="0.55" result="soft"/>
+    <feComponentTransfer in="soft" result="rim"><feFuncA type="table" tableValues="0 1 0"/></feComponentTransfer>
     <feFlood flood-color="#F3E2C4" result="tint"/>
     <feComposite in="tint" in2="rim" operator="in" result="edge"/>
-    <feGaussianBlur in="edge" stdDeviation="1.1" result="bloom"/>
-    <feMerge>
-      <feMergeNode in="bloom"/>
-      <feMergeNode in="bloom"/>
-      <feMergeNode in="edge"/>
-    </feMerge>
+    <feGaussianBlur in="edge" stdDeviation="0.9" result="bloom"/>
+    <feMerge><feMergeNode in="bloom"/><feMergeNode in="edge"/></feMerge>
   </filter>
-  <!-- The face nearest the viewer carries a wider, hotter edge. -->
+  <!-- The face nearest the viewer: the same hairline, a little hotter. -->
   <filter id="neonEdgeFront" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
-    <feMorphology in="SourceAlpha" operator="dilate" radius="1.15" result="grown"/>
-    <feComposite in="grown" in2="SourceAlpha" operator="out" result="rim"/>
+    <feGaussianBlur in="SourceAlpha" stdDeviation="0.7" result="soft"/>
+    <feComponentTransfer in="soft" result="rim"><feFuncA type="table" tableValues="0 1 0"/></feComponentTransfer>
     <feFlood flood-color="#FFF6E2" result="tint"/>
     <feComposite in="tint" in2="rim" operator="in" result="edge"/>
-    <feGaussianBlur in="edge" stdDeviation="2" result="bloom"/>
-    <feMerge>
-      <feMergeNode in="bloom"/>
-      <feMergeNode in="bloom"/>
-      <feMergeNode in="bloom"/>
-      <feMergeNode in="edge"/>
-    </feMerge>
+    <feGaussianBlur in="edge" stdDeviation="1.8" result="bloom"/>
+    <feMerge><feMergeNode in="bloom"/><feMergeNode in="bloom"/><feMergeNode in="edge"/><feMergeNode in="edge"/></feMerge>
   </filter>
 </defs></svg>
 
