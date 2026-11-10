@@ -95,11 +95,15 @@
   html.is-loading, html.is-loading body{ overflow:hidden; height:100%; }
   .preloader{
     position:fixed; inset:0; z-index:9999;
-    background:var(--maroon);
+    background:var(--bg);
     display:flex; align-items:center; justify-content:center;
-    transition:opacity 1.1s var(--ease) .65s, visibility 1.1s var(--ease) .65s;
+    transition:opacity 1.1s var(--ease) .65s, visibility 1.1s var(--ease) .65s,
+               background-color .9s var(--ease);
   }
-  .preloader.done{ opacity:0; visibility:hidden; pointer-events:none; }
+  /* As the mark flies out the panel's own colour drains away, so what it
+     dissolves into is the real page — same maroon, same ribbons, already
+     moving. */
+  .preloader.done{ opacity:0; visibility:hidden; pointer-events:none; background-color:transparent; }
   .preloader-inner{
     display:flex; flex-direction:column; align-items:center; gap:26px;
   }
@@ -110,9 +114,13 @@
      ready the whole tunnel accelerates towards the viewer, swells and
      blurs out — the mark diffusing into the site rather than a panel
      fading away. */
+  .pre-defs{ position:absolute; width:0; height:0; overflow:hidden; }
+  /* While the canvas is lent to the startup screen it sits above that
+     screen's colour and below the mark. */
+  .underlay.in-preloader{ z-index:1; opacity:0.9; }
   .pre-stage{
-    perspective:1100px;
-    width:min(42vw, 260px);
+    perspective:820px;
+    width:min(62vw, 440px);
     aspect-ratio:1514/1990;
     position:relative;
   }
@@ -129,22 +137,29 @@
     height:100%;
     object-fit:contain;
     /* Each copy a fixed step deeper than the one in front of it. */
-    transform:translateZ(calc(var(--i) * -46px));
+    transform:translateZ(calc(var(--i) * -74px));
+    /* Hollowed out: an edge of light rather than a filled shape. */
+    filter:url(#neonEdge);
     /* The near faces burn bright; the depths fall away to a warm ember. */
     opacity:calc(1 - var(--i) * 0.062);
     animation:layerIn 1.2s var(--ease) both;
     animation-delay:calc(var(--i) * 80ms);
   }
-  /* Only the front faces carry the expensive glow — fourteen glowing
-     layers is a lot of work for a phone, and the ones behind are too
-     dim to show it anyway. */
-  .pre-layer[style*="--i:0"],
-  .pre-layer[style*="--i:1"],
-  .pre-layer[style*="--i:2"]{
-    filter:drop-shadow(0 0 7px rgba(228,200,146,0.75)) drop-shadow(0 0 22px rgba(185,136,79,0.45));
+  /* Only the face nearest the viewer gets the wider, hotter edge — the
+     ones behind it are too dim for the difference to show, and the
+     filter is the expensive part. */
+  .pre-layer[style*="--i:0"]{ filter:url(#neonEdgeFront); }
+
+  /* The tagline is too fine to survive being outlined fourteen times —
+     the copies pile into a smear along the bottom. The depths carry the
+     mark and the wordmark only; the tagline is left to the front face,
+     where it stays crisp and reads once. */
+  .pre-layer:not([style*="--i:0"]){
+    -webkit-mask-image:linear-gradient(to bottom, #000 84%, rgba(0,0,0,0) 91%);
+    mask-image:linear-gradient(to bottom, #000 84%, rgba(0,0,0,0) 91%);
   }
   @keyframes tunnelIn{
-    from{ transform:translateZ(-240px) rotateX(5deg); }
+    from{ transform:translateZ(-300px) rotateX(6deg); }
     to  { transform:translateZ(0) rotateX(0deg); }
   }
   @keyframes layerIn{
@@ -194,8 +209,13 @@
   }
 
   @media (max-width:700px){
-    /* Half the depth on a phone: the same shape, a good deal less work. */
-    .pre-layer{ transform:translateZ(calc(var(--i) * -30px)); }
+    /* A hollow mark needs room. Shrink the stage and the strokes merge
+       into a solid shape again, and the layers pack too close to read as
+       depth — so the mark goes wider here, not narrower, and the steps
+       stay far apart. Fewer of them instead, which is where the saving
+       comes from. */
+    .pre-stage{ width:min(82vw, 360px); }
+    .pre-layer{ transform:translateZ(calc(var(--i) * -62px)); }
     .pre-layer[style*="--i:9"], .pre-layer[style*="--i:10"],
     .pre-layer[style*="--i:11"], .pre-layer[style*="--i:12"],
     .pre-layer[style*="--i:13"]{ display:none; }
@@ -1336,6 +1356,38 @@
 </style></noscript>
 <canvas class="underlay" id="underlay" aria-hidden="true"></canvas>
 
+<svg class="pre-defs" aria-hidden="true" focusable="false"><defs>
+  <!-- Turns the solid mark into a neon edge. Grow the silhouette a little,
+       punch the original back out of it, and what is left is the rim. Then
+       colour it, blur a copy for the bloom, and stack the two. -->
+  <filter id="neonEdge" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
+    <feMorphology in="SourceAlpha" operator="dilate" radius="1.5" result="grown"/>
+    <feComposite in="grown" in2="SourceAlpha" operator="out" result="rim"/>
+    <feFlood flood-color="#F3E2C4" result="tint"/>
+    <feComposite in="tint" in2="rim" operator="in" result="edge"/>
+    <feGaussianBlur in="edge" stdDeviation="1.8" result="bloom"/>
+    <feMerge>
+      <feMergeNode in="bloom"/>
+      <feMergeNode in="bloom"/>
+      <feMergeNode in="edge"/>
+    </feMerge>
+  </filter>
+  <!-- The face nearest the viewer carries a wider, hotter edge. -->
+  <filter id="neonEdgeFront" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+    <feMorphology in="SourceAlpha" operator="dilate" radius="2.1" result="grown"/>
+    <feComposite in="grown" in2="SourceAlpha" operator="out" result="rim"/>
+    <feFlood flood-color="#FFF6E2" result="tint"/>
+    <feComposite in="tint" in2="rim" operator="in" result="edge"/>
+    <feGaussianBlur in="edge" stdDeviation="3.4" result="bloom"/>
+    <feMerge>
+      <feMergeNode in="bloom"/>
+      <feMergeNode in="bloom"/>
+      <feMergeNode in="bloom"/>
+      <feMergeNode in="edge"/>
+    </feMerge>
+  </filter>
+</defs></svg>
+
 <div class="preloader" id="preloader" role="presentation" aria-hidden="true">
   <div class="preloader-inner">
     <div class="pre-stage">
@@ -2059,6 +2111,32 @@
 
   size();
   window.addEventListener('resize', ()=>{ size(); if(still) draw(0); });
+
+  /* The startup screen covers everything, so the ribbons would be hidden
+     behind it for the whole intro. Rather than draw them twice, the one
+     canvas is lent to the preloader and handed back when it begins to
+     leave — the pattern never restarts, so the ribbons carry straight
+     through from the startup screen into the page. */
+  const preloaderEl = document.getElementById('preloader');
+  if(preloaderEl && !preloaderEl.classList.contains('done')){
+    canvas.classList.add('in-preloader');
+    preloaderEl.insertBefore(canvas, preloaderEl.firstChild);
+
+    let handedBack = false;
+    const handBack = ()=>{
+      if(handedBack) return;
+      handedBack = true;
+      canvas.classList.remove('in-preloader');
+      document.body.insertBefore(canvas, document.body.firstChild);
+    };
+    const mo = new MutationObserver(()=>{
+      if(preloaderEl.classList.contains('done')){ handBack(); mo.disconnect(); }
+    });
+    mo.observe(preloaderEl, {attributes:true, attributeFilter:['class']});
+    /* The canvas must never still be inside the preloader when that
+       element is removed, or it goes with it. */
+    setTimeout(handBack, 12000);
+  }
 
   if(still){ draw(0); return; }
 
