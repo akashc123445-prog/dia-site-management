@@ -183,7 +183,16 @@
      is what is left. */
   .preloader.done .pre-tunnel{
     animation:tunnelBounceOut 1.9s both;
-    will-change:transform, opacity;
+    will-change:transform;
+  }
+  /* The fade lives on the stage, not the tunnel. Fading the tunnel itself
+     makes the browser flatten its 3D the instant the exit begins — every
+     copy snaps onto one plane and the depth vanishes in a single frame. */
+  .preloader.done .pre-stage{ animation:stageFadeOut 1.9s both; }
+  @keyframes stageFadeOut{
+    0%,42%{ opacity:1; }
+    70%   { opacity:.85; }
+    100%  { opacity:0; }
   }
   /* One continuous breath rather than two moves with a stop between
      them: the same sine-like curve carries it up and back down, so it
@@ -191,10 +200,9 @@
      zero size — it fades out while still shrinking, which is what makes
      the end soft instead of a snap. */
   @keyframes tunnelBounceOut{
-    0%  { transform:scale(1);    opacity:1; animation-timing-function:cubic-bezier(.45,0,.55,1); }
-    42% { transform:scale(1.24); opacity:1; animation-timing-function:cubic-bezier(.45,0,.55,1); }
-    70% { opacity:.85; }
-    100%{ transform:scale(.38);  opacity:0; }
+    0%  { transform:scale(1);    animation-timing-function:cubic-bezier(.45,0,.55,1); }
+    42% { transform:scale(1.24); animation-timing-function:cubic-bezier(.45,0,.55,1); }
+    100%{ transform:scale(.38); }
   }
   .preloader.done .preloader-line{
     opacity:0;
@@ -215,7 +223,8 @@
   /* Second time around in the same session. */
   html.intro-seen .pre-tunnel{ animation-duration:.85s; }
   html.intro-seen .pre-layer{ animation-duration:.6s; animation-delay:calc(var(--i) * 26ms); }
-  html.intro-seen .preloader.done .pre-tunnel{ animation-duration:1.2s; }
+  html.intro-seen .preloader.done .pre-tunnel,
+  html.intro-seen .preloader.done .pre-stage{ animation-duration:1.2s; }
   html.intro-seen .preloader{
     transition:opacity .6s ease-in-out .7s, visibility .6s ease-in-out .7s,
                background-color .65s ease-in-out .5s;
@@ -240,6 +249,7 @@
     .pre-layer:not([style*="--i:0"]){ display:none; }
     .pre-layer[style*="--i:0"]{ opacity:1; }
     .preloader.done .pre-tunnel{ animation:none; transition:none; opacity:0; filter:none; transform:none; }
+    .preloader.done .pre-stage{ animation:none; }
     .preloader-line span{ animation:none; width:100%; }
   }
 
