@@ -260,9 +260,23 @@ function LoginScreen() {
     setMode("signin");
   };
 
+  /* Emails a link that opens the portal on the "choose a new password"
+     screen. The reply is the same whether or not the address has an account,
+     so the form cannot be used to find out who works here. */
+  const handleForgot = async () => {
+    setError(""); setInfo(""); setBusy(true);
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: `${window.location.origin}/portal/`,
+    });
+    setBusy(false);
+    if (resetError) { setError(resetError.message); return; }
+    setInfo("If that address has an account, a link to set a new password is on its way. Check the inbox (and spam) and open the link on this device.");
+    setMode("signin");
+  };
+
   const handleKeyDown = (e) => {
     if (e.key !== "Enter") return;
-    mode === "signin" ? handleSignIn() : handleSignUp();
+    mode === "signin" ? handleSignIn() : mode === "forgot" ? handleForgot() : handleSignUp();
   };
 
   return (
@@ -276,7 +290,7 @@ function LoginScreen() {
         </div>
         <div className="bg-white rounded-2xl p-6 shadow-2xl">
           <h1 className="font-display text-2xl font-semibold text-stone-900 mb-1">
-            {mode === "signin" ? "Sign in to your workspace" : "Create your account"}
+            {mode === "signin" ? "Sign in to your workspace" : mode === "forgot" ? "Reset your password" : "Create your account"}
           </h1>
           <p className="text-sm text-stone-500 mb-3 font-label uppercase tracking-wide">Architecture · Interior Design · Retail Solutions</p>
           <div className="dia-divider mb-5"><span className="dia-diamond" /></div>
@@ -291,7 +305,7 @@ function LoginScreen() {
               <input type="email" autoFocus={mode === "signin"} className={inputCls} value={email}
                 onChange={e => setEmail(e.target.value)} onKeyDown={handleKeyDown} placeholder="you@diaretailsolutions.com" />
             </Field>
-            <Field label="Password">
+            {mode !== "forgot" && <Field label="Password">
               <div className="relative">
                 <input type={showPassword ? "text" : "password"} className={inputCls + " pr-10"} value={password}
                   onChange={e => setPassword(e.target.value)} onKeyDown={handleKeyDown} placeholder="••••••••" />
@@ -300,18 +314,24 @@ function LoginScreen() {
                   {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
                 </button>
               </div>
-            </Field>
+            </Field>}
+            {mode === "forgot" && <p className="text-xs text-stone-500 mb-3 -mt-1">Enter the email you sign in with and we'll send a link to choose a new password.</p>}
+            {mode === "signin" && (
+              <button type="button" onClick={() => { setMode("forgot"); setError(""); setInfo(""); }}
+                className="block text-xs dia-text-bronze font-semibold -mt-2 mb-3 hover:underline">Forgot password?</button>
+            )}
             {error && <p className="text-xs text-rose-600 mb-3 -mt-2">{error}</p>}
             {info && <p className="text-xs text-emerald-700 mb-3 -mt-2">{info}</p>}
-            <button type="button" disabled={busy || !email || !password} onClick={mode === "signin" ? handleSignIn : handleSignUp}
+            <button type="button" disabled={busy || !email || (mode !== "forgot" && !password)}
+              onClick={mode === "signin" ? handleSignIn : mode === "forgot" ? handleForgot : handleSignUp}
               className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg mt-1">
-              {busy ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
+              {busy ? "Please wait…" : mode === "signin" ? "Sign in" : mode === "forgot" ? "Email me a reset link" : "Create account"}
             </button>
           </div>
 
           <button onClick={() => { setMode(m => m === "signin" ? "signup" : "signin"); setError(""); setInfo(""); }}
             className="w-full text-center text-xs dia-text-bronze font-semibold mt-4 hover:underline">
-            {mode === "signin" ? "New here? Create an account" : "Already have an account? Sign in"}
+            {mode === "signin" ? "New here? Create an account" : mode === "forgot" ? "Back to sign in" : "Already have an account? Sign in"}
           </button>
         </div>
         <p className="text-center text-stone-500 text-xs mt-5">New accounts are reviewed and activated by an admin before first sign-in.</p>
@@ -320,6 +340,61 @@ function LoginScreen() {
     </div>
   );
 }
+
+/* Shown when someone arrives from the reset link in their email. The link
+   has already signed them in; all that is left is to choose the password. */
+function NewPasswordScreen({ onDone }) {
+  const [password, setPassword] = useState("");
+  const [again, setAgain] = useState("");
+  const [show, setShow] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setError("");
+    if (password.length < 8) { setError("Use at least 8 characters."); return; }
+    if (password !== again) { setError("The two passwords don't match."); return; }
+    setBusy(true);
+    const { error: updateError } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+    if (updateError) { setError(updateError.message); return; }
+    onDone();
+  };
+
+  return (
+    <div className="min-h-screen dia-bg-maroon-deep flex items-center justify-center p-4 font-body">
+      <div className="w-full max-w-md">
+        <div className="flex items-center justify-center mb-8">
+          <img src={LOGO_FULL} alt="Dia Retail Solutions" className="h-40 object-contain" />
+        </div>
+        <div className="bg-white rounded-2xl p-6 shadow-2xl">
+          <h1 className="font-display text-2xl font-semibold text-stone-900 mb-1">Choose a new password</h1>
+          <p className="text-sm text-stone-500 mb-5">This replaces your old password straight away.</p>
+          <Field label="New password">
+            <input type={show ? "text" : "password"} autoFocus autoComplete="new-password" className={inputCls}
+              value={password} onChange={e => setPassword(e.target.value)} />
+          </Field>
+          <Field label="Type it again">
+            <input type={show ? "text" : "password"} autoComplete="new-password" className={inputCls}
+              value={again} onChange={e => setAgain(e.target.value)} onKeyDown={e => e.key === "Enter" && save()} />
+          </Field>
+          <label className="flex items-center gap-2 text-xs text-stone-600 mb-3">
+            <input type="checkbox" checked={show} onChange={e => setShow(e.target.checked)} /> Show what I'm typing
+          </label>
+          {error && <p className="text-xs text-rose-600 mb-3">{error}</p>}
+          <button type="button" disabled={busy || !password || !again} onClick={save}
+            className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
+            {busy ? "Saving…" : "Save and open the portal"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* A reset link lands with "type=recovery" in the address. Read once, at load,
+   before the sign-in library tidies the address bar. */
+const ARRIVED_FROM_RESET_LINK = typeof window !== "undefined" && /type=recovery/.test(window.location.hash + window.location.search);
 
 /* ---------------------------------------------------------------------- */
 /* App Shell (Sidebar + Header)                                             */
@@ -10333,6 +10408,7 @@ function ErrorScreen({ message, onRetry, onLogout }) {
 
 export default function App() {
   const [session, setSession] = useState(undefined); // undefined = still checking, null = signed out
+  const [choosingPassword, setChoosingPassword] = useState(ARRIVED_FROM_RESET_LINK);
   /* Which user we've already loaded data for, so a repeat SIGNED_IN on tab
      focus doesn't tear the workspace down and rebuild it. */
   const signedInUserRef = useRef(null);
@@ -10378,6 +10454,7 @@ export default function App() {
     // interrupt whatever the person is doing (e.g. mid-upload on a form).
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, s) => {
       setSession(s);
+      if (event === "PASSWORD_RECOVERY") setChoosingPassword(true);
       if (event === "SIGNED_OUT" || !s) {
         signedInUserRef.current = null;
         setProfile(null); setData(null); setLoading(false);
@@ -10571,6 +10648,14 @@ export default function App() {
     addIssue: (projectId, supervisorId, issue) => dbAddIssue(projectId, supervisorId, issue).then(reload),
   }), [reload, data, profile]);
 
+  if (choosingPassword && session) {
+    return (
+      <div className="font-body">
+        <style>{FONT_STYLE}</style>
+        <NewPasswordScreen onDone={() => setChoosingPassword(false)} />
+      </div>
+    );
+  }
   if (loading) return <LoadingScreen />;
 
   if (!session) {
