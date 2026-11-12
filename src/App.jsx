@@ -37,7 +37,7 @@ import {
   dbAddOfficeExpense, dbApproveOfficeExpense, dbRejectOfficeExpense, dbMarkOfficeExpensePaid, dbDeleteOfficeExpense,
   dbCheckIn, dbCheckOut, uploadAttendancePhoto, dbAmendAttendance, dbDeleteAttendance,
   dbLoadAttendanceRange, dbSetHoliday, dbRemoveHoliday,
-  dbSaveReminderSettings, dbRunReminders,
+  dbSaveReminderSettings, dbRunReminders, dbSaveHrDetails,
   dbAddClientScopeItem, dbUpdateClientScopeItem, dbDeleteClientScopeItem, dbMarkClientScopeReminded,
   dbAddLeaveRequest, dbDecideLeaveRequest, dbDeleteLeaveRequest,
   dbAddHiringPost, dbUpdateHiringPost, dbDeleteHiringPost,
@@ -68,6 +68,11 @@ import { generateWorkTrackerPdf, workTrackerMessage } from "./lib/generateWorkTr
 import { downloadTaskCalendar } from "./lib/taskCalendar";
 import { generateClientStatementPdf, recoverableTotals } from "./lib/generateClientStatement";
 import { generateSchedulePdf } from "./lib/generateSchedule";
+import { generateSalarySlipPdf, generateExperienceCertificatePdf } from "./lib/generateHrDocs";
+import {
+  autoSplit, salaryFigures, slipFigures, defaultDesignation, defaultDuties, fillWording,
+  CONDUCT_OPTIONS, CONDUCT_TEXT, TITLES as HR_TITLES,
+} from "./lib/hrDocuments";
 import {
   SCHEDULE_STATUSES, SCHEDULE_TASK_TEMPLATE, TASK_STATUSES,
   blankSchedule, computeSchedule, scheduleSpan, taskEnd, newTask,
@@ -346,6 +351,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
     scheduleItem,
     { key: "vendors", label: "Vendors", icon: Store },
     { key: "users", label: "Team", icon: Users },
+    { key: "hr", label: "HR Documents", icon: FileText },
   ];
   const accountsNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -9876,6 +9882,402 @@ function FloatingCalculator() {
 /* App shell states (loading / auth / pending approval / error)             */
 /* ---------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------- */
+/* HR documents: salary details, salary slips, experience certificates      */
+/* ---------------------------------------------------------------------- */
+
+const BLANK_HR = {
+  title: "", designation: "", monthlySalary: 0, basic: 0, hra: 0, conveyance: 0,
+  pf: 0, esi: 0, profTax: 0, tds: 0, lastWorkingDay: null,
+};
+
+/* Whoever signed the last document signs the next one, until told otherwise. */
+function useHrSignatory(currentUser) {
+  const [signatory, setSignatory] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("dia-hr-signatory") || "null");
+      if (saved?.name) return saved;
+    } catch { /* fall through */ }
+    return { name: currentUser.name, title: "Authorised Signatory" };
+  });
+  const update = (patch) => setSignatory((s) => {
+    const next = { ...s, ...patch };
+    try { localStorage.setItem("dia-hr-signatory", JSON.stringify(next)); } catch { /* private mode */ }
+    return next;
+  });
+  return [signatory, update];
+}
+
+function SignatoryInputs({ signatory, setSignatory }) {
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      <Field label="Signed by">
+        <input className={inputCls} value={signatory.name} onChange={(e) => setSignatory({ name: e.target.value })} />
+      </Field>
+      <Field label="Signatory's designation">
+        <input className={inputCls} value={signatory.title} onChange={(e) => setSignatory({ title: e.target.value })} />
+      </Field>
+    </div>
+  );
+}
+
+function MoneyInput({ value, onChange, ...rest }) {
+  return (
+    <input type="number" min="0" step="1" inputMode="numeric" className={inputCls}
+      value={value === 0 || value === "" ? "" : value} placeholder="0"
+      onChange={(e) => onChange(e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))} {...rest} />
+  );
+}
+
+function SalaryDetailsForm({ user, hr, onSave }) {
+  const [form, setForm] = useState({ ...hr, designation: hr.designation || defaultDesignation(user) });
+  const [saving, setSaving] = useState(false);
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+  const f = salaryFigures(form);
+
+  /* Typing a new salary re-splits it, unless the parts have been set by hand
+     to something other than the usual split. */
+  const setMonthly = (v) => {
+    const wasAuto = !form.monthlySalary ||
+      JSON.stringify(autoSplit(form.monthlySalary)) === JSON.stringify({ basic: form.basic, hra: form.hra, conveyance: form.conveyance });
+    set(wasAuto ? { monthlySalary: v, ...autoSplit(v) } : { monthlySalary: v });
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try { await onSave({ ...form, basic: f.basic, hra: f.hra, conveyance: f.conveyance }); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div>
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="Title">
+          <select className={inputCls} value={form.title} onChange={(e) => set({ title: e.target.value })}>
+            {HR_TITLES.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
+          </select>
+        </Field>
+        <div className="col-span-2">
+          <Field label="Designation (as it should print)">
+            <input className={inputCls} value={form.designation} onChange={(e) => set({ designation: e.target.value })} />
+          </Field>
+        </div>
+      </div>
+      <p className="text-xs text-stone-500 -mt-1 mb-4">
+        Employee ID {user.empId ? <b>{user.empId}</b> : "not set"} · Joined {user.joinedOn ? <b>{fmtDate(user.joinedOn)}</b> : "date not set"}.
+        These two are edited under Team.
+      </p>
+
+      <Field label="Monthly salary (gross), ₹">
+        <MoneyInput value={form.monthlySalary} onChange={setMonthly} />
+      </Field>
+
+      <div className="rounded-lg dia-bg-cream-soft border border-stone-200 px-4 py-3 mb-4 grid grid-cols-2 gap-3">
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-stone-500 font-label">Per month</div>
+          <div className="font-display text-lg font-semibold text-stone-900">{fmtINR(f.monthly)}</div>
+        </div>
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-stone-500 font-label">Per annum</div>
+          <div className="font-display text-lg font-semibold text-stone-900">{fmtINR(f.annual)}</div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-semibold text-stone-600">How the salary is made up</span>
+        <button type="button" onClick={() => set(autoSplit(form.monthlySalary))}
+          className="text-xs font-semibold dia-text-bronze hover:underline">Split automatically</button>
+      </div>
+      <div className="grid grid-cols-2 gap-x-3">
+        <Field label="Basic salary"><MoneyInput value={form.basic} onChange={(v) => set({ basic: v })} /></Field>
+        <Field label="House rent allowance"><MoneyInput value={form.hra} onChange={(v) => set({ hra: v })} /></Field>
+        <Field label="Conveyance allowance"><MoneyInput value={form.conveyance} onChange={(v) => set({ conveyance: v })} /></Field>
+        <Field label="Special allowance (the remainder)">
+          <input className={`${inputCls} bg-stone-50 text-stone-500`} value={f.special.toLocaleString("en-IN")} readOnly />
+        </Field>
+      </div>
+
+      <div className="text-xs font-semibold text-stone-600 mb-2 mt-1">Deducted every month (leave at 0 if not applicable)</div>
+      <div className="grid grid-cols-2 gap-x-3">
+        <Field label="Provident fund"><MoneyInput value={form.pf} onChange={(v) => set({ pf: v })} /></Field>
+        <Field label="ESI"><MoneyInput value={form.esi} onChange={(v) => set({ esi: v })} /></Field>
+        <Field label="Professional tax"><MoneyInput value={form.profTax} onChange={(v) => set({ profTax: v })} /></Field>
+        <Field label="Income tax (TDS)"><MoneyInput value={form.tds} onChange={(v) => set({ tds: v })} /></Field>
+      </div>
+
+      <div className="flex items-center justify-between text-sm border-t border-stone-200 pt-3 mb-4">
+        <span className="text-stone-600">Take-home per month</span>
+        <span className="font-semibold text-stone-900">{fmtINR(f.net)} <span className="text-stone-400 font-normal">· {fmtINR(f.netAnnual)} a year</span></span>
+      </div>
+
+      <button onClick={save} disabled={saving || !form.monthlySalary}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
+        {saving ? "Saving…" : "Save salary details"}
+      </button>
+    </div>
+  );
+}
+
+function HrDocButtons({ make, disabled }) {
+  return (
+    <div className="grid grid-cols-2 gap-3 mt-2">
+      <button onClick={() => { const url = make("preview"); if (url) window.open(url, "_blank"); }} disabled={disabled}
+        className="flex items-center justify-center gap-2 border border-stone-300 text-stone-700 disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg hover:bg-stone-50">
+        <Eye size={15} /> Preview
+      </button>
+      <button onClick={() => make("save")} disabled={disabled}
+        className="flex items-center justify-center gap-2 dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
+        <Download size={15} /> Download PDF
+      </button>
+    </div>
+  );
+}
+
+function SalarySlipForm({ user, hr, currentUser }) {
+  const [signatory, setSignatory] = useHrSignatory(currentUser);
+  /* Slips are made after the month has closed, so last month is the default. */
+  const lastMonth = useMemo(() => {
+    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }, []);
+  const [slip, setSlip] = useState({ month: lastMonth, lopDays: 0, bonus: 0, bonusLabel: "", otherDeduction: 0, otherDeductionLabel: "" });
+  const set = (patch) => setSlip((s) => ({ ...s, ...patch }));
+  const f = slipFigures(hr, slip);
+
+  return (
+    <div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Month">
+          <input type="month" className={inputCls} value={slip.month} onChange={(e) => e.target.value && set({ month: e.target.value })} />
+        </Field>
+        <Field label={`Unpaid leave days (of ${f.days})`}>
+          <input type="number" min="0" max={f.days} step="0.5" className={inputCls} value={slip.lopDays || ""} placeholder="0"
+            onChange={(e) => set({ lopDays: Number(e.target.value) || 0 })} />
+        </Field>
+        <Field label="Bonus / incentive this month, ₹"><MoneyInput value={slip.bonus} onChange={(v) => set({ bonus: v })} /></Field>
+        <Field label="Shown on the slip as">
+          <input className={inputCls} value={slip.bonusLabel} placeholder="Bonus / incentive" onChange={(e) => set({ bonusLabel: e.target.value })} />
+        </Field>
+        <Field label="One-off deduction this month, ₹"><MoneyInput value={slip.otherDeduction} onChange={(v) => set({ otherDeduction: v })} /></Field>
+        <Field label="Shown on the slip as">
+          <input className={inputCls} value={slip.otherDeductionLabel} placeholder="e.g. Salary advance" onChange={(e) => set({ otherDeductionLabel: e.target.value })} />
+        </Field>
+      </div>
+
+      <div className="rounded-lg dia-bg-cream-soft border border-stone-200 px-4 py-3 mb-4 text-sm space-y-1.5">
+        <div className="flex justify-between"><span className="text-stone-600">Earnings ({f.paidDays} of {f.days} days paid)</span><span className="font-medium">{fmtINR(f.gross)}</span></div>
+        <div className="flex justify-between"><span className="text-stone-600">Deductions</span><span className="font-medium">− {fmtINR(f.totalDeductions)}</span></div>
+        <div className="flex justify-between border-t border-stone-300 pt-1.5"><span className="font-semibold text-stone-900">Net pay</span><span className="font-display font-semibold text-stone-900">{fmtINR(f.net)}</span></div>
+        <div className="flex justify-between text-xs text-stone-500 pt-1"><span>Salary on file</span><span>{fmtINR(f.monthly)} a month · {fmtINR(f.annual)} per annum</span></div>
+      </div>
+
+      <SignatoryInputs signatory={signatory} setSignatory={setSignatory} />
+      <HrDocButtons make={(mode) => generateSalarySlipPdf({ user, hr, slip, signatory }, mode)} />
+    </div>
+  );
+}
+
+function ExperienceCertificateForm({ user, hr, currentUser, onSaveHr }) {
+  const [signatory, setSignatory] = useHrSignatory(currentUser);
+  const today = new Date().toISOString().slice(0, 10);
+  const [stillHere, setStillHere] = useState(!hr.lastWorkingDay);
+  const [cert, setCert] = useState({
+    issuedOn: today,
+    lastWorkingDay: hr.lastWorkingDay || today,
+    conduct: "Good",
+    conductText: CONDUCT_TEXT.Good,
+    duties: defaultDuties(user),
+    includeSalary: hr.monthlySalary > 0,
+  });
+  const set = (patch) => setCert((c) => ({ ...c, ...patch }));
+  const f = salaryFigures(hr);
+  const who = { name: user.name, title: hr.title };
+
+  const make = (mode) => {
+    const lastWorkingDay = stillHere ? null : cert.lastWorkingDay;
+    /* The leaving date is worth keeping; the rest of the form is not. */
+    if (mode === "save" && (hr.lastWorkingDay || null) !== lastWorkingDay) {
+      onSaveHr({ ...hr, designation: hr.designation || defaultDesignation(user), lastWorkingDay }).catch(() => {});
+    }
+    return generateExperienceCertificatePdf({
+      user, hr: { ...hr, designation: hr.designation || defaultDesignation(user) },
+      cert: { ...cert, lastWorkingDay }, signatory,
+    }, mode);
+  };
+
+  const CONDUCT_STYLE = {
+    Good: "bg-emerald-600 text-white border-emerald-600",
+    Fair: "bg-amber-500 text-white border-amber-500",
+    Bad: "bg-red-600 text-white border-red-600",
+  };
+
+  return (
+    <div>
+      {!user.joinedOn && (
+        <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <span>No joining date is on file for {user.name.split(" ")[0]}, so the certificate will not state one. Add it under Team first.</span>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Date of issue">
+          <input type="date" className={inputCls} value={cert.issuedOn} onChange={(e) => set({ issuedOn: e.target.value || today })} />
+        </Field>
+        <Field label="Last working day">
+          <input type="date" className={inputCls} disabled={stillHere} value={stillHere ? "" : cert.lastWorkingDay}
+            onChange={(e) => set({ lastWorkingDay: e.target.value || today })} />
+        </Field>
+      </div>
+      <label className="flex items-center gap-2 text-sm text-stone-700 -mt-1 mb-4">
+        <input type="checkbox" checked={stillHere} onChange={(e) => setStillHere(e.target.checked)} />
+        Still working with us (certificate says "continues to be in our employment")
+      </label>
+
+      <Field label="What they did here — written for their role, edit freely">
+        <textarea rows={5} className={inputCls} value={cert.duties} onChange={(e) => set({ duties: e.target.value })} />
+      </Field>
+
+      <div className="mb-3.5">
+        <span className="block text-xs font-semibold text-stone-600 mb-1.5 font-body">Code of conduct</span>
+        <div className="grid grid-cols-3 gap-2 mb-2">
+          {CONDUCT_OPTIONS.map((c) => (
+            <button key={c} type="button" onClick={() => set({ conduct: c, conductText: CONDUCT_TEXT[c] })}
+              className={`py-2 rounded-lg text-sm font-semibold border ${cert.conduct === c ? CONDUCT_STYLE[c] : "bg-white text-stone-600 border-stone-300 hover:bg-stone-50"}`}>
+              {c}
+            </button>
+          ))}
+        </div>
+        <textarea rows={6} className={inputCls} value={cert.conductText} onChange={(e) => set({ conductText: e.target.value })} />
+        <p className="text-[11px] text-stone-400 mt-1">
+          The words in braces fill themselves in: {"{name}"}, {"{He}"}, {"{he}"}, {"{his}"}, {"{him}"}.
+          {!hr.title && " No title (Mr./Ms.) is set in salary details, so the name is used in place of he/she."}
+        </p>
+      </div>
+
+      <label className={`flex items-start gap-2 text-sm mb-4 ${f.monthly ? "text-stone-700" : "text-stone-400"}`}>
+        <input type="checkbox" className="mt-1" disabled={!f.monthly} checked={cert.includeSalary && f.monthly > 0} onChange={(e) => set({ includeSalary: e.target.checked })} />
+        <span>
+          State the salary on the certificate
+          {f.monthly
+            ? <span className="block text-xs text-stone-500">{fmtINR(f.monthly)} per month · {fmtINR(f.annual)} per annum</span>
+            : <span className="block text-xs">Add salary details first to use this.</span>}
+        </span>
+      </label>
+
+      <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 mb-4">
+        <div className="text-[11px] uppercase tracking-wide text-stone-500 font-label mb-1">How the conduct paragraph will read</div>
+        <p className="text-sm text-stone-700 leading-relaxed">{fillWording(cert.conductText, who)}</p>
+      </div>
+
+      <SignatoryInputs signatory={signatory} setSignatory={setSignatory} />
+      <HrDocButtons make={make} />
+    </div>
+  );
+}
+
+function HrDocumentsView({ data, currentUser, actions }) {
+  const [open, setOpen] = useState(null);           // { userId, kind }
+  const [search, setSearch] = useState("");
+  const hrById = useMemo(() => {
+    const m = {};
+    (data.hrDetails || []).forEach((h) => { m[h.userId] = h; });
+    return m;
+  }, [data.hrDetails]);
+
+  const ROLE_ORDER = ["Admin", "Accounts", "Architect", "Supervisor"];
+  const people = data.users
+    .filter((u) => u.active !== false && !u.removed)
+    .filter((u) => !search.trim() || u.name.toLowerCase().includes(search.trim().toLowerCase()))
+    .sort((a, b) => (ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role)) || a.name.localeCompare(b.name));
+
+  const hrFor = (u) => hrById[u.id] || { ...BLANK_HR, userId: u.id };
+  const person = open ? data.users.find((u) => u.id === open.userId) : null;
+  const personHr = person ? hrFor(person) : null;
+  const totalMonthly = people.reduce((s, u) => s + (hrById[u.id]?.monthlySalary || 0), 0);
+
+  return (
+    <div className="p-4 sm:p-8 space-y-5">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <p className="text-sm text-stone-500 flex-1 min-w-0">
+          Salary details, salary slips and experience certificates. Only admins can see this page or anyone's salary.
+          {totalMonthly > 0 && <> Salaries on file come to <b className="text-stone-700">{fmtINR(totalMonthly)}</b> a month, <b className="text-stone-700">{fmtINR(totalMonthly * 12)}</b> a year.</>}
+        </p>
+        <div className="relative sm:w-56 shrink-0">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+          <input className={`${inputCls} pl-9`} placeholder="Find a person" value={search} onChange={(e) => setSearch(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {people.map((u) => {
+          const hr = hrById[u.id];
+          const f = salaryFigures(hr);
+          return (
+            <Card key={u.id} className="p-4">
+              <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <div className="w-10 h-10 rounded-full dia-bg-maroon text-white flex items-center justify-center text-sm font-semibold font-display shrink-0">
+                    {u.name.split(" ").map((n) => n[0]).join("")}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-semibold text-stone-900 text-sm truncate">{u.name}</div>
+                    <div className="text-xs text-stone-500 truncate">
+                      {hr?.designation || defaultDesignation(u)}{u.empId ? ` · ${u.empId}` : ""}{u.joinedOn ? ` · joined ${fmtDate(u.joinedOn)}` : ""}
+                    </div>
+                  </div>
+                </div>
+                <div className="lg:w-56 shrink-0">
+                  {f.monthly > 0 ? (
+                    <>
+                      <div className="text-sm font-semibold text-stone-900">{fmtINR(f.monthly)} <span className="text-stone-400 font-normal">/ month</span></div>
+                      <div className="text-xs text-stone-500">{fmtINR(f.annual)} per annum</div>
+                    </>
+                  ) : <div className="text-xs text-stone-400">Salary not entered yet</div>}
+                </div>
+                <div className="flex flex-wrap gap-2 shrink-0">
+                  <button onClick={() => setOpen({ userId: u.id, kind: "salary" })}
+                    className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border border-stone-300 text-stone-700 hover:bg-stone-50">
+                    <IndianRupee size={13} /> Salary details
+                  </button>
+                  <button onClick={() => setOpen({ userId: u.id, kind: f.monthly > 0 ? "slip" : "salary" })}
+                    title={f.monthly > 0 ? "" : "Enter the salary first"}
+                    className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border border-stone-300 text-stone-700 hover:bg-stone-50">
+                    <Receipt size={13} /> Salary slip
+                  </button>
+                  <button onClick={() => setOpen({ userId: u.id, kind: "cert" })}
+                    className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg dia-btn-gold">
+                    <FileText size={13} /> Experience certificate
+                  </button>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+        {people.length === 0 && <Card className="p-10 text-center text-sm text-stone-400">Nobody matches that name.</Card>}
+      </div>
+
+      {person && open.kind === "salary" && (
+        <Modal title={`Salary details — ${person.name}`} onClose={() => setOpen(null)}>
+          <SalaryDetailsForm user={person} hr={personHr}
+            onSave={(hr) => actions.saveHrDetails(person.id, hr).then(() => setOpen(null))} />
+        </Modal>
+      )}
+      {person && open.kind === "slip" && (
+        <Modal title={`Salary slip — ${person.name}`} onClose={() => setOpen(null)}>
+          <SalarySlipForm user={person} hr={{ ...personHr, designation: personHr.designation || defaultDesignation(person) }} currentUser={currentUser} />
+        </Modal>
+      )}
+      {person && open.kind === "cert" && (
+        <Modal title={`Experience certificate — ${person.name}`} onClose={() => setOpen(null)} wide>
+          <ExperienceCertificateForm user={person} hr={personHr} currentUser={currentUser}
+            onSaveHr={(hr) => actions.saveHrDetails(person.id, hr)} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 function LoadingScreen({ label = "Loading workspace…" }) {
   return (
     <div className="min-h-screen dia-bg-maroon-deep flex items-center justify-center">
@@ -10089,6 +10491,10 @@ export default function App() {
       window.alert(`Couldn't save that.\n\n${err.message || err}`);
       throw err;
     }),
+    saveHrDetails: (userId, hr) => dbSaveHrDetails(userId, hr, profile?.id).then(reload).catch((err) => {
+      window.alert(`Couldn't save the salary details.\n\n${err.message || err}`);
+      throw err;
+    }),
     runReminders: (action) => dbRunReminders(action).then(async (r) => { await reload(); return r; }),
     checkIn: (payload) => dbCheckIn(profile?.id, payload).then(reload).catch((err) => {
       window.alert(`Couldn't mark you present.\n\n${err.message || err}`);
@@ -10228,6 +10634,7 @@ export default function App() {
     vendors: ["Vendors", "Vendor directory, materials and bank details for payment"],
     updates: ["Updates", "Site progress photos shared by your team, as they happen"],
     users: ["Team", "Admins, accounts, architects and site supervisors"],
+    hr: ["HR Documents", "Salary details, salary slips and experience certificates"],
     "sup-home": [data.projects.find(p => p.id === view.projectId)?.name || "My Sites", "Site reporting"],
     "arch-home": [data.projects.find(p => p.id === view.projectId)?.name || "My Design Work", "Design phase reporting"],
     project: [data.projects.find(p => p.id === view.projectId)?.name || "Project", null],
@@ -10278,6 +10685,7 @@ export default function App() {
         {view.tab === "quotations" && (isStaffOnly ? <QuotationsView data={data} currentUser={currentUser} actions={actions} setView={setView} /> : <AccessDenied />)}
         {view.tab === "vendors" && (isStaffOnly ? <VendorsView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "updates" && (isAdmin ? <UpdatesFeed data={data} setView={setView} /> : <AccessDenied />)}
+        {view.tab === "hr" && (isAdmin ? <HrDocumentsView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "users" && (isAdmin ? <TeamView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "sup-home" && <SupervisorHome data={data} currentUser={currentUser} actions={actions} setView={setView} />}
         {view.tab === "arch-home" && <ArchitectHome data={data} currentUser={currentUser} actions={actions} setView={setView} />}

@@ -20,6 +20,16 @@ const mapUser = (r) => ({
   whatsapp: r.whatsapp || "",
 });
 
+/* Salary and HR details. Admin-only at the RLS level, so this is an empty
+   list for everyone else. */
+const mapHrDetails = (r) => ({
+  userId: r.user_id, title: r.title || "", designation: r.designation || "",
+  monthlySalary: Number(r.monthly_salary) || 0,
+  basic: Number(r.basic) || 0, hra: Number(r.hra) || 0, conveyance: Number(r.conveyance) || 0,
+  pf: Number(r.pf) || 0, esi: Number(r.esi) || 0, profTax: Number(r.prof_tax) || 0, tds: Number(r.tds) || 0,
+  lastWorkingDay: r.last_working_day || null,
+});
+
 const mapProject = (r) => ({
   id: r.id, name: r.name, client: r.client, location: r.location, type: r.type,
   contractType: r.contract_type || "Turnkey",
@@ -230,7 +240,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, hiringRaw, advancesRaw, clientScopeRaw, attendanceRaw, holidaysRaw, reminderSettingsRaw, reminderLogRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, hiringRaw, advancesRaw, clientScopeRaw, attendanceRaw, holidaysRaw, reminderSettingsRaw, reminderLogRaw, hrDetailsRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -271,6 +281,8 @@ export async function fetchAllData() {
       supabase.from("attendance_reminder_log").select("*")
         .gte("date", new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10))
         .order("sent_at", { ascending: false }),
+      // Admin-only at the RLS level; empty for everyone else.
+      supabase.from("staff_hr_details").select("*"),
     ]);
 
   const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw };
@@ -308,6 +320,10 @@ export async function fetchAllData() {
   if (holidaysRaw.error) {
     // eslint-disable-next-line no-console
     console.warn("Holiday list unavailable:", holidaysRaw.error.message);
+  }
+  if (hrDetailsRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("HR details unavailable:", hrDetailsRaw.error.message);
   }
   if (reminderSettingsRaw.error) {
     // eslint-disable-next-line no-console
@@ -363,6 +379,7 @@ export async function fetchAllData() {
       id: r.id, date: r.date, userId: r.user_id, channel: r.channel,
       status: r.status, detail: r.detail || "", sentAt: r.sent_at,
     })),
+    hrDetails: (hrDetailsRaw.data || []).map(mapHrDetails),
     clientScope: (clientScopeRaw.data || []).map(mapClientScopeItem),
     leaveRequests: (leaveRaw.data || []).map(mapLeaveRequest),
     hiringPosts: (hiringRaw.data || []).map(mapHiringPost),
@@ -1011,6 +1028,25 @@ export async function dbSetHoliday(date, name, office, createdBy) {
 
 export async function dbRemoveHoliday(date) {
   const { error } = await supabase.from("company_holidays").delete().eq("date", date);
+  if (error) throw error;
+}
+
+/* ---- salary and HR details ----------------------------------------------- */
+
+/* One row per employee, written whole each time: the form shows every
+   figure, so there is no partial update to get wrong. */
+export async function dbSaveHrDetails(userId, hr, updatedBy) {
+  const n = (v) => Math.max(0, Math.round(Number(v) || 0));
+  const { error } = await supabase.from("staff_hr_details").upsert({
+    user_id: userId,
+    title: hr.title || "",
+    designation: (hr.designation || "").trim(),
+    monthly_salary: n(hr.monthlySalary),
+    basic: n(hr.basic), hra: n(hr.hra), conveyance: n(hr.conveyance),
+    pf: n(hr.pf), esi: n(hr.esi), prof_tax: n(hr.profTax), tds: n(hr.tds),
+    last_working_day: hr.lastWorkingDay || null,
+    updated_by: updatedBy, updated_at: new Date().toISOString(),
+  }, { onConflict: "user_id" });
   if (error) throw error;
 }
 
