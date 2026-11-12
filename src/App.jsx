@@ -37,7 +37,7 @@ import {
   dbAddOfficeExpense, dbApproveOfficeExpense, dbRejectOfficeExpense, dbMarkOfficeExpensePaid, dbDeleteOfficeExpense,
   dbCheckIn, dbCheckOut, uploadAttendancePhoto, dbAmendAttendance, dbDeleteAttendance,
   dbLoadAttendanceRange, dbSetHoliday, dbRemoveHoliday,
-  dbSaveReminderSettings, dbRunReminders, dbSaveHrDetails,
+  dbSaveReminderSettings, dbRunReminders, dbSaveHrDetails, dbSaveDisclosure, dbReviewDisclosure,
   dbAddClientScopeItem, dbUpdateClientScopeItem, dbDeleteClientScopeItem, dbMarkClientScopeReminded,
   dbAddLeaveRequest, dbDecideLeaveRequest, dbDeleteLeaveRequest,
   dbAddHiringPost, dbUpdateHiringPost, dbDeleteHiringPost,
@@ -69,6 +69,7 @@ import { downloadTaskCalendar } from "./lib/taskCalendar";
 import { generateClientStatementPdf, recoverableTotals } from "./lib/generateClientStatement";
 import { generateSchedulePdf } from "./lib/generateSchedule";
 import { generateSalarySlipPdf, generateExperienceCertificatePdf } from "./lib/generateHrDocs";
+import { generateDisclosurePdf, disclosureCounts, DISCLOSURE_FILE_KINDS, DISCLOSURE_DECLARATION } from "./lib/generateDisclosure";
 import {
   autoSplit, salaryFigures, slipFigures, defaultDesignation, defaultDuties, fillWording,
   CONDUCT_OPTIONS, CONDUCT_TEXT, TITLES as HR_TITLES,
@@ -400,7 +401,7 @@ const ARRIVED_FROM_RESET_LINK = typeof window !== "undefined" && /type=recovery/
 /* App Shell (Sidebar + Header)                                             */
 /* ---------------------------------------------------------------------- */
 
-function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, openWorkCount, pendingOfficeCount, pendingLeaveCount, needsCheckIn, mobileOpen, onCloseMobile }) {
+function Sidebar({ user, view, setView, onLogout, pendingDisclosureCount, pendingCount, openFeedCount, openWorkCount, pendingOfficeCount, pendingLeaveCount, needsCheckIn, mobileOpen, onCloseMobile }) {
   /* The feed carries an open-item count so a pending approval is visible from
      whatever screen someone is on. */
   const feedItem = { key: "feed", label: "Team Feed", icon: MessageSquare, badge: openFeedCount };
@@ -410,6 +411,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
   const attendanceItem = { key: "attendance", label: "Attendance", icon: CheckCircle2, badge: needsCheckIn ? "•" : undefined };
   const leaveItem = { key: "leave", label: "Leave & Permissions", icon: CalendarDays, badge: pendingLeaveCount };
   const myExpensesItem = { key: "myexpenses", label: "My Expenses", icon: Receipt };
+  const disclosureItem = { key: "disclosures", label: "Disclosure Form", icon: ClipboardList, badge: pendingDisclosureCount };
   const adminNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     attendanceItem,
@@ -427,6 +429,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
     { key: "vendors", label: "Vendors", icon: Store },
     { key: "users", label: "Team", icon: Users },
     { key: "hr", label: "HR Documents", icon: FileText },
+    { ...disclosureItem, label: "Disclosures" },
   ];
   const accountsNav = [
     { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -458,6 +461,7 @@ function Sidebar({ user, view, setView, onLogout, pendingCount, openFeedCount, o
     feedItem,
     scheduleItem,
     officeItem,
+    disclosureItem,
   ];
   const nav = user.role === "Admin" ? adminNav : user.role === "Accounts" ? accountsNav : user.role === "Architect" ? archNav : supNav;
 
@@ -10152,7 +10156,7 @@ function SalarySlipForm({ user, hr, currentUser }) {
   );
 }
 
-function ExperienceCertificateForm({ user, hr, currentUser, onSaveHr }) {
+function ExperienceCertificateForm({ user, hr, currentUser, onSaveHr, disclosure }) {
   const [signatory, setSignatory] = useHrSignatory(currentUser);
   const today = new Date().toISOString().slice(0, 10);
   const [stillHere, setStillHere] = useState(!hr.lastWorkingDay);
@@ -10188,6 +10192,17 @@ function ExperienceCertificateForm({ user, hr, currentUser, onSaveHr }) {
 
   return (
     <div>
+      {user.role === "Architect" && disclosure?.status !== "Approved" && (
+        <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <span>
+            {!disclosure ? `${user.name.split(" ")[0]} has not submitted a disclosure form.`
+              : disclosure.status === "Submitted" ? `${user.name.split(" ")[0]}'s disclosure form is still waiting for approval.`
+              : `${user.name.split(" ")[0]}'s disclosure form was ${disclosure.status.toLowerCase()}.`}
+            {" "}The certificate can still be made — this is only a reminder.
+          </span>
+        </div>
+      )}
       {!user.joinedOn && (
         <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
           <AlertTriangle size={14} className="shrink-0 mt-0.5" />
@@ -10261,10 +10276,18 @@ function HrDocumentsView({ data, currentUser, actions }) {
   }, [data.hrDetails]);
 
   const ROLE_ORDER = ["Admin", "Accounts", "Architect", "Supervisor"];
-  const people = data.users
-    .filter((u) => u.active !== false && !u.removed)
-    .filter((u) => !search.trim() || u.name.toLowerCase().includes(search.trim().toLowerCase()))
-    .sort((a, b) => (ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role)) || a.name.localeCompare(b.name));
+  const matches = (u) => !search.trim() || u.name.toLowerCase().includes(search.trim().toLowerCase());
+  const byRole = (a, b) => (ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role)) || a.name.localeCompare(b.name);
+  const people = data.users.filter((u) => u.active !== false && !u.removed).filter(matches).sort(byRole);
+  /* People removed from the team stay here for good: a certificate or a
+     slip is most often asked for after someone has gone. Sign-ups that were
+     never activated are not former employees and are left out. */
+  const former = data.users.filter((u) => u.removed).filter(matches).sort(byRole);
+  const disclosureByUser = useMemo(() => {
+    const m = {};
+    (data.disclosures || []).forEach((d) => { m[d.userId] = d; });
+    return m;
+  }, [data.disclosures]);
 
   const hrFor = (u) => hrById[u.id] || { ...BLANK_HR, userId: u.id };
   const person = open ? data.users.find((u) => u.id === open.userId) : null;
@@ -10284,12 +10307,15 @@ function HrDocumentsView({ data, currentUser, actions }) {
         </div>
       </div>
 
-      <div className="space-y-3">
-        {people.map((u) => {
+      {[["Current employees", people], ["Former employees", former]].map(([groupTitle, group]) => (group.length > 0 || groupTitle === "Current employees") && (
+      <div key={groupTitle} className="space-y-3">
+        {former.length > 0 && <h3 className="font-display text-base font-semibold text-stone-900 pt-1">{groupTitle} <span className="text-stone-400 font-body text-sm font-normal">({group.length})</span></h3>}
+        {group.map((u) => {
           const hr = hrById[u.id];
           const f = salaryFigures(hr);
+          const disc = disclosureByUser[u.id];
           return (
-            <Card key={u.id} className="p-4">
+            <Card key={u.id} className={`p-4 ${u.removed ? "bg-stone-50" : ""}`}>
               <div className="flex flex-col lg:flex-row lg:items-center gap-3">
                 <div className="flex items-center gap-3 min-w-0 flex-1">
                   <div className="w-10 h-10 rounded-full dia-bg-maroon text-white flex items-center justify-center text-sm font-semibold font-display shrink-0">
@@ -10298,8 +10324,13 @@ function HrDocumentsView({ data, currentUser, actions }) {
                   <div className="min-w-0">
                     <div className="font-semibold text-stone-900 text-sm truncate">{u.name}</div>
                     <div className="text-xs text-stone-500 truncate">
-                      {hr?.designation || defaultDesignation(u)}{u.empId ? ` · ${u.empId}` : ""}{u.joinedOn ? ` · joined ${fmtDate(u.joinedOn)}` : ""}
+                      {hr?.designation || defaultDesignation(u)}{u.empId ? ` · ${u.empId}` : ""}{u.joinedOn ? ` · joined ${fmtDate(u.joinedOn)}` : ""}{hr?.lastWorkingDay ? ` · left ${fmtDate(hr.lastWorkingDay)}` : ""}
                     </div>
+                    {(disc || u.role === "Architect") && (
+                      <div className="mt-1 flex items-center gap-1.5 text-[11px] text-stone-500">
+                        Disclosure form: {disc ? <DisclosureStatusPill status={disc.status} /> : <span className="text-stone-400">not submitted</span>}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="lg:w-56 shrink-0">
@@ -10329,8 +10360,9 @@ function HrDocumentsView({ data, currentUser, actions }) {
             </Card>
           );
         })}
-        {people.length === 0 && <Card className="p-10 text-center text-sm text-stone-400">Nobody matches that name.</Card>}
       </div>
+      ))}
+      {people.length + former.length === 0 && <Card className="p-10 text-center text-sm text-stone-400">Nobody matches that name.</Card>}
 
       {person && open.kind === "salary" && (
         <Modal title={`Salary details — ${person.name}`} onClose={() => setOpen(null)}>
@@ -10345,8 +10377,305 @@ function HrDocumentsView({ data, currentUser, actions }) {
       )}
       {person && open.kind === "cert" && (
         <Modal title={`Experience certificate — ${person.name}`} onClose={() => setOpen(null)} wide>
-          <ExperienceCertificateForm user={person} hr={personHr} currentUser={currentUser}
+          <ExperienceCertificateForm user={person} hr={personHr} currentUser={currentUser} disclosure={disclosureByUser[person.id]}
             onSaveHr={(hr) => actions.saveHrDetails(person.id, hr)} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/* Portfolio & office-files disclosure                                      */
+/* ---------------------------------------------------------------------- */
+
+const DISCLOSURE_STATUS_STYLE = {
+  Submitted: "bg-amber-100 text-amber-800",
+  Approved: "bg-emerald-100 text-emerald-800",
+  "Partly approved": "bg-orange-100 text-orange-800",
+  "Not approved": "bg-red-100 text-red-800",
+};
+const DISCLOSURE_STATUS_LABEL = { Submitted: "Awaiting approval" };
+const newRowId = () => Math.random().toString(36).slice(2, 10);
+const canReviewDisclosures = (u) => u.role === "Admin" || (u.role === "Architect" && u.rank === "Principal Architect");
+
+function DisclosureStatusPill({ status }) {
+  return (
+    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${DISCLOSURE_STATUS_STYLE[status] || "bg-stone-100 text-stone-600"}`}>
+      {DISCLOSURE_STATUS_LABEL[status] || status}
+    </span>
+  );
+}
+
+function DisclosureForm({ existing, myProjects, onSave }) {
+  const [projects, setProjects] = useState(existing?.projects?.length ? existing.projects : []);
+  const [files, setFiles] = useState(existing?.files?.length ? existing.files : []);
+  const [otherItems, setOtherItems] = useState(existing?.otherItems || "");
+  const [agreed, setAgreed] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const editRow = (setter) => (id, patch) => setter((rows) => rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const dropRow = (setter) => (id) => setter((rows) => rows.filter((r) => r.id !== id));
+  const editProject = editRow(setProjects), dropProject = dropRow(setProjects);
+  const editFile = editRow(setFiles), dropFile = dropRow(setFiles);
+
+  const notYetListed = myProjects.filter((p) => !projects.some((r) => r.name.trim().toLowerCase() === p.name.trim().toLowerCase()));
+  const incomplete = projects.some((p) => !p.name.trim() || !p.use.trim()) || files.some((f) => !f.what.trim() || !f.where.trim());
+  const nothing = !projects.length && !files.length && !otherItems.trim();
+
+  const save = async () => {
+    setSaving(true);
+    try { await onSave({ projects, files, otherItems }); } finally { setSaving(false); }
+  };
+
+  return (
+    <div>
+      {existing && existing.status !== "Submitted" && (
+        <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <span>This form has already been reviewed. Saving it again sends the whole form back for approval.</span>
+        </div>
+      )}
+
+      <h4 className="text-sm font-semibold text-stone-900 mb-1">1. Projects you will show in your portfolio</h4>
+      <p className="text-xs text-stone-500 mb-3">List every office project you want to use, and say exactly what you will show from it.</p>
+      {notYetListed.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {notYetListed.map((p) => (
+            <button key={p.id} type="button" onClick={() => setProjects((r) => [...r, { id: newRowId(), name: p.name, use: "" }])}
+              className="text-xs px-2.5 py-1 rounded-full border border-stone-300 text-stone-700 hover:bg-stone-50">+ {p.name}</button>
+          ))}
+        </div>
+      )}
+      <div className="space-y-2 mb-2">
+        {projects.map((p) => (
+          <div key={p.id} className="grid grid-cols-[1fr_1.4fr_auto] gap-2 items-start">
+            <input className={inputCls} placeholder="Project name" value={p.name} onChange={(e) => editProject(p.id, { name: e.target.value })} />
+            <input className={inputCls} placeholder="e.g. 3D views and photos of the finished store" value={p.use} onChange={(e) => editProject(p.id, { use: e.target.value })} />
+            <button type="button" onClick={() => dropProject(p.id)} className="p-2 text-stone-400 hover:text-red-600"><Trash2 size={15} /></button>
+          </div>
+        ))}
+      </div>
+      <button type="button" onClick={() => setProjects((r) => [...r, { id: newRowId(), name: "", use: "" }])}
+        className="flex items-center gap-1.5 text-xs font-semibold dia-text-bronze hover:underline mb-6"><Plus size={13} /> Add a project</button>
+
+      <h4 className="text-sm font-semibold text-stone-900 mb-1">2. Office files you hold</h4>
+      <p className="text-xs text-stone-500 mb-3">Everything of the office that is with you — on your laptop, phone, pen drive, cloud drive or email.</p>
+      <div className="space-y-2 mb-2">
+        {files.map((f) => (
+          <div key={f.id} className="grid grid-cols-1 sm:grid-cols-[1.3fr_1fr_1fr_auto] gap-2 items-start">
+            <input className={inputCls} placeholder="What the files are" value={f.what} onChange={(e) => editFile(f.id, { what: e.target.value })} />
+            <select className={inputCls} value={f.kind} onChange={(e) => editFile(f.id, { kind: e.target.value })}>
+              {DISCLOSURE_FILE_KINDS.map((k) => <option key={k}>{k}</option>)}
+            </select>
+            <input className={inputCls} placeholder="Where (laptop, Drive…)" value={f.where} onChange={(e) => editFile(f.id, { where: e.target.value })} />
+            <button type="button" onClick={() => dropFile(f.id)} className="p-2 text-stone-400 hover:text-red-600"><Trash2 size={15} /></button>
+          </div>
+        ))}
+      </div>
+      <button type="button" onClick={() => setFiles((r) => [...r, { id: newRowId(), what: "", kind: DISCLOSURE_FILE_KINDS[0], where: "" }])}
+        className="flex items-center gap-1.5 text-xs font-semibold dia-text-bronze hover:underline mb-6"><Plus size={13} /> Add files</button>
+
+      <h4 className="text-sm font-semibold text-stone-900 mb-1">3. Anything else of the office that you hold</h4>
+      <p className="text-xs text-stone-500 mb-2">Samples, catalogues, hard copies, logins, client contacts — anything not covered above. Leave empty if there is nothing.</p>
+      <textarea rows={3} className={`${inputCls} mb-5`} value={otherItems} onChange={(e) => setOtherItems(e.target.value)} />
+
+      <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 mb-4">
+        <div className="text-[11px] uppercase tracking-wide text-stone-500 font-label mb-2">Declaration</div>
+        <ol className="list-decimal pl-4 space-y-1.5 text-xs text-stone-700 leading-relaxed">
+          {DISCLOSURE_DECLARATION.map((t, i) => <li key={i}>{t}</li>)}
+        </ol>
+        <label className="flex items-start gap-2 text-sm text-stone-900 font-medium mt-3">
+          <input type="checkbox" className="mt-1" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
+          I have read the declaration and what I have entered is complete and true.
+        </label>
+      </div>
+
+      {nothing && <p className="text-xs text-stone-500 mb-2">Nothing listed: this will be submitted as a "nothing to disclose" form.</p>}
+      {incomplete && <p className="text-xs text-rose-600 mb-2">Fill in every box in the rows you have added, or remove the empty rows.</p>}
+      <button onClick={save} disabled={saving || !agreed || incomplete}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
+        {saving ? "Submitting…" : "Submit for approval"}
+      </button>
+    </div>
+  );
+}
+
+function DisclosureReviewForm({ disclosure, person, onSave }) {
+  const items = [
+    ...disclosure.projects.map((p) => ({ id: p.id, group: "Portfolio project", title: p.name, detail: p.use })),
+    ...disclosure.files.map((f) => ({ id: f.id, group: "Office files", title: f.what, detail: [f.kind, f.where].filter(Boolean).join(" · ") })),
+  ];
+  const [decisions, setDecisions] = useState({ ...disclosure.decisions });
+  const [note, setNote] = useState(disclosure.reviewNote || "");
+  const [saving, setSaving] = useState(false);
+  const decided = items.every((i) => decisions[i.id]);
+  const approved = items.filter((i) => decisions[i.id] === "approved").length;
+  const status = !items.length || approved === items.length ? "Approved" : approved === 0 ? "Not approved" : "Partly approved";
+
+  const save = async () => {
+    setSaving(true);
+    try { await onSave({ decisions, status, reviewNote: note }); } finally { setSaving(false); }
+  };
+
+  return (
+    <div>
+      <p className="text-sm text-stone-600 mb-4">
+        Submitted by <b>{person?.name || "—"}</b> on {fmtDate(disclosure.submittedAt)}. Approve or decline each line; the printed form shows your decision against it.
+      </p>
+      {items.length > 1 && (
+        <button type="button" onClick={() => setDecisions(Object.fromEntries(items.map((i) => [i.id, "approved"])))}
+          className="text-xs font-semibold dia-text-bronze hover:underline mb-3">Approve everything</button>
+      )}
+      <div className="space-y-2 mb-4">
+        {items.length === 0 && <p className="text-sm text-stone-500">No projects or files were declared.</p>}
+        {items.map((i) => (
+          <div key={i.id} className="flex flex-col sm:flex-row sm:items-center gap-2 border border-stone-200 rounded-lg px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="text-[10px] uppercase tracking-wide text-stone-400 font-label">{i.group}</div>
+              <div className="text-sm font-semibold text-stone-900">{i.title}</div>
+              <div className="text-xs text-stone-500">{i.detail}</div>
+            </div>
+            <div className="flex gap-1.5 shrink-0">
+              <button type="button" onClick={() => setDecisions((d) => ({ ...d, [i.id]: "approved" }))}
+                className={`flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg border ${decisions[i.id] === "approved" ? "bg-emerald-600 text-white border-emerald-600" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+                <Check size={13} /> Approve
+              </button>
+              <button type="button" onClick={() => setDecisions((d) => ({ ...d, [i.id]: "declined" }))}
+                className={`flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg border ${decisions[i.id] === "declined" ? "bg-red-600 text-white border-red-600" : "border-stone-300 text-stone-600 hover:bg-stone-50"}`}>
+                <X size={13} /> Decline
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {disclosure.otherItems && (
+        <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 mb-4">
+          <div className="text-[11px] uppercase tracking-wide text-stone-500 font-label mb-1">Anything else they hold</div>
+          <p className="text-sm text-stone-700 whitespace-pre-wrap">{disclosure.otherItems}</p>
+        </div>
+      )}
+
+      <Field label="Office remarks (printed on the form)">
+        <textarea rows={3} className={inputCls} value={note} onChange={(e) => setNote(e.target.value)}
+          placeholder="e.g. Renders may be shown without the client's name. Working drawings to be deleted." />
+      </Field>
+      <button onClick={save} disabled={saving || !decided}
+        className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
+        {saving ? "Saving…" : decided ? `Save review — ${status}` : "Decide every line to finish"}
+      </button>
+    </div>
+  );
+}
+
+function DisclosuresView({ data, currentUser, actions }) {
+  const [open, setOpen] = useState(null);          // "mine" | disclosure id
+  const disclosures = data.disclosures || [];
+  const isReviewer = canReviewDisclosures(currentUser);
+  const fillsOne = currentUser.role !== "Admin";
+  const mine = disclosures.find((d) => d.userId === currentUser.id);
+  const others = disclosures.filter((d) => d.userId !== currentUser.id);
+  const userById = (id) => data.users.find((u) => u.id === id);
+  const myProjects = data.projects.filter((p) => (p.architects || []).includes(currentUser.id));
+  const reviewing = open && open !== "mine" ? disclosures.find((d) => d.id === open) : null;
+
+  const pdf = (d, mode) => {
+    const u = userById(d.userId) || { name: "Unknown" };
+    const url = generateDisclosurePdf({
+      user: u, designation: defaultDesignation(u), disclosure: d,
+      reviewerName: userById(d.reviewedBy)?.name,
+    }, mode);
+    if (mode === "preview" && url) window.open(url, "_blank");
+  };
+
+  const PdfButtons = ({ d }) => (
+    <>
+      <button onClick={() => pdf(d, "preview")} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border border-stone-300 text-stone-700 hover:bg-stone-50">
+        <Eye size={13} /> Preview
+      </button>
+      <button onClick={() => pdf(d, "save")} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border border-stone-300 text-stone-700 hover:bg-stone-50">
+        <Download size={13} /> PDF
+      </button>
+    </>
+  );
+
+  return (
+    <div className="p-4 sm:p-8 space-y-6">
+      {fillsOne && (
+        <div className="space-y-3">
+          <p className="text-sm text-stone-500">
+            Before you collect your experience certificate, declare the projects you will show in your portfolio and every office file you hold.
+            Once it is approved, print the form, sign it, and bring it with you to the office.
+          </p>
+          <Card className="p-4">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-stone-900 text-sm">My disclosure form</span>
+                  {mine ? <DisclosureStatusPill status={mine.status} /> : <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-stone-100 text-stone-600">Not filled in</span>}
+                </div>
+                <div className="text-xs text-stone-500 mt-1">
+                  {mine
+                    ? `${mine.projects.length} project${mine.projects.length !== 1 ? "s" : ""}, ${mine.files.length} set${mine.files.length !== 1 ? "s" : ""} of files · submitted ${fmtDate(mine.submittedAt)}`
+                    : "Nothing submitted yet."}
+                  {mine?.reviewNote ? ` · Office remarks: ${mine.reviewNote}` : ""}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 shrink-0">
+                {mine && <PdfButtons d={mine} />}
+                <button onClick={() => setOpen("mine")} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg dia-btn-gold">
+                  <Pencil size={13} /> {mine ? "Edit" : "Fill in the form"}
+                </button>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {isReviewer && (
+        <div className="space-y-3">
+          <h3 className="font-display text-base font-semibold text-stone-900">Forms to review</h3>
+          {others.length === 0 && <Card className="p-8 text-center text-sm text-stone-400">Nobody has submitted a disclosure form yet.</Card>}
+          {others.map((d) => {
+            const u = userById(d.userId);
+            const c = disclosureCounts(d);
+            return (
+              <Card key={d.id} className="p-4">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-stone-900 text-sm">{u?.name || "Unknown"}</span>
+                      <DisclosureStatusPill status={d.status} />
+                    </div>
+                    <div className="text-xs text-stone-500 mt-1">
+                      {u ? defaultDesignation(u) : ""} · {d.projects.length} project{d.projects.length !== 1 ? "s" : ""}, {d.files.length} set{d.files.length !== 1 ? "s" : ""} of files
+                      {d.status !== "Submitted" ? ` · ${c.approved} approved, ${c.declined} declined` : ""} · submitted {fmtDate(d.submittedAt)}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 shrink-0">
+                    <PdfButtons d={d} />
+                    <button onClick={() => setOpen(d.id)} className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg dia-btn-gold">
+                      <ClipboardList size={13} /> {d.status === "Submitted" ? "Review" : "Change review"}
+                    </button>
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {open === "mine" && (
+        <Modal title="Portfolio & office files disclosure" onClose={() => setOpen(null)} wide>
+          <DisclosureForm existing={mine} myProjects={myProjects}
+            onSave={(form) => actions.saveDisclosure(form).then(() => setOpen(null))} />
+        </Modal>
+      )}
+      {reviewing && (
+        <Modal title={`Review — ${userById(reviewing.userId)?.name || "disclosure"}`} onClose={() => setOpen(null)} wide>
+          <DisclosureReviewForm disclosure={reviewing} person={userById(reviewing.userId)}
+            onSave={(review) => actions.reviewDisclosure(reviewing.id, review).then(() => setOpen(null))} />
         </Modal>
       )}
     </div>
@@ -10568,6 +10897,14 @@ export default function App() {
       window.alert(`Couldn't save that.\n\n${err.message || err}`);
       throw err;
     }),
+    saveDisclosure: (form) => dbSaveDisclosure(profile?.id, form).then(reload).catch((err) => {
+      window.alert(`Couldn't submit the form.\n\n${err.message || err}`);
+      throw err;
+    }),
+    reviewDisclosure: (id, review) => dbReviewDisclosure(id, review, profile?.id).then(reload).catch((err) => {
+      window.alert(`Couldn't save the review.\n\n${err.message || err}`);
+      throw err;
+    }),
     saveHrDetails: (userId, hr) => dbSaveHrDetails(userId, hr, profile?.id).then(reload).catch((err) => {
       window.alert(`Couldn't save the salary details.\n\n${err.message || err}`);
       throw err;
@@ -10720,6 +11057,7 @@ export default function App() {
     updates: ["Updates", "Site progress photos shared by your team, as they happen"],
     users: ["Team", "Admins, accounts, architects and site supervisors"],
     hr: ["HR Documents", "Salary details, salary slips and experience certificates"],
+    disclosures: ["Disclosures", "Portfolio projects and office files, declared and approved"],
     "sup-home": [data.projects.find(p => p.id === view.projectId)?.name || "My Sites", "Site reporting"],
     "arch-home": [data.projects.find(p => p.id === view.projectId)?.name || "My Design Work", "Design phase reporting"],
     project: [data.projects.find(p => p.id === view.projectId)?.name || "Project", null],
@@ -10734,7 +11072,7 @@ export default function App() {
       <UpdateBanner />
       <FloatingCalculator />
       <BackToTop />
-      <Sidebar user={currentUser} view={view} setView={setView} onLogout={handleLogout} pendingCount={pendingCount}
+      <Sidebar user={currentUser} view={view} setView={setView} onLogout={handleLogout} pendingDisclosureCount={canReviewDisclosures(currentUser) ? (data.disclosures || []).filter(d => d.userId !== currentUser.id && d.status === "Submitted").length : 0} pendingCount={pendingCount}
         openFeedCount={(data.feedPosts || []).filter(p => p.kind !== "update" && p.status === "open").length}
         openWorkCount={(data.workTasks || []).filter(t => t.priority === "High" && t.status !== "Done").length}
         pendingOfficeCount={(data.officeExpenses || []).filter(e => e.status === "Pending").length}
@@ -10770,6 +11108,7 @@ export default function App() {
         {view.tab === "quotations" && (isStaffOnly ? <QuotationsView data={data} currentUser={currentUser} actions={actions} setView={setView} /> : <AccessDenied />)}
         {view.tab === "vendors" && (isStaffOnly ? <VendorsView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "updates" && (isAdmin ? <UpdatesFeed data={data} setView={setView} /> : <AccessDenied />)}
+        {view.tab === "disclosures" && (isAdmin || currentUser.role === "Architect" ? <DisclosuresView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "hr" && (isAdmin ? <HrDocumentsView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "users" && (isAdmin ? <TeamView data={data} currentUser={currentUser} actions={actions} /> : <AccessDenied />)}
         {view.tab === "sup-home" && <SupervisorHome data={data} currentUser={currentUser} actions={actions} setView={setView} />}

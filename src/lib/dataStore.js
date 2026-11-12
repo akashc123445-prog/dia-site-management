@@ -240,7 +240,7 @@ const mapMaterialRequest = (r) => ({
 /* ---- fetch everything ------------------------------------------------ */
 
 export async function fetchAllData() {
-  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, hiringRaw, advancesRaw, clientScopeRaw, attendanceRaw, holidaysRaw, reminderSettingsRaw, reminderLogRaw, hrDetailsRaw] =
+  const [profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw, quotationsRaw, boqLibraryRaw, feedPostsRaw, feedCommentsRaw, schedulesRaw, workTasksRaw, officeExpensesRaw, leaveRaw, hiringRaw, advancesRaw, clientScopeRaw, attendanceRaw, holidaysRaw, reminderSettingsRaw, reminderLogRaw, hrDetailsRaw, disclosuresRaw] =
     await Promise.all([
       supabase.from("profiles").select("*").order("created_at"),
       supabase.from("projects").select("*").order("created_at"),
@@ -283,6 +283,8 @@ export async function fetchAllData() {
         .order("sent_at", { ascending: false }),
       // Admin-only at the RLS level; empty for everyone else.
       supabase.from("staff_hr_details").select("*"),
+      // Own form only, unless the reader is an admin or a Principal Architect.
+      supabase.from("portfolio_disclosures").select("*").order("submitted_at", { ascending: false }),
     ]);
 
   const results = { profiles, projects, tasks, designPhasesRaw, drawingsRaw, siteReportsRaw, photosRaw, expensesRaw, issuesRaw, vendorsRaw, materialRequestsRaw, siteVisitsRaw };
@@ -320,6 +322,10 @@ export async function fetchAllData() {
   if (holidaysRaw.error) {
     // eslint-disable-next-line no-console
     console.warn("Holiday list unavailable:", holidaysRaw.error.message);
+  }
+  if (disclosuresRaw.error) {
+    // eslint-disable-next-line no-console
+    console.warn("Disclosures unavailable:", disclosuresRaw.error.message);
   }
   if (hrDetailsRaw.error) {
     // eslint-disable-next-line no-console
@@ -380,6 +386,12 @@ export async function fetchAllData() {
       status: r.status, detail: r.detail || "", sentAt: r.sent_at,
     })),
     hrDetails: (hrDetailsRaw.data || []).map(mapHrDetails),
+    disclosures: (disclosuresRaw.data || []).map((r) => ({
+      id: r.id, userId: r.user_id, projects: r.projects || [], files: r.files || [],
+      otherItems: r.other_items || "", decisions: r.decisions || {}, status: r.status,
+      reviewNote: r.review_note || "", reviewedBy: r.reviewed_by, reviewedAt: r.reviewed_at,
+      submittedAt: r.submitted_at,
+    })),
     clientScope: (clientScopeRaw.data || []).map(mapClientScopeItem),
     leaveRequests: (leaveRaw.data || []).map(mapLeaveRequest),
     hiringPosts: (hiringRaw.data || []).map(mapHiringPost),
@@ -1047,6 +1059,27 @@ export async function dbSaveHrDetails(userId, hr, updatedBy) {
     last_working_day: hr.lastWorkingDay || null,
     updated_by: updatedBy, updated_at: new Date().toISOString(),
   }, { onConflict: "user_id" });
+  if (error) throw error;
+}
+
+/* ---- portfolio and office-files disclosure ------------------------------- */
+
+/* The person's own form. Saving it again is a fresh submission: the
+   database wipes any earlier decisions, so nothing approved yesterday can
+   be quietly swapped for something else today. */
+export async function dbSaveDisclosure(userId, form) {
+  const { error } = await supabase.from("portfolio_disclosures").upsert({
+    user_id: userId,
+    projects: form.projects, files: form.files, other_items: (form.otherItems || "").trim(),
+  }, { onConflict: "user_id" });
+  if (error) throw error;
+}
+
+export async function dbReviewDisclosure(id, { decisions, status, reviewNote }, reviewerId) {
+  const { error } = await supabase.from("portfolio_disclosures").update({
+    decisions, status, review_note: (reviewNote || "").trim() || null,
+    reviewed_by: reviewerId, reviewed_at: new Date().toISOString(),
+  }).eq("id", id);
   if (error) throw error;
 }
 
