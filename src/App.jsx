@@ -10166,7 +10166,13 @@ function SalarySlipForm({ user, hr, currentUser }) {
   );
 }
 
-function ExperienceCertificateForm({ user, hr, currentUser, onSaveHr, disclosure }) {
+function ExperienceCertificateForm({ user: savedUser, hr: savedHr, currentUser, onSaveHr, onSaveUser, disclosure }) {
+  /* Title and joining date can be put right here, because a certificate
+     without them is the commonest mistake: both are saved back on download. */
+  const [title, setTitle] = useState(savedHr.title || "");
+  const [joinedOn, setJoinedOn] = useState(savedUser.joinedOn || "");
+  const user = { ...savedUser, joinedOn: joinedOn || null };
+  const hr = { ...savedHr, title };
   const [signatory, setSignatory] = useHrSignatory(currentUser);
   const today = new Date().toISOString().slice(0, 10);
   const [stillHere, setStillHere] = useState(!hr.lastWorkingDay);
@@ -10185,8 +10191,11 @@ function ExperienceCertificateForm({ user, hr, currentUser, onSaveHr, disclosure
   const make = (mode) => {
     const lastWorkingDay = stillHere ? null : cert.lastWorkingDay;
     /* The leaving date is worth keeping; the rest of the form is not. */
-    if (mode === "save" && (hr.lastWorkingDay || null) !== lastWorkingDay) {
-      onSaveHr({ ...hr, designation: hr.designation || defaultDesignation(user), lastWorkingDay }).catch(() => {});
+    if (mode === "save") {
+      if ((savedHr.lastWorkingDay || null) !== lastWorkingDay || (savedHr.title || "") !== title) {
+        onSaveHr({ ...hr, designation: hr.designation || defaultDesignation(user), lastWorkingDay }).catch(() => {});
+      }
+      if ((savedUser.joinedOn || null) !== (joinedOn || null)) onSaveUser({ joinedOn: joinedOn || null }).catch(() => {});
     }
     return generateExperienceCertificatePdf({
       user, hr: { ...hr, designation: hr.designation || defaultDesignation(user) },
@@ -10213,10 +10222,26 @@ function ExperienceCertificateForm({ user, hr, currentUser, onSaveHr, disclosure
           </span>
         </div>
       )}
-      {!user.joinedOn && (
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Title (decides he / she in the wording)">
+          <select className={inputCls} value={title} onChange={(e) => setTitle(e.target.value)}>
+            {HR_TITLES.map((t) => <option key={t} value={t}>{t || "— (uses they / their)"}</option>)}
+          </select>
+        </Field>
+        <Field label="Date of joining">
+          <input type="date" className={inputCls} value={joinedOn} onChange={(e) => setJoinedOn(e.target.value)} />
+        </Field>
+      </div>
+      {!joinedOn && (
         <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
           <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-          <span>No joining date is on file for {user.name.split(" ")[0]}, so the certificate will not state one. Add it under Details first.</span>
+          <span>No joining date is entered, so the certificate will not say when {user.name.split(" ")[0]} started.</span>
+        </div>
+      )}
+      {((joinedOn && cert.issuedOn < joinedOn) || (!stillHere && cert.issuedOn < cert.lastWorkingDay)) && (
+        <div className="flex items-start gap-2 text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-4">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <span>The date of issue is earlier than {joinedOn && cert.issuedOn < joinedOn ? "the joining date" : "the last working day"}. The date of issue is the day the certificate is signed — usually today.</span>
         </div>
       )}
 
@@ -10251,7 +10276,7 @@ function ExperienceCertificateForm({ user, hr, currentUser, onSaveHr, disclosure
         <textarea rows={6} className={inputCls} value={cert.conductText} onChange={(e) => set({ conductText: e.target.value })} />
         <p className="text-[11px] text-stone-400 mt-1">
           The words in braces fill themselves in: {"{name}"}, {"{He}"}, {"{he}"}, {"{his}"}, {"{him}"}.
-          {!hr.title && " No title (Mr./Ms.) is set in salary details, so the name is used in place of he/she."}
+          {!hr.title && " No title is chosen above, so the wording uses they / their."}
         </p>
       </div>
 
@@ -10416,7 +10441,8 @@ function HrDocumentsView({ data, currentUser, actions }) {
       {person && open.kind === "cert" && (
         <Modal title={`Experience certificate — ${person.name}`} onClose={() => setOpen(null)} wide>
           <ExperienceCertificateForm user={person} hr={personHr} currentUser={currentUser} disclosure={disclosureByUser[person.id]}
-            onSaveHr={(hr) => actions.saveHrDetails(person.id, hr)} />
+            onSaveHr={(hr) => actions.saveHrDetails(person.id, hr)}
+            onSaveUser={(patch) => actions.updateUser(person.id, patch)} />
         </Modal>
       )}
     </div>

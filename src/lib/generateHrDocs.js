@@ -6,7 +6,7 @@ import {
   PAGE, M, CONTENT_W, INK, GREY, RULE, MAROON, CREAM, DISPLAY, BODY,
 } from "./generateQuotation";
 import { amountInWords } from "./quotationDefaults";
-import { slipFigures, salaryFigures, monthLabel, fillWording, referenceNo } from "./hrDocuments";
+import { slipFigures, salaryFigures, monthLabel, fillWording, referenceNo, withArticle, longDate } from "./hrDocuments";
 
 /* ------------------------------------------------------------------------
    The two documents an employee asks the office for: a salary slip for a
@@ -32,7 +32,7 @@ function docHead(ctx, { ref, date, title, sub }) {
   doc.setFontSize(9.2);
   doc.setTextColor(...GREY);
   doc.text(`Ref: ${ref}`, M.left, ctx.y);
-  doc.text(`Date: ${fmtDate(date)}`, PAGE.w - M.right, ctx.y, { align: "right" });
+  doc.text(`Date: ${longDate(date)}`, PAGE.w - M.right, ctx.y, { align: "right" });
   ctx.y += 34;
 
   doc.setFont(DISPLAY, "bold");
@@ -230,10 +230,12 @@ export function generateExperienceCertificatePdf({ user, hr, cert, signatory }, 
   });
 
   const idPart = user.empId ? ` (Employee ID ${user.empId})` : "";
-  const from = user.joinedOn ? fmtDate(user.joinedOn) : "";
+  const from = longDate(user.joinedOn);
+  const role = withArticle(hr.designation);
+  const firm = titleCase(COMPANY_INFO.name);
   const opening = cert.lastWorkingDay
-    ? `This is to certify that {name}${idPart} was employed with ${titleCase(COMPANY_INFO.name)} as ${hr.designation || "a member of our team"}${from ? ` from ${from}` : ""} to ${fmtDate(cert.lastWorkingDay)}.`
-    : `This is to certify that {name}${idPart} has been employed with ${titleCase(COMPANY_INFO.name)} as ${hr.designation || "a member of our team"}${from ? ` since ${from}` : ""}, and continues to be in our employment as on the date of this certificate.`;
+    ? `This is to certify that {name}${idPart} was employed with ${firm} as ${role} ${from ? `from ${from} to` : "until"} ${longDate(cert.lastWorkingDay)}.`
+    : `This is to certify that {name}${idPart} has been employed with ${firm} as ${role}${from ? ` since ${from}` : ""} and continues to be in our employment as on the date of this certificate.`;
   para(ctx, fill(opening), body);
 
   if (String(cert.duties || "").trim()) para(ctx, fill(cert.duties), body);

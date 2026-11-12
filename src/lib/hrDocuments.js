@@ -97,21 +97,21 @@ export function defaultDesignation(user) {
    braces are filled in from the employee's title: {He}, {he}, {his}, {him}. */
 const DUTIES = {
   "Principal Architect":
-    "In this role {he} led the design of jewellery showroom and retail interior projects from concept through to handover. {He} presented design proposals to clients, set the design direction for the studio, reviewed and approved drawings before issue, and guided the architects working under {him}.",
+    "In this role, {he} led the design of jewellery showroom and retail interior projects from concept through to handover. {He} presented design proposals to clients, set the design direction for the studio, reviewed and approved drawings before issue, and guided the architects working under {him}.",
   "Senior Architect":
-    "In this role {he} developed concept designs, layouts and working drawings for jewellery showroom and retail interior projects. {He} co-ordinated with clients, site teams and vendors through execution, checked drawings for accuracy before issue, and supported the junior architects on the team.",
+    "In this role, {he} developed concept designs, layouts and working drawings for jewellery showroom and retail interior projects. {He} co-ordinated with clients, site teams and vendors throughout execution, checked drawings for accuracy before issue, and supported the junior architects on the team.",
   "Junior Architect":
-    "In this role {he} prepared layouts, working drawings and 3D views for jewellery showroom and retail interior projects under the guidance of the senior architects. {He} took site measurements, assisted with material selections and bills of quantities, and kept drawings updated through execution.",
+    "In this role, {he} prepared layouts, working drawings and 3D views for jewellery showroom and retail interior projects under the guidance of the senior architects. {He} took site measurements, assisted with material selections and bills of quantities, and kept the drawings up to date throughout execution.",
   "Intern Architect":
-    "During the internship {he} assisted the design team with drafting, 3D views, presentation sheets and site measurements for jewellery showroom and retail interior projects, and gained working exposure to the full course of a fit-out project.",
+    "During the internship, {he} assisted the design team with drafting, 3D views, presentation sheets and site measurements for jewellery showroom and retail interior projects, and gained working exposure to the full course of a fit-out project.",
   Architect:
-    "In this role {he} worked on the design and drawings of jewellery showroom and retail interior projects, and co-ordinated with clients, site teams and vendors through execution.",
+    "In this role, {he} worked on the design and drawings of jewellery showroom and retail interior projects, and co-ordinated with clients, site teams and vendors throughout execution.",
   Supervisor:
-    "In this role {he} supervised the on-site execution of jewellery showroom and retail fit-out projects. {He} managed contractors and labour on site, tracked materials and deliveries, checked workmanship against the drawings, reported daily progress to the office, and worked to hand sites over on schedule.",
+    "In this role, {he} supervised the on-site execution of jewellery showroom and retail fit-out projects. {He} managed contractors and labour on site, tracked materials and deliveries, checked workmanship against the drawings, reported daily progress to the office, and worked to hand sites over on schedule.",
   Accounts:
-    "In this role {he} handled the firm's day-to-day accounts — vendor bills and payments, purchase orders, staff expense claims, client statements and GST records — and kept the project and office accounts up to date.",
+    "In this role, {he} handled the firm's day-to-day accounts — vendor bills and payments, purchase orders, staff expense claims, client statements and GST records — and kept the project and office accounts up to date.",
   Admin:
-    "In this role {he} was responsible for the administration and day-to-day running of the office, co-ordinating between the design, site and accounts teams and with clients and vendors.",
+    "In this role, {he} handled the administration and day-to-day running of the office, co-ordinating between the design, site and accounts teams and with clients and vendors.",
 };
 
 export function defaultDuties(user) {
@@ -126,7 +126,7 @@ export const CONDUCT_OPTIONS = ["Good", "Fair", "Bad"];
 
 export const CONDUCT_TEXT = {
   Good:
-    "Throughout {his} time with us, {name}'s conduct was good. {He} followed the company's code of conduct in full, was sincere, punctual and dependable in {his} work, and maintained cordial and professional relations with colleagues, clients and vendors. We found {him} to be a valued member of the team and wish {him} every success in {his} future endeavours.",
+    "Throughout {his} time with us, {name}'s conduct was good. {He} followed the company's code of conduct in full, showed sincerity, punctuality and dependability in {his} work, and maintained cordial and professional relations with colleagues, clients and vendors. We found {him} to be a valued member of the team and wish {him} every success in {his} future endeavours.",
   Fair:
     "Throughout {his} time with us, {name}'s conduct was fair. {He} carried out the duties assigned to {him} and generally followed the company's code of conduct, with room for improvement in consistency and timeliness. We wish {him} well in {his} future endeavours.",
   Bad:
@@ -140,12 +140,12 @@ export const TITLES = ["", "Mr.", "Ms."];
 function pronouns(title) {
   if (title === "Mr.") return { he: "he", his: "his", him: "him" };
   if (title === "Ms.") return { he: "she", his: "her", him: "her" };
-  /* No title given: the name carries the sentence instead of a guess. */
-  return null;
+  /* No title given: "they" reads correctly for anyone, and every sentence in
+     the templates is written so that it stays grammatical with it. */
+  return { he: "they", his: "their", him: "them" };
 }
 
-/* Fills {name}, {He}, {he}, {his}, {him}. With no title on file the name is
-   used in place of each pronoun — clumsier, but never wrong. */
+/* Fills {name}, {He}, {he}, {his}, {him}. */
 export function fillWording(text, { name, title }) {
   const first = String(name || "").trim();
   const full = [title, first].filter(Boolean).join(" ");
@@ -157,6 +157,20 @@ export function fillWording(text, { name, title }) {
     .replace(/\{he\}/g, p ? p.he : full)
     .replace(/\{his\}/g, p ? p.his : `${full}'s`)
     .replace(/\{him\}/g, p ? p.him : full);
+}
+
+/* "a Senior Architect", "an Intern Architect", "an Accounts Executive". */
+export function withArticle(designation) {
+  const d = String(designation || "").trim();
+  if (!d) return "a member of our team";
+  return `${/^[aeiou]/i.test(d) ? "an" : "a"} ${d}`;
+}
+
+/* Dates in full, as a formal letter writes them: 3 November 2025. */
+export function longDate(iso) {
+  if (!iso) return "";
+  const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
 }
 
 /* A reference number that is unique enough to file by and needs no counter
