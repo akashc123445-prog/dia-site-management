@@ -10009,7 +10009,10 @@ function MoneyInput({ value, onChange, ...rest }) {
 }
 
 function SalaryDetailsForm({ user, hr, onSave }) {
-  const [form, setForm] = useState({ ...hr, designation: hr.designation || defaultDesignation(user) });
+  const [form, setForm] = useState({
+    ...hr, designation: hr.designation || defaultDesignation(user),
+    empId: user.empId || "", joinedOn: user.joinedOn || "",
+  });
   const [saving, setSaving] = useState(false);
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const f = salaryFigures(form);
@@ -10042,10 +10045,17 @@ function SalaryDetailsForm({ user, hr, onSave }) {
           </Field>
         </div>
       </div>
-      <p className="text-xs text-stone-500 -mt-1 mb-4">
-        Employee ID {user.empId ? <b>{user.empId}</b> : "not set"} · Joined {user.joinedOn ? <b>{fmtDate(user.joinedOn)}</b> : "date not set"}.
-        These two are edited under Team.
-      </p>
+      <div className="grid grid-cols-3 gap-3">
+        <Field label="Employee ID">
+          <input className={inputCls} value={form.empId} onChange={(e) => set({ empId: e.target.value })} />
+        </Field>
+        <Field label="Date of joining">
+          <input type="date" className={inputCls} value={form.joinedOn || ""} onChange={(e) => set({ joinedOn: e.target.value })} />
+        </Field>
+        <Field label="Last working day">
+          <input type="date" className={inputCls} value={form.lastWorkingDay || ""} onChange={(e) => set({ lastWorkingDay: e.target.value || null })} />
+        </Field>
+      </div>
 
       <Field label="Monthly salary (gross), ₹">
         <MoneyInput value={form.monthlySalary} onChange={setMonthly} />
@@ -10089,9 +10099,9 @@ function SalaryDetailsForm({ user, hr, onSave }) {
         <span className="font-semibold text-stone-900">{fmtINR(f.net)} <span className="text-stone-400 font-normal">· {fmtINR(f.netAnnual)} a year</span></span>
       </div>
 
-      <button onClick={save} disabled={saving || !form.monthlySalary}
+      <button onClick={save} disabled={saving}
         className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
-        {saving ? "Saving…" : "Save salary details"}
+        {saving ? "Saving…" : "Save details"}
       </button>
     </div>
   );
@@ -10206,7 +10216,7 @@ function ExperienceCertificateForm({ user, hr, currentUser, onSaveHr, disclosure
       {!user.joinedOn && (
         <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
           <AlertTriangle size={14} className="shrink-0 mt-0.5" />
-          <span>No joining date is on file for {user.name.split(" ")[0]}, so the certificate will not state one. Add it under Team first.</span>
+          <span>No joining date is on file for {user.name.split(" ")[0]}, so the certificate will not state one. Add it under Details first.</span>
         </div>
       )}
 
@@ -10344,8 +10354,15 @@ function HrDocumentsView({ data, currentUser, actions }) {
                 <div className="flex flex-wrap gap-2 shrink-0">
                   <button onClick={() => setOpen({ userId: u.id, kind: "salary" })}
                     className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border border-stone-300 text-stone-700 hover:bg-stone-50">
-                    <IndianRupee size={13} /> Salary details
+                    <IndianRupee size={13} /> Details
                   </button>
+                  {u.role === "Architect" && !disc && (
+                    <button title="An empty disclosure form to fill in by hand — for someone who has no login"
+                      onClick={() => generateDisclosurePdf({ user: u, designation: hr?.designation || defaultDesignation(u), blank: true }, "save")}
+                      className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border border-stone-300 text-stone-700 hover:bg-stone-50">
+                      <ClipboardList size={13} /> Blank disclosure
+                    </button>
+                  )}
                   <button onClick={() => setOpen({ userId: u.id, kind: f.monthly > 0 ? "slip" : "salary" })}
                     title={f.monthly > 0 ? "" : "Enter the salary first"}
                     className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border border-stone-300 text-stone-700 hover:bg-stone-50">
@@ -10365,9 +10382,17 @@ function HrDocumentsView({ data, currentUser, actions }) {
       {people.length + former.length === 0 && <Card className="p-10 text-center text-sm text-stone-400">Nobody matches that name.</Card>}
 
       {person && open.kind === "salary" && (
-        <Modal title={`Salary details — ${person.name}`} onClose={() => setOpen(null)}>
+        <Modal title={`Employee & salary details — ${person.name}`} onClose={() => setOpen(null)}>
           <SalaryDetailsForm user={person} hr={personHr}
-            onSave={(hr) => actions.saveHrDetails(person.id, hr).then(() => setOpen(null))} />
+            onSave={async ({ empId, joinedOn, ...hr }) => {
+              /* ID and joining date live on the profile, where the attendance
+                 register reads them; the rest is the HR record. */
+              if ((empId || "") !== (person.empId || "") || (joinedOn || null) !== (person.joinedOn || null)) {
+                await actions.updateUser(person.id, { empId: empId.trim(), joinedOn: joinedOn || null });
+              }
+              await actions.saveHrDetails(person.id, hr);
+              setOpen(null);
+            }} />
         </Modal>
       )}
       {person && open.kind === "slip" && (

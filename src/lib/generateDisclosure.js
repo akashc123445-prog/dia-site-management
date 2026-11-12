@@ -40,10 +40,13 @@ const DECISION_WORD = { approved: "APPROVED", declined: "NOT APPROVED" };
 const CREAM_SOFT = [243, 233, 216];
 const GREEN = [22, 101, 52], RED = [153, 27, 27];
 
-export function generateDisclosurePdf({ user, designation, disclosure, reviewerName }, mode = "save") {
+/* With `blank`, the same sheet comes out empty and ruled, to be filled in
+   by hand — for someone who has already left and has no login to fill it in
+   on screen. */
+export function generateDisclosurePdf({ user, designation, disclosure, reviewerName, blank = false }, mode = "save") {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const ctx = makeCtx(doc);
-  const d = disclosure;
+  const d = blank ? { projects: [], files: [], decisions: {}, status: "Submitted", otherItems: "" } : disclosure;
   const counts = disclosureCounts(d);
   const reviewed = d.status !== "Submitted";
 
@@ -51,7 +54,7 @@ export function generateDisclosurePdf({ user, designation, disclosure, reviewerN
   doc.setFont(BODY, "normal");
   doc.setFontSize(9.2);
   doc.setTextColor(...GREY);
-  doc.text(`Submitted: ${fmtDate(d.submittedAt)}`, M.left, ctx.y);
+  doc.text(blank ? "Submitted on: ____________________" : `Submitted: ${fmtDate(d.submittedAt)}`, M.left, ctx.y);
   doc.text(`Printed: ${fmtDate(new Date().toISOString().slice(0, 10))}`, PAGE.w - M.right, ctx.y, { align: "right" });
   ctx.y += 30;
 
@@ -77,7 +80,9 @@ export function generateDisclosurePdf({ user, designation, disclosure, reviewerN
   cell("Employee ID", user.empId || "—", M.left + 12 + third * 2, ctx.y + 17);
   ctx.y += boxH + 8;
 
-  const statusText = !reviewed
+  const statusText = blank
+    ? "TO BE FILLED IN BY HAND, SIGNED, AND APPROVED LINE BY LINE AT THE OFFICE"
+    : !reviewed
     ? "AWAITING APPROVAL — not valid for collecting documents until reviewed"
     : `${d.status.toUpperCase()}${reviewerName ? ` — reviewed by ${reviewerName}` : ""}${d.reviewedAt ? ` on ${fmtDate(d.reviewedAt)}` : ""}`;
   doc.setFillColor(...(!reviewed ? GREY : d.status === "Approved" ? GREEN : MAROON));
@@ -100,6 +105,18 @@ export function generateDisclosurePdf({ user, designation, disclosure, reviewerN
     ["#", ...head, "DECISION"].forEach((h, i) => doc.text(h, x[i] + 6, ctx.y + 12.6));
     ctx.y += 19;
 
+    if (blank) {
+      for (let i = 0; i < 4; i++) {
+        doc.setFont(BODY, "normal"); doc.setFontSize(8.8); doc.setTextColor(...GREY);
+        doc.text(String(i + 1), x[0] + 6, ctx.y + 16);
+        doc.setDrawColor(...RULE); doc.setLineWidth(0.5);
+        doc.line(M.left, ctx.y + 25, PAGE.w - M.right, ctx.y + 25);
+        [1, 2, 3].forEach((k) => doc.line(x[k], ctx.y, x[k], ctx.y + 25));
+        ctx.y += 25;
+      }
+      ctx.y += 16;
+      return;
+    }
     if (!rows.length) {
       doc.setFont(BODY, "italic"); doc.setFontSize(9); doc.setTextColor(...GREY);
       doc.text("None declared.", M.left + 6, ctx.y + 14);
@@ -137,7 +154,13 @@ export function generateDisclosurePdf({ user, designation, disclosure, reviewerN
   doc.setFont(DISPLAY, "bold"); doc.setFontSize(9.6); doc.setTextColor(...MAROON);
   doc.text("3.  ANYTHING ELSE OF THE OFFICE THAT I HOLD", M.left, ctx.y);
   ctx.y += 15;
-  para(ctx, String(d.otherItems || "").trim() || "Nothing other than the items listed above.", { size: 9.2, lead: 13, gap: 14 });
+  if (blank) {
+    doc.setDrawColor(...RULE); doc.setLineWidth(0.5);
+    [0, 1].forEach((k) => doc.line(M.left, ctx.y + 12 + k * 22, PAGE.w - M.right, ctx.y + 12 + k * 22));
+    ctx.y += 48;
+  } else {
+    para(ctx, String(d.otherItems || "").trim() || "Nothing other than the items listed above.", { size: 9.2, lead: 13, gap: 14 });
+  }
 
   if (reviewed && String(d.reviewNote || "").trim()) {
     ctx.need(40);
@@ -160,7 +183,7 @@ export function generateDisclosurePdf({ user, designation, disclosure, reviewerN
   ctx.y += 6;
   doc.setFont(BODY, "italic"); doc.setFontSize(8.4); doc.setTextColor(...GREY);
   ctx.need(14);
-  doc.text(`Items: ${counts.total}   ·   Approved: ${counts.approved}   ·   Not approved: ${counts.declined}   ·   Pending: ${counts.pending}`, M.left, ctx.y);
+  if (!blank) doc.text(`Items: ${counts.total}   ·   Approved: ${counts.approved}   ·   Not approved: ${counts.declined}   ·   Pending: ${counts.pending}`, M.left, ctx.y);
   ctx.y += 14;
 
   /* ---- signatures ---- */
@@ -178,6 +201,6 @@ export function generateDisclosurePdf({ user, designation, disclosure, reviewerN
 
   const safe = (v) => String(v || "").replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim();
   if (mode === "preview") return doc.output("bloburl");
-  doc.save(`Disclosure form - ${safe(user.name)}.pdf`);
+  doc.save(`Disclosure form${blank ? " (blank)" : ""} - ${safe(user.name)}.pdf`);
   return null;
 }
