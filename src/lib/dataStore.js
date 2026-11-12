@@ -20,6 +20,13 @@ const mapUser = (r) => ({
   whatsapp: r.whatsapp || "",
 });
 
+const mapDisclosure = (r) => ({
+  id: r.id, userId: r.user_id, projects: r.projects || [], files: r.files || [],
+  otherItems: r.other_items || "", decisions: r.decisions || {}, status: r.status,
+  reviewNote: r.review_note || "", reviewedBy: r.reviewed_by, reviewedAt: r.reviewed_at,
+  submittedAt: r.submitted_at,
+});
+
 /* Salary and HR details. Admin-only at the RLS level, so this is an empty
    list for everyone else. */
 const mapHrDetails = (r) => ({
@@ -386,12 +393,7 @@ export async function fetchAllData() {
       status: r.status, detail: r.detail || "", sentAt: r.sent_at,
     })),
     hrDetails: (hrDetailsRaw.data || []).map(mapHrDetails),
-    disclosures: (disclosuresRaw.data || []).map((r) => ({
-      id: r.id, userId: r.user_id, projects: r.projects || [], files: r.files || [],
-      otherItems: r.other_items || "", decisions: r.decisions || {}, status: r.status,
-      reviewNote: r.review_note || "", reviewedBy: r.reviewed_by, reviewedAt: r.reviewed_at,
-      submittedAt: r.submitted_at,
-    })),
+    disclosures: (disclosuresRaw.data || []).map(mapDisclosure),
     clientScope: (clientScopeRaw.data || []).map(mapClientScopeItem),
     leaveRequests: (leaveRaw.data || []).map(mapLeaveRequest),
     hiringPosts: (hiringRaw.data || []).map(mapHiringPost),
@@ -1073,6 +1075,37 @@ export async function dbSaveDisclosure(userId, form) {
     projects: form.projects, files: form.files, other_items: (form.otherItems || "").trim(),
   }, { onConflict: "user_id" });
   if (error) throw error;
+}
+
+/* ---- the same form, by personal link instead of login ---- */
+
+/* The token is made here, in the admin's browser, from the system's random
+   source: 24 bytes, which nobody is going to guess. */
+export async function dbCreateDisclosureLink(userId, createdBy) {
+  const token = Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, "0")).join("");
+  const { error } = await supabase.from("disclosure_links").insert({ token, user_id: userId, created_by: createdBy });
+  if (error) throw error;
+  return token;
+}
+
+const mapLinkReply = (data) => data && data.user ? {
+  user: data.user, designation: data.designation || "",
+  disclosure: data.disclosure ? mapDisclosure(data.disclosure) : null,
+  reviewerName: data.disclosure?.reviewer_name || "",
+} : null;
+
+export async function openDisclosureLink(token) {
+  const { data, error } = await supabase.rpc("disclosure_link_open", { p_token: token });
+  if (error) throw error;
+  return mapLinkReply(data);
+}
+
+export async function submitDisclosureLink(token, form) {
+  const { data, error } = await supabase.rpc("disclosure_link_submit", {
+    p_token: token, p_projects: form.projects, p_files: form.files, p_other: (form.otherItems || "").trim(),
+  });
+  if (error) throw error;
+  return mapLinkReply(data);
 }
 
 export async function dbReviewDisclosure(id, { decisions, status, reviewNote }, reviewerId) {

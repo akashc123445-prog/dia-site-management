@@ -37,7 +37,7 @@ import {
   dbAddOfficeExpense, dbApproveOfficeExpense, dbRejectOfficeExpense, dbMarkOfficeExpensePaid, dbDeleteOfficeExpense,
   dbCheckIn, dbCheckOut, uploadAttendancePhoto, dbAmendAttendance, dbDeleteAttendance,
   dbLoadAttendanceRange, dbSetHoliday, dbRemoveHoliday,
-  dbSaveReminderSettings, dbRunReminders, dbSaveHrDetails, dbSaveDisclosure, dbReviewDisclosure,
+  dbSaveReminderSettings, dbRunReminders, dbSaveHrDetails, dbSaveDisclosure, dbReviewDisclosure, dbCreateDisclosureLink, openDisclosureLink, submitDisclosureLink,
   dbAddClientScopeItem, dbUpdateClientScopeItem, dbDeleteClientScopeItem, dbMarkClientScopeReminded,
   dbAddLeaveRequest, dbDecideLeaveRequest, dbDeleteLeaveRequest,
   dbAddHiringPost, dbUpdateHiringPost, dbDeleteHiringPost,
@@ -10356,6 +10356,13 @@ function HrDocumentsView({ data, currentUser, actions }) {
                     className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border border-stone-300 text-stone-700 hover:bg-stone-50">
                     <IndianRupee size={13} /> Details
                   </button>
+                  {u.role === "Architect" && u.removed && (
+                    <button title="A personal link to fill in the disclosure form without a login"
+                      onClick={() => setOpen({ userId: u.id, kind: "link" })}
+                      className="flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg border border-stone-300 text-stone-700 hover:bg-stone-50">
+                      <MessageSquare size={13} /> Disclosure link
+                    </button>
+                  )}
                   {u.role === "Architect" && !disc && (
                     <button title="An empty disclosure form to fill in by hand — for someone who has no login"
                       onClick={() => generateDisclosurePdf({ user: u, designation: hr?.designation || defaultDesignation(u), blank: true }, "save")}
@@ -10398,6 +10405,12 @@ function HrDocumentsView({ data, currentUser, actions }) {
       {person && open.kind === "slip" && (
         <Modal title={`Salary slip — ${person.name}`} onClose={() => setOpen(null)}>
           <SalarySlipForm user={person} hr={{ ...personHr, designation: personHr.designation || defaultDesignation(person) }} currentUser={currentUser} />
+        </Modal>
+      )}
+      {person && open.kind === "link" && (
+        <Modal title={`Disclosure link — ${person.name}`} onClose={() => setOpen(null)}>
+          <DisclosureLinkPanel person={person}
+            onCreate={async () => `${window.location.origin}/portal/?d=${await actions.createDisclosureLink(person.id)}`} />
         </Modal>
       )}
       {person && open.kind === "cert" && (
@@ -10474,7 +10487,7 @@ function DisclosureForm({ existing, myProjects, onSave }) {
       )}
       <div className="space-y-2 mb-2">
         {projects.map((p) => (
-          <div key={p.id} className="grid grid-cols-[1fr_1.4fr_auto] gap-2 items-start">
+          <div key={p.id} className="grid grid-cols-1 sm:grid-cols-[1fr_1.4fr_auto] gap-2 items-start border-b border-stone-100 pb-2 sm:border-0 sm:pb-0">
             <input className={inputCls} placeholder="Project name" value={p.name} onChange={(e) => editProject(p.id, { name: e.target.value })} />
             <input className={inputCls} placeholder="e.g. 3D views and photos of the finished store" value={p.use} onChange={(e) => editProject(p.id, { use: e.target.value })} />
             <button type="button" onClick={() => dropProject(p.id)} className="p-2 text-stone-400 hover:text-red-600"><Trash2 size={15} /></button>
@@ -10488,7 +10501,7 @@ function DisclosureForm({ existing, myProjects, onSave }) {
       <p className="text-xs text-stone-500 mb-3">Everything of the office that is with you — on your laptop, phone, pen drive, cloud drive or email.</p>
       <div className="space-y-2 mb-2">
         {files.map((f) => (
-          <div key={f.id} className="grid grid-cols-1 sm:grid-cols-[1.3fr_1fr_1fr_auto] gap-2 items-start">
+          <div key={f.id} className="grid grid-cols-1 sm:grid-cols-[1.3fr_1fr_1fr_auto] gap-2 items-start border-b border-stone-100 pb-2 sm:border-0 sm:pb-0">
             <input className={inputCls} placeholder="What the files are" value={f.what} onChange={(e) => editFile(f.id, { what: e.target.value })} />
             <select className={inputCls} value={f.kind} onChange={(e) => editFile(f.id, { kind: e.target.value })}>
               {DISCLOSURE_FILE_KINDS.map((k) => <option key={k}>{k}</option>)}
@@ -10760,7 +10773,167 @@ function ErrorScreen({ message, onRetry, onLogout }) {
 /* Main App                                                                 */
 /* ---------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------- */
+/* The disclosure form, reached by a personal link instead of a login       */
+/* ---------------------------------------------------------------------- */
+
+/* Read once at load. A link looks like /portal/?d=<token>. */
+const DISCLOSURE_LINK_TOKEN = typeof window !== "undefined"
+  ? (new URLSearchParams(window.location.search).get("d") || "").trim() : "";
+
+function PublicDisclosureScreen({ token }) {
+  const [state, setState] = useState({ loading: true });
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    openDisclosureLink(token)
+      .then((r) => { setState(r ? { ...r } : { invalid: true }); if (r && !r.disclosure) setEditing(true); })
+      .catch(() => setState({ invalid: true }));
+  }, [token]);
+
+  const { user, designation, disclosure, reviewerName } = state;
+  const pdf = (mode) => {
+    const url = generateDisclosurePdf({ user, designation: designation || defaultDesignation(user), disclosure, reviewerName }, mode);
+    if (mode === "preview" && url) window.open(url, "_blank");
+  };
+  const submit = async (form) => {
+    try {
+      const r = await submitDisclosureLink(token, form);
+      setState({ ...r });
+      setEditing(false);
+      window.scrollTo(0, 0);
+    } catch (err) {
+      window.alert(`Couldn't submit the form.\n\n${err.message || err}`);
+      throw err;
+    }
+  };
+  const c = disclosure ? disclosureCounts(disclosure) : null;
+
+  return (
+    <div className="font-body min-h-screen bg-stone-100">
+      <style>{FONT_STYLE}</style>
+      <div className="dia-bg-maroon-deep px-4 py-5 flex items-center justify-center">
+        <img src={LOGO_FULL} alt="Dia Retail Solutions" className="h-20 object-contain" />
+      </div>
+      <div className="max-w-2xl mx-auto p-4 sm:p-6">
+        {state.loading && <p className="text-center text-sm text-stone-500 py-16">Opening your form…</p>}
+
+        {state.invalid && (
+          <Card className="p-8 text-center">
+            <AlertTriangle size={26} className="mx-auto text-amber-500 mb-3" />
+            <h1 className="font-display text-lg font-semibold text-stone-900 mb-1">This link doesn't work any more</h1>
+            <p className="text-sm text-stone-500">It may have expired or been typed incorrectly. Please ask the DIA office to send you a new one.</p>
+          </Card>
+        )}
+
+        {user && (
+          <>
+            <h1 className="font-display text-xl font-semibold text-stone-900">Portfolio & office files disclosure</h1>
+            <p className="text-sm text-stone-500 mt-1 mb-4">
+              For <b className="text-stone-700">{user.name}</b>{designation || defaultDesignation(user) ? ` · ${designation || defaultDesignation(user)}` : ""}.
+              This page is private to you — please don't forward the link.
+            </p>
+
+            {disclosure && !editing && (
+              <Card className="p-5">
+                <div className="flex flex-wrap items-center gap-2 mb-2">
+                  <span className="font-semibold text-stone-900 text-sm">Your form</span>
+                  <DisclosureStatusPill status={disclosure.status} />
+                </div>
+                <p className="text-sm text-stone-600 mb-1">
+                  {disclosure.projects.length} project{disclosure.projects.length !== 1 ? "s" : ""} and {disclosure.files.length} set{disclosure.files.length !== 1 ? "s" : ""} of files declared, submitted {fmtDate(disclosure.submittedAt)}.
+                </p>
+                <p className="text-sm text-stone-600 mb-4">
+                  {disclosure.status === "Submitted"
+                    ? "The office has not reviewed it yet. Come back to this same link later to see the decision and download the approved form."
+                    : `Reviewed${reviewerName ? ` by ${reviewerName}` : ""}: ${c.approved} approved, ${c.declined} not approved. Download the form, print and sign it, and bring it when you collect your experience certificate.`}
+                </p>
+                {disclosure.reviewNote && (
+                  <div className="rounded-lg border border-stone-200 bg-stone-50 px-4 py-3 mb-4">
+                    <div className="text-[11px] uppercase tracking-wide text-stone-500 font-label mb-1">Office remarks</div>
+                    <p className="text-sm text-stone-700 whitespace-pre-wrap">{disclosure.reviewNote}</p>
+                  </div>
+                )}
+                <div className="grid sm:grid-cols-3 gap-2">
+                  <button onClick={() => pdf("save")} className="flex items-center justify-center gap-2 dia-btn-gold font-semibold text-sm py-2.5 rounded-lg">
+                    <Download size={15} /> Download PDF
+                  </button>
+                  <button onClick={() => pdf("preview")} className="flex items-center justify-center gap-2 border border-stone-300 text-stone-700 font-semibold text-sm py-2.5 rounded-lg hover:bg-stone-50">
+                    <Eye size={15} /> View
+                  </button>
+                  <button onClick={() => setEditing(true)} className="flex items-center justify-center gap-2 border border-stone-300 text-stone-700 font-semibold text-sm py-2.5 rounded-lg hover:bg-stone-50">
+                    <Pencil size={15} /> Change my answers
+                  </button>
+                </div>
+              </Card>
+            )}
+
+            {editing && (
+              <Card className="p-5">
+                <DisclosureForm existing={disclosure} myProjects={[]} onSave={submit} />
+                {disclosure && (
+                  <button onClick={() => setEditing(false)} className="w-full text-center text-xs text-stone-500 font-semibold mt-3 hover:underline">Cancel</button>
+                )}
+              </Card>
+            )}
+          </>
+        )}
+        <p className="text-center text-stone-400 text-[11px] mt-6">DIA Retail Solutions · Bengaluru | Chennai</p>
+      </div>
+    </div>
+  );
+}
+
+function DisclosureLinkPanel({ person, onCreate }) {
+  const [link, setLink] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const first = person.name.split(" ")[0];
+  const message = `Hi ${first}, please fill in your portfolio and office files disclosure form for DIA Retail Solutions using this link. It needs no login and works on your phone:\n${link}\n\nOnce the office has approved it, download the form from the same link, sign it, and bring it when you collect your experience certificate.`;
+
+  const create = async () => {
+    setBusy(true);
+    try { setLink(await onCreate()); } catch (err) { window.alert(`Couldn't make the link.\n\n${err.message || err}`); } finally { setBusy(false); }
+  };
+  const copy = async (text) => {
+    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2500); } catch { /* blocked */ }
+  };
+
+  return (
+    <div>
+      <p className="text-sm text-stone-600 mb-4">
+        A personal link for {first}. Anyone holding it can fill in and read {first}'s form without logging in, so send it only to them.
+        It stops working after 30 days; making a new one does not cancel earlier ones.
+      </p>
+      {!link ? (
+        <button onClick={create} disabled={busy} className="w-full dia-btn-gold disabled:opacity-40 font-semibold text-sm py-2.5 rounded-lg">
+          {busy ? "Making the link…" : "Make a link"}
+        </button>
+      ) : (
+        <>
+          <input readOnly className={`${inputCls} mb-3 text-xs`} value={link} onFocus={(e) => e.target.select()} />
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={() => copy(link)} className="flex items-center justify-center gap-2 border border-stone-300 text-stone-700 font-semibold text-sm py-2.5 rounded-lg hover:bg-stone-50">
+              <Copy size={15} /> {copied ? "Copied" : "Copy link"}
+            </button>
+            <a href={`https://wa.me/${waNumber(person.whatsapp) || ""}?text=${encodeURIComponent(message)}`} target="_blank" rel="noreferrer"
+              className="flex items-center justify-center gap-2 dia-btn-gold font-semibold text-sm py-2.5 rounded-lg">
+              <MessageSquare size={15} /> Send on WhatsApp
+            </a>
+          </div>
+          <button onClick={() => copy(message)} className="w-full text-center text-xs dia-text-bronze font-semibold mt-3 hover:underline">Copy the whole message instead</button>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
+  /* A disclosure link is its own small page: no login, no portal. */
+  return DISCLOSURE_LINK_TOKEN ? <PublicDisclosureScreen token={DISCLOSURE_LINK_TOKEN} /> : <PortalApp />;
+}
+
+function PortalApp() {
   const [session, setSession] = useState(undefined); // undefined = still checking, null = signed out
   const [choosingPassword, setChoosingPassword] = useState(ARRIVED_FROM_RESET_LINK);
   /* Which user we've already loaded data for, so a repeat SIGNED_IN on tab
@@ -10922,6 +11095,7 @@ export default function App() {
       window.alert(`Couldn't save that.\n\n${err.message || err}`);
       throw err;
     }),
+    createDisclosureLink: (userId) => dbCreateDisclosureLink(userId, profile?.id),
     saveDisclosure: (form) => dbSaveDisclosure(profile?.id, form).then(reload).catch((err) => {
       window.alert(`Couldn't submit the form.\n\n${err.message || err}`);
       throw err;
